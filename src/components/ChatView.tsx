@@ -226,8 +226,8 @@ function plainText(markdown: string): string {
     .replace(/^>\s?/gm, "");
 }
 
-/** A quiet text button that copies and says "Copied" for a moment; `showLabel` writes its label beside the glyph. */
-function CopyButton({ text, label, className = "icon-button chat-copy", children, onResult, showLabel = false, disabled = false }: { text: string; label: string; className?: string; children?: React.ReactNode; onResult: (ok: boolean) => void; showLabel?: boolean; disabled?: boolean }) {
+/** A quiet text button that copies and says "Copied" for a moment. */
+function CopyButton({ text, label, className = "icon-button chat-copy", children, onResult }: { text: string; label: string; className?: string; children?: React.ReactNode; onResult: (ok: boolean) => void }) {
   const t = useT();
   const [copied, setCopied] = useState(false);
   const copy = async (): Promise<void> => {
@@ -237,9 +237,9 @@ function CopyButton({ text, label, className = "icon-button chat-copy", children
     if (ok) window.setTimeout(() => setCopied(false), 1500);
   };
   return (
-    <button type="button" className={copied ? `${className} is-copied` : className} disabled={disabled} onClick={() => void copy()} aria-label={copied ? t("Copied") : label} title={copied ? t("Copied") : label}>
+    <button type="button" className={copied ? `${className} is-copied` : className} onClick={() => void copy()} aria-label={copied ? t("Copied") : label} title={copied ? t("Copied") : label}>
       {copied ? <Check aria-hidden="true" /> : <Copy aria-hidden="true" />}
-      {showLabel ? <span>{copied ? t("Copied") : label}</span> : children}
+      {children}
     </button>
   );
 }
@@ -454,11 +454,6 @@ function WorkRow({ paneId, part, stateKey }: { paneId: string; part: ToolPartTyp
   const { verb, narration } = useMemo(() => workRowLabel({ name: part.name, input: part.input }, summary), [part.name, part.input, summary]);
   // the list is the answer of a todo call: its raw text would say it twice
   const output = isTodoTool(part.name) && parseTodoAnswer(part.output) !== null ? "" : whole.text ?? part.output;
-  // the copies take the call's raw text, never what is drawn from it: the input as the agent sent
-  // it, and the output as far as it is here (a todo call's too), named by how much that is
-  const rawOutput = whole.text ?? part.output;
-  const [copyFailed, setCopyFailed] = useChatRowToggle(`${stateKey}:copy-failed`, false);
-  const copied = (ok: boolean): void => setCopyFailed(!ok);
   return <div className={`work-row${part.error ? " is-error" : ""}`}>
     <button type="button" className="work-row-head" aria-expanded={open} title={narration || verb !== null ? `${part.name} · ${summary}` : undefined} onClick={() => setOpen(!open)}>
       <span className="work-row-caret" aria-hidden="true">{open ? <ChevronDown /> : <ChevronRight />}</span>
@@ -469,19 +464,10 @@ function WorkRow({ paneId, part, stateKey }: { paneId: string; part: ToolPartTyp
       {/* after a verb, or the agent's own sentence, the word follows it: "Ran pnpm test failed", not "Ran failed pnpm test" */}
       {part.error && (narration || verb !== null) && <>{" "}<span className="work-row-failed">{t("failed")}</span></>}
     </button>
-    {open && <div className="work-row-detail">{verb !== null && <p className="work-row-tool">{part.name}</p>}
-      <section className="chat-tool-input"><div className="chat-tool-head"><h4>{t("Input")}</h4>
-        {/* an omitted input is not here to copy: the row says so, and offers nothing in its name */}
-        {!part.arguments_omitted && <CopyButton className="chat-tool-copy" showLabel text={part.input} label={t("Copy input")} disabled={part.input.length === 0} onResult={copied} />}
-      </div><ToolInputView part={part} /></section>
-      <ToolImages paneId={paneId} part={part} />
-      {(output.length > 0 || rawOutput.length > 0) && <section className="chat-tool-output"><div className="chat-tool-head"><h4>{t(part.error ? "Error" : "Output")}</h4>
-        <CopyButton className="chat-tool-copy" showLabel text={rawOutput} label={t(whole.text !== null ? "Copy whole output" : part.output_ref !== undefined ? "Copy partial output" : "Copy output")} onResult={copied} />
-      </div>{output.length > 0 && <pre className={`chat-tool-io${whole.text !== null ? " is-whole" : ""}`}>{linkFilePaths(output, openFile)}</pre>}
+    {open && <div className="work-row-detail">{verb !== null && <p className="work-row-tool">{part.name}</p>}<ToolInputView part={part} /><ToolImages paneId={paneId} part={part} />{output.length > 0 && <section className="chat-tool-output"><h4>{t(part.error ? "Error" : "Output")}</h4><pre className={`chat-tool-io${whole.text !== null ? " is-whole" : ""}`}>{linkFilePaths(output, openFile)}</pre>
       {part.output_ref !== undefined && whole.text === null && <button type="button" className="btn btn-ghost chat-tool-more" disabled={whole.state === "loading"} onClick={whole.load}>
         {t(whole.state === "loading" ? "Loading the whole output…" : whole.state === "failed" ? "Couldn't load the whole output — retry" : "Show the whole output ({size} characters)", { size: formatTokens(part.output_size ?? 0) })}
-      </button>}</section>}
-      {copyFailed && <p className="chat-copy-error" role="alert">{t("Couldn't copy. Select the text and copy it manually.")}</p>}</div>}
+      </button>}</section>}</div>}
   </div>;
 }
 

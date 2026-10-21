@@ -22,8 +22,6 @@ export const SHORTCUTS = [
   { id: "split-down", label: "Split pane down", keys: [] },
   { id: "previous-pane", label: "Previous pane", keys: ["Mod", "Shift", "ArrowUp"] },
   { id: "next-pane", label: "Next pane", keys: ["Mod", "Shift", "ArrowDown"] },
-  // the Agents list's next blocked agent, then its next finish not looked at (lib/attentionJump.ts)
-  { id: "next-attention", label: "Next agent needing attention", keys: ["Mod", "Shift", "A"] },
   { id: "settings", label: "Settings", keys: ["Mod", "Shift", ","] },
   // listed only: held, not dispatched; VoiceInput.tsx listens for it itself (isVoiceShortcut)
   { id: "voice", label: "Dictate (hold)", keys: ["Mod", "Shift", "Space"] },
@@ -54,7 +52,6 @@ const KEY_TO_ID: Readonly<Record<string, ShortcutId>> = {
   o: "new-session",
   ArrowUp: "previous-pane",
   ArrowDown: "next-pane",
-  a: "next-attention",
   ",": "settings",
 };
 
@@ -232,9 +229,8 @@ export function useShortcuts(actions: AppActions, enabled: boolean): void {
       if (shortcut === null) return;
       if (keepsKeyForText(event)) return;
       event.preventDefault();
-      // a held chord repeats: a tab or a split is made, and an attention jump made, once per press, not
-      // once per key repeat (a held jump would run through the agents and read finishes nobody looked at)
-      if (event.repeat && (shortcut === "new-tab" || shortcut === "split-right" || shortcut === "split-down" || shortcut === "next-attention")) return;
+      // a held chord repeats: a tab or a split is made once per press, not once per key repeat
+      if (event.repeat && (shortcut === "new-tab" || shortcut === "split-right" || shortcut === "split-down")) return;
       switch (shortcut) {
         case "palette":
           actions.openPalette();
@@ -274,9 +270,6 @@ export function useShortcuts(actions: AppActions, enabled: boolean): void {
           break;
         case "next-pane":
           actions.selectAdjacentPane(1);
-          break;
-        case "next-attention":
-          actions.selectNextAttention();
           break;
         case "settings":
           actions.openSettings();

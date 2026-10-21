@@ -598,20 +598,6 @@ The values are the ones in `src/styles.css`. Every token but `--fs-input` is `ca
   event, scoped to the active, presented pane and its PC; a modal or observe mode blocks it.
   It sends no text or keys and never takes an attach. The binding follows the existing shortcut
   customization and Mod+Shift policy.
-- Mod+Shift+A (**Next agent needing attention**, also a palette action) opens the next agent that
-  waits for a person: the Agents list's rows in the order it draws them (the pinned card first,
-  then each PC's roster or Activity order), partitioned into the blocked ones and then the finishes
-  nobody looked at yet, cycled from the selected PC and pane and round again (src/lib/agentRoster.ts,
-  src/lib/attentionJump.ts). The status is the one the row's badge draws, so a finish read in any
-  browser of this server leaves the cycle, and a PC that is not connected is skipped whatever its
-  saved roster says; background-wait, ready and unknown are not attention. Identity is PC + pane: two
-  PCs may reuse a pane id. The selection it makes is this browser's alone, as a sidebar tap
-  (`selectTarget`): no `pane.focus`, no take-over, no input, and the phone keyboard policy of a tap.
-  The cycle follows Agent of Empires' attention navigation, which flags sessions as needing attention
-  and steps through them with wrap; it differs in that the flags are not a state of their own but the
-  statuses the sidebar already shows, the order is the list's own rather than a recency sort, and
-  nothing moves on the multiplexer side. No Codex or Claude app offers an equivalent. Nothing of AoE's
-  code is copied.
 - All settings share one sanitized `localStorage["herdr-web-ui:settings"]` record.
 
 ## 4. Spacing & Layout
@@ -1645,22 +1631,6 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - A row expands to the typed input (command, diff, file, checklist, raw) and an Output pane. Under
   a verb the tool's own id (`exec`, `Bash`, `apply_patch`) is the first line of that detail
   (`.work-row-tool`, mono, dim) and the row's title.
-- Detail copy: the opened detail labels its Input and Output (Error) in the caps `h4` the Output
-  label already had, each with a quiet copy at the far end of that line (`.chat-tool-copy`: glyph
-  + words in `--text`, `--fs-md` with a mouse and `--chat-fs-body` on touch, `--chip-h` high with a
-  `--pointer-target` expander, a `--touch-target` button on touch). Its focus ring is drawn inside
-  it, since the detail's edge clips past it; a mouse's press is `.icon-button:active`'s plate as an
-  inset accent edge; a disabled copy turns `--text-dim` rather than fading below AA. It copies the call's raw text, never the drawn view: the
-  input as the agent sent it (not the diff, checklist or question card made from it), and the
-  output as far as the page has it, a todo call's raw answer included. Its words say how much that
-  is: Copy output for a complete output, Copy partial output while a cut output's rest is only on
-  the server (a failed load leaves it so), Copy whole output once the rest has loaded. Opening a
-  row neither loads nor copies anything. An omitted input keeps its explanation and gets no copy;
-  an empty one keeps a disabled copy. A refused copy says so under the detail, with the message
-  copy's own line, and never shows Copied. This follows the copy Agent of Empires puts inside its
-  opened tool cards, without its wrap toggle (the output here already wraps in a bounded box) or
-  its silent failure; the Codex and Claude apps' quiet row chrome is kept: no toolbar, and nothing
-  on a folded row.
 - Mid-work narration sits between rows. While the turn runs it is the agent's voice: answer prose
   (`--text`, `--fs-chat` on `--lh-prose`) on the prose edge. Once the turn settles it is a quiet
   row again: `--text-dim`, `--fs-sm`.
@@ -2062,8 +2032,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   lead an empty query; arrows in the search field cycle through visible results, Enter activates
   and Escape closes. IME candidate, commit and cancel keys stay with composition. Buttons reached
   with Tab keep their native activation, and arrow navigation scrolls the selected result into view.
-- Actions cover new workspace, new tab, the next agent needing attention, lens/sidebar/theme, settings,
-  notifications, lock and refresh, with
+- Actions cover new workspace, new tab, lens/sidebar/theme, settings, notifications, lock and refresh, with
   `.kbd` hints resolved from this browser's shortcut settings; disabled bindings have no hint.
   With a pane selected they add herdr's **Split pane right / down**, the same **and open it**
   (herdr's `--focus`: the new pane is opened here only then) and, in a tab of several panes,

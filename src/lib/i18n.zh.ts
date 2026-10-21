@@ -219,7 +219,6 @@ export const ZH: Record<string, string> = {
   "New workspace": "新建工作区",
   "Previous pane": "上一个窗格",
   "Next pane": "下一个窗格",
-  "Next agent needing attention": "下一个需要处理的代理",
 
   // ---- agent status words (lib/status.ts) ----
   "READY": "就绪",
@@ -776,11 +775,6 @@ export const ZH: Record<string, string> = {
   "Copied": "已复制",
   "Couldn't copy. Select the text and copy it manually.": "无法复制。请选中文本并手动复制。",
   "Output": "输出",
-  "Input": "输入",
-  "Copy input": "复制输入",
-  "Copy output": "复制输出",
-  "Copy partial output": "复制部分输出",
-  "Copy whole output": "复制全部输出",
   "Arguments omitted (too large)": "参数过大，已省略",
   "thinking": "思考",
   "Working…": "正在工作…",
@@ -1399,7 +1393,6 @@ export const ZH: Record<string, string> = {
   "logout log out lock": "退出 登出 锁定",
   "folder explorer open file": "文件夹 资源管理器 打开文件",
   "reload update sync": "重新加载 更新 同步",
-  "blocked input finished unread waiting jump cycle": "需要输入 完成 未读 等待 跳转 循环",
   "Search shortcuts": "搜索快捷键",
   "No shortcuts match.": "没有匹配的快捷键。",
   "Record": "录制",

@@ -215,7 +215,6 @@ export const KO: Record<string, string> = {
   "New workspace": "새 워크스페이스",
   "Previous pane": "이전 패널",
   "Next pane": "다음 패널",
-  "Next agent needing attention": "확인이 필요한 다음 에이전트",
 
   // ---- agent status words (lib/status.ts) ----
   "READY": "대기",
@@ -772,11 +771,6 @@ export const KO: Record<string, string> = {
   "Copied": "복사됨",
   "Couldn't copy. Select the text and copy it manually.": "복사하지 못했습니다. 텍스트를 선택해 직접 복사하세요.",
   "Output": "출력",
-  "Input": "입력",
-  "Copy input": "입력 복사",
-  "Copy output": "출력 복사",
-  "Copy partial output": "일부 출력 복사",
-  "Copy whole output": "전체 출력 복사",
   "Arguments omitted (too large)": "인자가 너무 커서 생략됨",
   "thinking": "생각",
   "Working…": "작업 중…",
@@ -1395,7 +1389,6 @@ export const KO: Record<string, string> = {
   "logout log out lock": "로그아웃 잠금",
   "folder explorer open file": "폴더 탐색기 파일 열기",
   "reload update sync": "새로고침 업데이트 동기화",
-  "blocked input finished unread waiting jump cycle": "입력 필요 완료 안 읽음 대기 이동 순환",
   "Search shortcuts": "단축키 검색",
   "No shortcuts match.": "일치하는 단축키가 없습니다.",
   "Record": "기록",

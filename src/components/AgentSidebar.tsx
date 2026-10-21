@@ -99,8 +99,7 @@ export function AgentSidebar({ machines, selectedMachineId, selectedPaneId, stat
   const rowTokens = useSyncExternalStore(subscribeAgentRowTokens, currentAgentRowTokens, currentAgentRowTokens);
   const activity = useSidebarActivity();
   // Settings → Agents order: herdr's order, or Activity within each PC (each herdr counts its own changes);
-  // the pinned rows stand first, in the order they were pinned. The keyboard's next agent needing
-  // attention walks this same order (lib/agentRoster.ts)
+  // the pinned rows stand first, in the order they were pinned (lib/agentRoster.ts)
   const byActivity = settings.agentOrder === "activity";
   const split = useMemo(() => agentRoster(machines, { byActivity, seqs: activity.seqs, pinned }), [machines, byActivity, activity, pinned]);
   const rows = useMemo(() => [...split.pinned, ...split.rest], [split]);

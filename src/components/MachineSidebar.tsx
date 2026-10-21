@@ -25,7 +25,7 @@ export const STATE_WORD: Readonly<Record<MachineState, string>> = {
   error: "Connection error",
 };
 
-/** `activity`: the live counters per PC and the finishes looked at here, App's (lib/sidebarActivity.tsx): both lists draw from it, as the keyboard's next agent needing attention does */
+/** `activity`: App's live counters per PC and finishes looked at here; both sidebar lists draw from it */
 interface Props { machines: Machine[]; selectedMachineId: string; selectedPaneId: string | null; activity: SidebarActivity; actions: AppActions; watching?: boolean; onSelect(machineId: string, paneId: string | null): void; onNew(machineId: string): void; onSetup(machine: Machine, update?: boolean): void }
 export function MachineSidebar(props: Props) {
   const t = useT();

@@ -189,43 +189,6 @@ describe("focus pane input", () => {
   });
 });
 
-describe("next agent needing attention", () => {
-  it("answers Mod+Shift+A on both platform families, exact modifiers only, and never a composing key", () => {
-    expect(matchShortcut(keyEvent("A", { metaKey: true }), true)).toBe("next-attention");
-    expect(matchShortcut(keyEvent("a", { ctrlKey: true }), false)).toBe("next-attention");
-    expect(matchShortcut(keyEvent("a", { ctrlKey: true }), true)).toBeNull();
-    expect(matchShortcut(keyEvent("a", { ctrlKey: true, shiftKey: false }), false)).toBeNull();
-    expect(matchShortcut(keyEvent("a", { ctrlKey: true, altKey: true }), false)).toBeNull();
-    expect(matchShortcut(keyEvent("a", { ctrlKey: true, metaKey: true }), false)).toBeNull();
-    expect(matchShortcut(keyEvent("a", { ctrlKey: true, isComposing: true }), false)).toBeNull();
-    expect(matchShortcut(keyEvent("a", { ctrlKey: true, keyCode: 229 }), false)).toBeNull();
-    // a bare a, with or without Shift, stays the terminal's
-    expect(matchShortcut(keyEvent("a"), false)).toBeNull();
-    expect(matchShortcut(keyEvent("a", { shiftKey: false }), false)).toBeNull();
-    expect(isAppShortcut(keyEvent("a", { ctrlKey: !isMacPlatform(), metaKey: isMacPlatform() }))).toBe(true);
-    expect(shortcutDisplayKeys("next-attention", {})).toEqual(["Mod", "Shift", "A"]);
-    expect(shortcutKeys("next-attention", {})).toEqual(["a"]);
-  });
-
-  it("is remapped, recorded as an exact chord, disabled and found in conflict like any binding", () => {
-    const moved = sanitizeShortcutOverrides({ "next-attention": "g" });
-    expect(moved).toEqual({ "next-attention": "g" });
-    expect(matchShortcut(keyEvent("G", { metaKey: true }), true, moved)).toBe("next-attention");
-    expect(matchShortcut(keyEvent("A", { metaKey: true }), true, moved)).toBeNull();
-    const exact = sanitizeShortcutOverrides({ "next-attention": "ctrl+alt+a" }, true);
-    expect(exact).toEqual({ "next-attention": "ctrl+alt+a" });
-    expect(matchShortcut(keyEvent("\u00e5", { ctrlKey: true, altKey: true, shiftKey: false, code: "KeyA" }), true, exact)).toBe("next-attention");
-    expect(matchShortcut(keyEvent("a", { ctrlKey: true, altKey: true, shiftKey: true, code: "KeyA" }), true, exact)).toBeNull();
-    expect(matchShortcut(keyEvent("A", { metaKey: true }), true, exact)).toBeNull();
-    expect(bindingDisplayKeys("ctrl+alt+a")).toEqual(["Ctrl", "Alt", "A"]);
-    expect(matchShortcut(keyEvent("A", { metaKey: true }), true, { "next-attention": null })).toBeNull();
-    expect(shortcutDisplayKeys("next-attention", { "next-attention": null })).toEqual([]);
-    expect(shortcutConflict("palette", ["a"], {})).toBe(true);
-    expect(shortcutConflict("next-attention", ["k"], {})).toBe(true);
-    expect(shortcutConflict("next-attention", ["a"], {})).toBe(false);
-  });
-});
-
 it("pages the selected pane with fixed Mod+Shift bindings, remapping and disabling", () => {
   for (const apple of [true, false]) {
     const press = (key: string, overrides = {}) => matchShortcut(keyEvent(key, { metaKey: apple, ctrlKey: !apple }), apple, overrides);

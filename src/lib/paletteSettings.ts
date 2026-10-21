@@ -40,7 +40,6 @@ export function actionAliases(t: Translate): Readonly<Record<string, string>> {
     "split-right-open": t("divide pane layout side"),
     "split-down-open": t("divide pane layout below"),
     zoom: t("maximize fullscreen full screen focus"),
-    "next-attention": t("blocked input finished unread waiting jump cycle"),
     view: t("lens chat terminal conversation"),
     sidebar: t("panel drawer hide show"),
     theme: t("dark light mode appearance colors"),

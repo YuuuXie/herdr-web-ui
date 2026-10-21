@@ -19,13 +19,6 @@ export interface AppActions {
   selectPane: (paneId: string) => void;
   /** the previous/next pane in sidebar order; wraps around */
   selectAdjacentPane: (direction: -1 | 1) => void;
-  /**
-   * The next agent that waits for a person, on any connected PC (lib/attentionJump.ts): the Agents
-   * list's blocked rows first, then its finishes nobody looked at, in the list's order, round and
-   * round from the selection; nothing when none waits. This browser's pick alone, as a sidebar tap.
-   * Whether it moved the selection.
-   */
-  selectNextAttention: () => boolean;
   setView: (view: PaneView) => void;
   toggleView: () => void;
   /** Focus the selected pane's mounted input without sending any text or keys. */

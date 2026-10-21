@@ -70,9 +70,7 @@ describe("browser lane", () => {
   it("summarizes every script and exits zero on success without enabling local evidence", async () => {
     const { text, code, evidence } = await lane();
     expect(code).toBe(0);
-    expect(rows(text)).toHaveLength(78);
-    expect(rows(text).map((row) => row.script)).toContain("scripts/attention-jump-demo-regression.ts");
-    expect(rows(text).map((row) => row.script)).toContain("scripts/tool-copy-demo-regression.ts");
+    expect(rows(text)).toHaveLength(76);
     expect(rows(text).map((row) => row.script)).toContain("scripts/opencode-prompt-regression.ts");
     expect(rows(text).map((row) => row.script)).toContain("scripts/session-history-browser-qa.ts");
     expect(rows(text).map((row) => row.script)).toContain("scripts/command-outcome-demo-regression.ts");
@@ -122,7 +120,7 @@ describe("browser lane", () => {
     for (const script of ["sticky-modifiers-regression.ts", "file-viewer-regression.ts"]) {
       expect(text).toMatch(new RegExp(`STEP=scripts/${script} EVIDENCE=.+/browser-evidence`));
     }
-    for (const script of ["ui-regression.ts", "ui-contexts-regression.ts", "key-bar-customization-demo-regression.ts", "attention-jump-demo-regression.ts"]) {
+    for (const script of ["ui-regression.ts", "ui-contexts-regression.ts", "key-bar-customization-demo-regression.ts"]) {
       expect(text).toContain(`STEP=scripts/${script} EVIDENCE=\n`);
     }
   });

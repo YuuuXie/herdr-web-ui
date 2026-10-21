@@ -1,6 +1,6 @@
 import { MachineContext, useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
-import { Bell, Columns2, CornerLeftUp, Folder, FolderOpen, FolderSearch, History, LoaderCircle, Maximize2, MessageSquarePlus, Minimize2, Monitor, PanelLeft, Pin, Plus, Puzzle, RefreshCw, Rows2, Settings, SkipForward, SunMoon, SwitchCamera, X } from "lucide-react";
+import { Bell, Columns2, CornerLeftUp, Folder, FolderOpen, FolderSearch, History, LoaderCircle, Maximize2, MessageSquarePlus, Minimize2, Monitor, PanelLeft, Pin, Plus, Puzzle, RefreshCw, Rows2, Settings, SunMoon, SwitchCamera, X } from "lucide-react";
 
 import "./CommandPalette.css";
 
@@ -308,9 +308,6 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
       { id: "split-down-open", label: t("Split pane down and open it"), icon: Rows2, run: () => splitPane("down", true) },
     ] satisfies PaletteAction[] : []),
     ...(zoomPane && zoom && tabPanes > 1 ? [{ id: "zoom", label: t(zoom === "off" ? "Unzoom pane" : "Zoom pane"), icon: zoom === "off" ? Minimize2 : Maximize2, run: () => zoomPane(zoom) }] : []),
-    // the Agents list's next blocked agent, then its next finish not looked at, on any connected PC; a
-    // jump keeps focus off the opener as runPane does, and with nothing to go to the opener gets it back
-    { id: "next-attention", label: t("Next agent needing attention"), icon: SkipForward, shortcut: "next-attention", run: () => { if (actions.selectNextAttention()) navigated.current = true; } },
     { id: "view", label: t(view === "chat" ? "Switch to terminal" : "Switch to chat"), icon: SwitchCamera, shortcut: "toggle-view", run: actions.toggleView },
     { id: "sidebar", label: t("Toggle sidebar"), icon: PanelLeft, shortcut: "toggle-sidebar", run: actions.toggleSidebar },
     { id: "theme", label: t("Toggle theme"), icon: SunMoon, run: actions.toggleTheme },

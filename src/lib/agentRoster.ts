@@ -1,6 +1,5 @@
 /**
- * The Agents list's rows in the order it draws them, for the list itself and for the keyboard's
- * "next agent needing attention" (lib/attentionJump.ts): the pinned card first, in pin order, then
+ * The Agents list's rows in the order it draws them: the pinned card first, in pin order, then
  * every PC's agents in the roster's order, or in that PC's own Activity order when Settings asks
  * for it (lib/sidebarOrder.ts). A row is its PC and its pane: two PCs may reuse a pane id.
  */
