@@ -105,7 +105,8 @@ const near = (a: readonly number[], b: readonly number[]): boolean => a.every((v
 /** Seeds the records before any script of the page runs, and records what the page does with them. */
 function pageSetup({ main, themes, blocked, keys }: { main: Stored; themes: Stored; blocked: boolean; keys: [string, string] }): void {
   const [settingsKey, themesKey] = keys;
-  const seen = { violations: [] as string[], errors: [] as { thrown: boolean; message: string }[], values: [] as string[], cssAt: -1, bootAt: -1, appAt: -1, bootBackground: "" };
+  const seen = { violations: [] as string[], errors: [] as { thrown: boolean; message: string }[], values: [] as string[], cssAt: -1, bootAt: -1, appAt: -1, bootBackground: "",
+    parsedAt: -1, bootBeforeParse: false };
   (window as unknown as { __boot: typeof seen }).__boot = seen;
   if (blocked) {
     Object.defineProperty(window, "localStorage", { configurable: true, get() { throw new DOMException("The operation is insecure.", "SecurityError"); } });
@@ -121,21 +122,33 @@ function pageSetup({ main, themes, blocked, keys }: { main: Stored; themes: Stor
     const promise = new Promise<void>((done) => { resolve = done; });
     return { promise, resolve };
   };
-  const boot = signal(), css = signal(), app = signal();
-  Object.assign(window, { __bootApplied: boot.promise, __cssLoaded: css.promise, __appApplied: app.promise });
+  const boot = signal(), css = signal(), app = signal(), parsed = signal();
+  Object.assign(window, { __bootApplied: boot.promise, __cssLoaded: css.promise, __appApplied: app.promise, __parsed: parsed.promise });
   // every value the two theme attributes ever take; the first palette is the boot script's, and
   // data-density is set only by the app's applyToDocument
-  new MutationObserver((records) => {
-    for (const record of records) {
-      const root = record.target as HTMLElement;
-      if (record.attributeName === "data-density") {
+  const record = (records: MutationRecord[]): void => {
+    for (const change of records) {
+      const root = change.target as HTMLElement;
+      if (change.attributeName === "data-density") {
         if (seen.appAt < 0) { seen.appAt = performance.now(); app.resolve(); }
         continue;
       }
-      seen.values.push(`${record.attributeName}=${root.getAttribute(record.attributeName ?? "")}`);
-      if (record.attributeName === "data-palette" && seen.bootAt < 0) { seen.bootAt = performance.now(); seen.bootBackground = root.style.backgroundColor; boot.resolve(); }
+      seen.values.push(`${change.attributeName}=${root.getAttribute(change.attributeName ?? "")}`);
+      if (change.attributeName === "data-palette" && seen.bootAt < 0) { seen.bootAt = performance.now(); seen.bootBackground = root.style.backgroundColor; boot.resolve(); }
     }
-  }).observe(document, { subtree: true, attributes: true, attributeFilter: ["data-theme", "data-palette", "data-density"] });
+  };
+  const observer = new MutationObserver(record);
+  observer.observe(document, { subtree: true, attributes: true, attributeFilter: ["data-theme", "data-palette", "data-density"] });
+  // the parser's end, which held modules and a held stylesheet do not delay: latches whether the boot
+  // script had set the theme by then (its pending records taken first), so the order is the page's own
+  // and not when a check happens to ask
+  document.addEventListener("readystatechange", () => {
+    if (seen.parsedAt >= 0) return;
+    record(observer.takeRecords());
+    seen.parsedAt = performance.now();
+    seen.bootBeforeParse = seen.bootAt >= 0;
+    parsed.resolve();
+  });
   // the stylesheet arrived, or failed: either way the page may paint now
   for (const type of ["load", "error"]) {
     document.addEventListener(type, (event) => {
@@ -145,9 +158,26 @@ function pageSetup({ main, themes, blocked, keys }: { main: Stored; themes: Stor
   }
 }
 
-interface Frame { phase: string; center: number[]; luminance: number; ok: boolean; png?: string }
+interface Frame { phase: string; center: number[]; corner: number[]; luminance: number; ok: boolean; png?: string }
+interface BootOrder { bootAt: number; parsedAt: number; booted: boolean }
 interface Run { case: string; base: string; width: string; expected: { id: string; mode: string; bg: string }; frames: Frame[]; firstVisible: Frame | null; preCss: Record<string, string | null>;
+  bootOrder: { atCommit: BootOrder; afterApp: BootOrder }; lang: string;
   boot: Record<string, unknown> | null; documentCsp: string | null; violations: string[]; errors: string[]; values: string[]; finalBackground: string; failures: string[] }
+
+/**
+ * Whether the boot script set the theme before the parser finished, read from the order the page
+ * latched (pageSetup), so the answer is the same whenever it is asked: before either event, between
+ * them, or long after both.
+ */
+function bootOrder(page: Page): Promise<BootOrder> {
+  return page.evaluate(async () => {
+    const signals = window as unknown as { __bootApplied: Promise<void>; __parsed: Promise<void>; __boot: { bootAt: number; parsedAt: number; bootBeforeParse: boolean } };
+    // either one has happened: the boot script ran first, or the parser ended without it
+    await Promise.race([signals.__bootApplied, signals.__parsed]);
+    const { bootAt, parsedAt, bootBeforeParse } = signals.__boot;
+    return { bootAt, parsedAt, booted: bootAt >= 0 && (parsedAt < 0 || bootBeforeParse) };
+  });
+}
 
 const builds = mkdtempSync(join(tmpdir(), "herdr-theme-first-paint-"));
 const demoDir = join(builds, "demo");
@@ -177,7 +207,7 @@ function serve(dir: string, prefix: string): string {
 }
 
 /** Decodes a screencast frame in a page of its own: its center pixel and its mean luminance. */
-async function sample(decoder: Page, png: string): Promise<{ center: number[]; luminance: number }> {
+async function sample(decoder: Page, png: string): Promise<{ center: number[]; corner: number[]; luminance: number }> {
   return decoder.evaluate(async (data) => {
     const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${data}`)).blob());
     const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
@@ -193,7 +223,8 @@ async function sample(decoder: Page, png: string): Promise<{ center: number[]; l
         count++;
       }
     }
-    return { center: at(Math.floor(bitmap.width / 2), Math.floor(bitmap.height / 2)), luminance: sum / count };
+    // the bottom-right corner: past the end of an unstyled app, so the page's own surface
+    return { center: at(Math.floor(bitmap.width / 2), Math.floor(bitmap.height / 2)), corner: at(bitmap.width - 4, bitmap.height - 4), luminance: sum / count };
   }, png);
 }
 
@@ -249,15 +280,8 @@ async function runCase(item: Case, base: "root" | "demo", url: string, width: "3
     // the boot script has run (a classic script the parser waits for), the stylesheet is still held;
     // a page without one sets nothing until the app runs, which is held: that is a failure, and the
     // frames are still recorded to show what it painted instead
-    const booted = await page.evaluate(() => Promise.race([
-      (window as unknown as { __bootApplied: Promise<void> }).__bootApplied.then(() => true),
-      // the parser's end, which held modules and a held stylesheet do not delay
-      new Promise<boolean>((resolve) => {
-        if (document.readyState !== "loading") resolve(false);
-        else document.addEventListener("readystatechange", () => resolve(false), { once: true });
-      }),
-    ]));
-    if (!booted) failures.push("nothing set the theme before the stylesheet: the page was parsed without it");
+    const atCommit = await bootOrder(page);
+    if (!atCommit.booted) failures.push("nothing set the theme before the stylesheet: the page was parsed without it");
     await cdp.send("Page.startScreencast", { format: "png", everyNthFrame: 1 });
     const preCss = await page.evaluate(() => ({ theme: document.documentElement.dataset["theme"] ?? null, palette: document.documentElement.dataset["palette"] ?? null,
       background: document.documentElement.style.backgroundColor, colorScheme: document.documentElement.style.colorScheme,
@@ -282,14 +306,20 @@ async function runCase(item: Case, base: "root" | "demo", url: string, width: "3
     await cdp.send("Page.stopScreencast");
     cdp.removeAllListeners("Page.screencastFrame");
     await cdp.detach();
+    // asked again once the boot signal has long resolved and the document is past parsing: the same answer
+    const afterApp = await bootOrder(page);
+    if (afterApp.booted !== atCommit.booted || afterApp.bootAt !== atCommit.bootAt) failures.push(`the boot order read late (${JSON.stringify(afterApp)}) differs from the one read at commit (${JSON.stringify(atCommit)})`);
+    const lang = await page.evaluate(() => document.documentElement.lang);
 
     const recorded = await page.evaluate(() => (window as unknown as { __boot: { violations: string[]; errors: { thrown: boolean; message: string }[]; values: string[] } }).__boot);
     // the errors main.tsx itself reports: not the browser's benign ResizeObserver notice
     const seen = { ...recorded, errors: recorded.errors.filter((error) => isReportableWindowError(error.thrown ? true : null, error.message)).map((error) => error.message) };
-    const finalBackground = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
-    if (await page.evaluate(() => document.documentElement.style.backgroundColor) !== "") failures.push("the app left the boot background on the root");
-    // without a stylesheet nothing draws the app's surfaces: only the frames before it are the check's
-    if (!item.cssFails && finalBackground !== `rgb(${bg.join(", ")})`) failures.push(`the page's background settled at ${finalBackground}, expected ${row.bg}`);
+    // without a stylesheet the root's own background is the page's surface, kept by the app; with one, the theme blocks draw it
+    const finalBackground = await page.evaluate((failed) => getComputedStyle(failed ? document.documentElement : document.body).backgroundColor, item.cssFails ?? false);
+    const rootInline = await page.evaluate(() => document.documentElement.style.backgroundColor);
+    if (item.cssFails && rootInline !== `rgb(${bg.join(", ")})`) failures.push(`with no stylesheet the app left the root background at ${rootInline || "unset"}, expected ${row.bg}`);
+    if (!item.cssFails && rootInline !== "") failures.push("the app left the boot background on the root");
+    if (finalBackground !== `rgb(${bg.join(", ")})`) failures.push(`the page's background settled at ${finalBackground}, expected ${row.bg}`);
     const wrongValues = seen.values.filter((value) => value !== `data-theme=${mode}` && value !== `data-palette=${id}`);
     if (wrongValues.length) failures.push(`the root took other values: ${wrongValues.join(", ")}`);
     if (seen.violations.length) failures.push(`CSP violations: ${seen.violations.join("; ")}`);
@@ -302,15 +332,16 @@ async function runCase(item: Case, base: "root" | "demo", url: string, width: "3
 
     const sampled: Frame[] = [];
     for (const frame of raw) {
-      const { center, luminance } = await sample(decoder, frame.png);
+      const { center, corner, luminance } = await sample(decoder, frame.png);
       const beforeApp = frame.phase === "before the stylesheet" || frame.phase === "first styled shell";
-      // before the app, the page is its surface alone; after, the app's own surfaces in the row's mode
-      const ok = beforeApp ? near(center, bg) : item.cssFails || (mode === "dark" ? luminance < 0.5 : luminance > 0.5);
-      sampled.push({ phase: frame.phase, center, luminance: Math.round(luminance * 1000) / 1000, ok, png: frame.png });
+      // before the app, the page is its surface alone; after, the app's own surfaces in the row's mode,
+      // or, with no stylesheet, the unstyled app on the saved surface
+      const ok = beforeApp ? near(center, bg) : item.cssFails ? near(corner, bg) : (mode === "dark" ? luminance < 0.5 : luminance > 0.5);
+      sampled.push({ phase: frame.phase, center, corner, luminance: Math.round(luminance * 1000) / 1000, ok, png: frame.png });
     }
     if (!sampled.some((frame) => frame.phase === (item.cssFails ? "before the stylesheet" : "first styled shell"))) failures.push("no frame of the shell before the app");
     if (!sampled.some((frame) => frame.phase === "first app frame")) failures.push("no frame of the app");
-    for (const frame of sampled) if (!frame.ok) failures.push(`a frame in "${frame.phase}" shows center ${frame.center.join(",")} luminance ${frame.luminance}, not ${row.bg} in ${mode}`);
+    for (const frame of sampled) if (!frame.ok) failures.push(`a frame in "${frame.phase}" shows center ${frame.center.join(",")} corner ${frame.corner.join(",")} luminance ${frame.luminance}, not ${row.bg} in ${mode}`);
     if (evidence && item.headline) {
       const dir = join(evidence, "frames");
       mkdirSync(dir, { recursive: true });
@@ -320,7 +351,7 @@ async function runCase(item: Case, base: "root" | "demo", url: string, width: "3
       }
     }
     return { case: item.name, base, width, expected: { id, mode, bg: row.bg }, frames: sampled.map(({ png: _png, ...frame }) => frame),
-      firstVisible: sampled[0] ? { ...sampled[0], png: undefined } : null, preCss, boot: bootResponse, documentCsp, violations: seen.violations,
+      firstVisible: sampled[0] ? { ...sampled[0], png: undefined } : null, preCss, bootOrder: { atCommit, afterApp }, lang, boot: bootResponse, documentCsp, violations: seen.violations,
       errors: seen.errors, values: [...new Set(seen.values)], finalBackground, failures };
   } finally {
     await context.close();

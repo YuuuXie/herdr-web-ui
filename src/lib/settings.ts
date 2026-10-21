@@ -550,8 +550,10 @@ export function applyToDocument(settings: Settings, entry: ThemeEntry, language:
   const root = document.documentElement;
   root.lang = LOCALE_TAGS[language];
   applyThemeEntry(root, entry);
-  // the boot script's background (src/theme-bootstrap.ts) only covered the frames before the stylesheet: the theme blocks own it now
-  root.style.removeProperty("background-color");
+  // the boot script's background (src/theme-bootstrap.ts) holds the row's surface until the stylesheet's theme
+  // blocks own it; a stylesheet that never loaded leaves the page to it, kept on the row drawn now
+  if (getComputedStyle(root).getPropertyValue("--bg").trim() !== "") root.style.removeProperty("background-color");
+  else root.style.backgroundColor = entry.bg;
   root.dataset["density"] = settings.density;
   root.dataset["chatWidth"] = settings.chatWidth;
   // src/components/AgentMark.css keys the mono logos on it

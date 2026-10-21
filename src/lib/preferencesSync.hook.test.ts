@@ -42,7 +42,7 @@ describe("preferences sync real send path", () => {
   }
 
   beforeEach(() => {
-    for (const key of ["window", "document", "navigator", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
+    for (const key of ["window", "document", "navigator", "getComputedStyle", "IS_REACT_ACT_ENVIRONMENT"]) descriptors.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
     records = new Map();
     Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", { configurable: true, value: true });
     Object.defineProperty(globalThis, "navigator", { configurable: true, value: { languages: ["en-US"] } });
@@ -56,6 +56,8 @@ describe("preferences sync real send path", () => {
       documentElement: { dataset: {}, style: { setProperty() {}, removeProperty() {} } },
       querySelector: () => null,
     } });
+    // the stylesheet is loaded: its theme blocks own the page surface (applyToDocument)
+    Object.defineProperty(globalThis, "getComputedStyle", { configurable: true, value: () => ({ getPropertyValue: (name: string) => (name === "--bg" ? "#12100e" : "") }) });
     dir = mkdtempSync(join(tmpdir(), "herdr-sync-hook-"));
     store = new PreferenceStore(dir);
     oldServer = false;
