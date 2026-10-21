@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -142,23 +142,61 @@ function fakeGit(script: (folder: string) => string): { git: string; folder: str
   return { git, folder };
 }
 
-/** Resolves once `name` exists in `folder`; the watch is set up before whatever creates it runs. */
-function appears(folder: string, name: string, timeoutMs: number): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const watcher = watch(folder, () => {
-      if (existsSync(join(folder, name))) finish();
-    });
-    const timer = setTimeout(() => {
-      watcher.close();
-      reject(new Error(`${name} did not appear within ${timeoutMs} ms`));
-    }, timeoutMs);
-    function finish() {
-      clearTimeout(timer);
-      watcher.close();
-      resolve();
-    }
-    if (existsSync(join(folder, name))) finish();
+/** Settles as `promise` does, or fails once `timeoutMs` passes without it. */
+function within<T>(promise: Promise<T>, timeoutMs: number, what: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`${what} did not happen within ${timeoutMs} ms`)), timeoutMs);
   });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * A stand-in git that prints one whole name and exits 0, leaving a holder process on its stdout
+ * until the test kills it (the holder waits on a FIFO no one writes, not on a timer). The holder
+ * also keeps the `life` FIFO open for writing: a `cat` started before the listing reads the
+ * holder's pid from it (the holder is ready) and then its end (every holder fd closed: it exited).
+ */
+function heldGit() {
+  const { git, folder } = fakeGit((dir) => `printf 'ghost-held\\0'\nsh -c 'exec 3>"$1"; echo $$ >&3; read _ < "$2"' holder "${dir}/life" "${dir}/hold" &\nexit 0`);
+  for (const fifo of ["life", "hold"]) expect(Bun.spawnSync(["mkfifo", join(folder, fifo)]).exitCode).toBe(0);
+  const watcher = Bun.spawn(["cat", join(folder, "life")], { stdin: "ignore", stdout: "pipe", stderr: "inherit" });
+  const ready = Promise.withResolvers<number>();
+  const exited = Promise.withResolvers<void>();
+  let pid: number | undefined;
+  let running = true;
+  // awaited by the test; this only keeps an early failure from being reported a second time
+  ready.promise.catch(() => undefined);
+  void (async () => {
+    const reader = watcher.stdout.getReader();
+    const decoder = new TextDecoder();
+    let text = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+      if (pid === undefined && text.includes("\n")) {
+        pid = Number(text.slice(0, text.indexOf("\n")));
+        ready.resolve(pid);
+      }
+    }
+    running = false;
+    ready.reject(new Error("the holder ended before it was ready"));
+    exited.resolve();
+  })();
+  return {
+    git,
+    ready: ready.promise,
+    /** true until the holder's end closed `life` */
+    holding: () => running,
+    /** Kills the holder, or the watcher when no holder ever came, and waits until both are gone. */
+    async end(): Promise<void> {
+      if (pid === undefined) watcher.kill("SIGKILL");
+      else process.kill(pid, "SIGKILL");
+      await within(exited.promise, 5_000, "the holder's exit");
+      await within(watcher.exited, 5_000, "the FIFO watcher's exit");
+    },
+  };
 }
 
 const INERT_ARGV = ["--no-pager", "--no-optional-locks", "--literal-pathspecs", "-c", "core.fsmonitor=false"];
@@ -261,33 +299,63 @@ describe("git inventories", () => {
     }
   });
 
+  it("falls back instead of accepting an unterminated listing", async () => {
+    const root = fixture();
+    const listing = join(mkdtempSync(join(tmpdir(), "files-listing-")), "listing");
+    roots.push(join(listing, ".."));
+    const { git } = fakeGit(() => `cat "${listing}"\nexit 0`);
+    setGitListOptions({ git });
+    // git exits 0 yet its last name has no NUL: the listing was cut short, so none of it is used
+    for (const output of ["ghost-partial", "ghost-whole\0ghost-partial"]) {
+      writeFileSync(listing, output);
+      clearFileCache();
+      expect(await paneFiles(root, "", 100)).toEqual(["README.md", "src/api.ts", "src/components/PromptCard.tsx"]);
+      expect(filesNamed(root, "ghost-partial")).toEqual([]);
+      expect(filesNamed(root, "ghost-whole")).toEqual([]);
+      expect(filesNamed(root, "api.ts")).toEqual(["src/api.ts"]);
+    }
+  });
+
   it("ends an inventory whose descendant holds stdout", async () => {
     const root = fixture();
     const deadlineMs = 300;
-    // git prints a whole name and exits 0, leaving a process that keeps its stdout open
-    const { git, folder } = fakeGit((dir) => `printf 'ghost-held\\0'\nsleep 36 &\necho $! >> "${dir}/pids"\ntouch "${dir}/exited"\nexit 0`);
-    setGitListOptions({ git, deadlineMs });
-    const exited = appears(folder, "exited", 5_000);
+    const walk = ["README.md", "src/api.ts", "src/components/PromptCard.tsx"];
+
+    const asyncHolder = heldGit();
+    setGitListOptions({ git: asyncHolder.git, deadlineMs });
+    const gitExit = Promise.withResolvers<number>();
+    const spawn = Bun.spawn;
+    const spy = spyOn(Bun, "spawn").mockImplementation(((...args: Parameters<typeof Bun.spawn>) => {
+      const proc = spawn(...args);
+      void proc.exited.then(gitExit.resolve);
+      return proc;
+    }) as unknown as typeof Bun.spawn);
     try {
       const started = performance.now();
       const listed = paneFiles(root, "", 100);
-      await exited;
-      expect(await listed).toEqual(["README.md", "src/api.ts", "src/components/PromptCard.tsx"]);
+      // git itself exits 0 with a whole name printed, while the holder it left keeps stdout open
+      expect(await within(gitExit.promise, deadlineMs + 1_000, "git's exit")).toBe(0);
+      await within(asyncHolder.ready, deadlineMs + 1_000, "the holder's readiness");
+      expect(await within(listed, deadlineMs + 1_000, "the async inventory")).toEqual(walk);
       expect(performance.now() - started).toBeLessThan(deadlineMs + 1_000);
-
-      const startedNow = performance.now();
-      expect(filesNamed(root, "ghost-held")).toEqual([]);
-      expect(performance.now() - startedNow).toBeLessThan(deadlineMs + 1_000);
+      expect(asyncHolder.holding()).toBe(true);
     } finally {
-      const pids = existsSync(join(folder, "pids")) ? readFileSync(join(folder, "pids"), "utf8").trim().split("\n").map(Number) : [];
-      for (const pid of pids) process.kill(pid, "SIGKILL");
-      const gone = (pid: number) => { try { process.kill(pid, 0); return false; } catch { return true; } };
-      const deadline = Date.now() + 5_000;
-      while (!pids.every(gone)) {
-        if (Date.now() > deadline) throw new Error(`descendants ${pids.join(", ")} outlived SIGKILL`);
-        await Bun.sleep(25);
-      }
-      expect(pids).toHaveLength(2);
+      spy.mockRestore();
+      await asyncHolder.end();
+    }
+
+    const syncHolder = heldGit();
+    setGitListOptions({ git: syncHolder.git, deadlineMs });
+    clearFileCache();
+    try {
+      const started = performance.now();
+      expect(filesNamed(root, "ghost-held")).toEqual([]);
+      expect(performance.now() - started).toBeLessThan(deadlineMs + 1_000);
+      // the holder reported in while the lookup ran, and still holds stdout after it answered
+      await within(syncHolder.ready, 1_000, "the holder's readiness");
+      expect(syncHolder.holding()).toBe(true);
+    } finally {
+      await syncHolder.end();
     }
   });
 });

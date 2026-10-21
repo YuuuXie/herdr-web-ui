@@ -46,8 +46,9 @@ function gitListArgv(cwd: string): string[] {
   return [gitList.git, "--no-pager", "--no-optional-locks", "--literal-pathspecs", "-c", "core.fsmonitor=false", "-C", cwd, "ls-files", "-z", "-co", "--exclude-standard"];
 }
 
-/** Split only a listing read whole, so the last name is never cut short. */
-function listedNames(output: Uint8Array): string[] {
+/** Split only a listing read whole: one whose last name lacks its NUL was cut short, so none of it is used. */
+function listedNames(output: Uint8Array): string[] | null {
+  if (output.byteLength > 0 && output[output.byteLength - 1] !== 0) return null;
   return Buffer.from(output.buffer, output.byteOffset, output.byteLength).toString("utf8").split("\0").filter(Boolean);
 }
 
@@ -83,7 +84,8 @@ async function gitFiles(cwd: string): Promise<string[] | null> {
     }
     const exitCode = await proc.exited;
     if (stopped || exitCode !== 0) return null;
-    return [...new Set(listedNames(Buffer.concat(chunks)))].slice(0, MAX_GIT_ENTRIES);
+    const names = listedNames(Buffer.concat(chunks));
+    return names && [...new Set(names)].slice(0, MAX_GIT_ENTRIES);
   } finally {
     clearTimeout(timer);
   }
