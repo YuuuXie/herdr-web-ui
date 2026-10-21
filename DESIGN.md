@@ -15,8 +15,8 @@ default, light follows the same hierarchy, and comfortable or compact density ch
 changing information architecture. A new browser starts on the Codex theme (dark and light), which
 draws this hierarchy in Codex's neutral surfaces and blue accent; amber, charcoal, Catppuccin and
 herdr's built-in themes are picked in Settings → Appearance → Dark theme and Light theme. Amber
-stays the base every theme block overrides, the look before settings load, and the look a browser
-keeps when it saved a theme while amber was the default. Settings are saved on a user's first
+stays the base every theme block overrides and the look a browser keeps when it saved a theme
+while amber was the default; the saved theme, not amber, is the page's first frame (see Rules). Settings are saved on a user's first
 change, so a browser that never changed one moves to Codex with everyone new.
 
 The sidebar is one grid: a leading cell that says who or what a row is (the coding agent's brand
@@ -162,7 +162,7 @@ The theme blocks of `src/styles.css` are the theme table and the one place a the
 edited: `:root` is dark amber, `[data-theme="light"]` is light amber and
 `[data-theme="<mode>"][data-palette="<id>"]` is every other entry. `bun run generate:themes`
 (`scripts/generate-themes.ts`) reads them and writes the copies: `src/lib/themes.generated.ts`
-(the supported entries with their roles, xterm colors and panel color), the amber table above
+(the supported entries with their roles, xterm colors, panel color and page surface `bg`), the amber table above
 between its `GENERATED THEMES` markers, the `theme-color` tag in `index.html` and the manifest's
 `theme_color` and `background_color`. Never edit those copies by hand; `--check` fails when one
 is stale. The tables list amber's UI roles and every light row's terminal ANSI colours; read
@@ -441,6 +441,15 @@ blocks of `src/styles.css`.
 - Tints are named tokens; components do not introduce ad hoc translucent state colors.
 - `theme: "system"` follows `prefers-color-scheme`; `src/lib/settings.ts` writes the resolved
   `data-theme`, `color-scheme`, and matching PWA `<meta name="theme-color">`.
+- The saved theme is drawn from the page's first frame. `src/theme-bootstrap.ts`, a same-origin
+  classic script in `<head>` ahead of the stylesheet and the app (`assets/theme-bootstrap-<hash>.js`,
+  placed by `scripts/theme-bootstrap-build.ts`; never inline, the policy is `script-src 'self'`),
+  reads both stored records through `src/lib/themeBoot.ts`, the reading `loadSettings` uses, and
+  writes the row's `data-theme`, `data-palette`, `color-scheme`, `theme-color` and its `--bg` as the
+  root background, which covers a frame painted before the stylesheet. `applyToDocument` removes that
+  background, so the theme blocks own it from then on. This is a boot-correctness fix and follows no
+  other app's behavior: the appearance is the one documented above (Codex by default), now shown from
+  the first frame instead of after amber until the app starts.
 
 ## 3. Typography
 

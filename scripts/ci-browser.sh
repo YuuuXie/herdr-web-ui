@@ -66,6 +66,7 @@ run_script scripts/pane-paging-demo-regression.ts
 run_script scripts/key-bar-customization-demo-regression.ts
 run_script scripts/key-bar-hold-repeat-regression.ts
 run_script scripts/settings-pages-demo-regression.ts
+run_script scripts/theme-first-paint-demo-regression.ts
 run_script scripts/cliproxy-settings-regression.ts
 run_script scripts/pane-input-focus-demo-regression.ts
 run_script scripts/shortcut-exact-modifiers-demo-regression.ts
