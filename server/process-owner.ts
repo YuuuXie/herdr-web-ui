@@ -83,6 +83,21 @@ export function newOwnerRecord(): OwnerRecord {
   return { pid: process.pid, generation: randomUUID(), ...(ownBirth ? { birth: ownBirth } : {}) };
 }
 
+/** The form each platform's birthValue writes; a recorded value of any other form cannot be compared. */
+const BIRTH_FORMS: Record<string, (value: string) => boolean> = {
+  linux: (value) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}:\d+$/.test(value),
+  darwin: (value) => parseLstart(value) === value,
+  win32: (value) => /^\d+$/.test(value),
+};
+
+/** A recorded birth as readProcessBirth reads one, or null for anything else (missing, empty, of another type or form). */
+export function parseBirth(birth: unknown): ProcessBirth | null {
+  if (birth === null || typeof birth !== "object") return null;
+  const { platform, value } = birth as Record<string, unknown>;
+  if (typeof platform !== "string" || typeof value !== "string" || !Object.hasOwn(BIRTH_FORMS, platform)) return null;
+  return BIRTH_FORMS[platform]!(value) ? { platform, value } : null;
+}
+
 /** A record as written by newOwnerRecord, or null for anything malformed. */
 export function parseOwnerRecord(text: string): OwnerRecord | null {
   let value: unknown;
@@ -92,23 +107,23 @@ export function parseOwnerRecord(text: string): OwnerRecord | null {
   if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) return null;
   if (typeof generation !== "string" || !generation || generation.length > 200) return null;
   if (birth === undefined) return { pid, generation };
-  if (birth === null || typeof birth !== "object") return null;
-  const { platform, value: started } = birth as Record<string, unknown>;
-  if (typeof platform !== "string" || typeof started !== "string" || !started) return null;
-  return { pid, generation, birth: { platform, value: started } };
+  const parsed = parseBirth(birth);
+  return parsed ? { pid, generation, birth: parsed } : null;
 }
 
 /**
  * Whether the recorded owner is proved gone: its PID is free, or a process of another birth runs
- * there. A matching birth, an unreadable one, a refused probe (EPERM) and a record without a birth
- * (written by an older version) all leave the owner live.
+ * there. A matching birth, an unreadable one, a refused probe (EPERM), a record without a birth
+ * (written by an older version) and a malformed or foreign recorded birth all leave the owner live.
+ * `birth` is whatever was persisted: it is validated here, never trusted.
  */
-export function ownerGone(owner: { pid: number; birth?: ProcessBirth }): boolean {
+export function ownerGone(owner: { pid: number; birth?: unknown }): boolean {
   const probe = probeProcess(owner.pid);
   if (probe === "absent") return true;
-  if (probe === "denied" || !owner.birth || owner.birth.platform !== process.platform) return false;
+  const recorded = parseBirth(owner.birth);
+  if (probe === "denied" || !recorded || recorded.platform !== process.platform) return false;
   const reading = readProcessBirth(owner.pid);
-  return reading.state === "absent" || (reading.state === "identified" && reading.birth.value !== owner.birth.value);
+  return reading.state === "absent" || (reading.state === "identified" && reading.birth.value !== recorded.value);
 }
 
 /**

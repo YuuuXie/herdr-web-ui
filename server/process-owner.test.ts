@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { linuxStartTicks, newOwnerRecord, ownerGone, parseLstart, parseOwnerRecord, readProcessBirth } from "./process-owner.ts";
+import { readFileSync } from "node:fs";
+import { linuxStartTicks, newOwnerRecord, ownerGone, parseBirth, parseLstart, parseOwnerRecord, readProcessBirth } from "./process-owner.ts";
+
+/** A well-formed birth no running process has: this platform's form, at the epoch. */
+const earlierBirth = { platform: process.platform, value: process.platform === "linux" ? `${readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()}:1` : process.platform === "darwin" ? "Thu Jan 1 00:00:00 1970" : "1" };
+const BOOT = "0b1c2d3e-4f50-4617-8899-aabbccddeeff";
 
 // a process that is not the owner: alive and blocked on its stdin until the test closes it
 const children: Bun.Subprocess<"pipe", "ignore", "ignore">[] = [];
@@ -38,7 +43,7 @@ describe("process birth", () => {
 
   it("proves a free PID absent", () => {
     expect(readProcessBirth(2147483647)).toEqual({ state: "absent" });
-    expect(ownerGone({ pid: 2147483647, birth: { platform: process.platform, value: "x" } })).toBe(true);
+    expect(ownerGone({ pid: 2147483647, birth: earlierBirth })).toBe(true);
   });
 });
 
@@ -52,10 +57,21 @@ describe("owner records", () => {
   });
 
   it("parses only well-formed records", () => {
-    expect(parseOwnerRecord(JSON.stringify({ pid: 7, generation: "g", birth: { platform: "linux", value: "b:1" } }))).toEqual({ pid: 7, generation: "g", birth: { platform: "linux", value: "b:1" } });
+    expect(parseOwnerRecord(JSON.stringify({ pid: 7, generation: "g", birth: { platform: "linux", value: `${BOOT}:1` } }))).toEqual({ pid: 7, generation: "g", birth: { platform: "linux", value: `${BOOT}:1` } });
     expect(parseOwnerRecord(JSON.stringify({ pid: 7, generation: "g" }))).toEqual({ pid: 7, generation: "g" });
-    for (const text of ["", "{", "null", "7", JSON.stringify({ pid: -1, generation: "g" }), JSON.stringify({ pid: 7 }), JSON.stringify({ pid: 7, generation: "g", birth: "b" }), JSON.stringify({ pid: 7, generation: "g", birth: { platform: "linux" } })]) {
+    for (const text of ["", "{", "null", "7", JSON.stringify({ pid: -1, generation: "g" }), JSON.stringify({ pid: 7 }), JSON.stringify({ pid: 7, generation: "g", birth: "b" }), JSON.stringify({ pid: 7, generation: "g", birth: { platform: "linux" } }), JSON.stringify({ pid: 7, generation: "g", birth: { platform: "linux", value: "b:1" } })]) {
       expect(parseOwnerRecord(text)).toBeNull();
+    }
+  });
+
+  it("accepts a recorded birth only in its platform's own form", () => {
+    expect(parseBirth({ platform: "linux", value: `${BOOT}:123456` })).toEqual({ platform: "linux", value: `${BOOT}:123456` });
+    expect(parseBirth({ platform: "darwin", value: "Wed Oct 21 17:41:40 2026" })).toEqual({ platform: "darwin", value: "Wed Oct 21 17:41:40 2026" });
+    expect(parseBirth({ platform: "win32", value: "1792000000000" })).toEqual({ platform: "win32", value: "1792000000000" });
+    expect(parseBirth(earlierBirth)).toEqual(earlierBirth);
+    for (const birth of [undefined, null, "b", 7, {}, { platform: "linux" }, { platform: "linux", value: 7 }, { platform: "linux", value: "" }, { platform: "linux", value: "123456" },
+      { platform: "darwin", value: "21 oct. 2026 17:41:40" }, { platform: "win32", value: "-1" }, { platform: "plan9", value: "x" }, { platform: "__proto__", value: "x" }]) {
+      expect(parseBirth(birth)).toBeNull();
     }
   });
 
@@ -66,8 +82,19 @@ describe("owner records", () => {
   it("proves an owner gone when another process now holds its PID", () => {
     // regression (fails on main, which trusted any live PID): a reused PID is not the owner
     const child = unrelated();
-    expect(ownerGone({ pid: child.pid, birth: { platform: process.platform, value: "an earlier process" } })).toBe(true);
+    expect(ownerGone({ pid: child.pid, birth: earlierBirth })).toBe(true);
     expect(() => process.kill(child.pid, 0)).not.toThrow();
+  });
+
+  it("keeps an owner whose recorded birth is malformed", () => {
+    // regression: a missing, numeric, empty or misshapen value once read as a birth that differs,
+    // which let a live owner's lock or descriptor be replaced
+    const child = unrelated();
+    for (const birth of [{ platform: process.platform }, { platform: process.platform, value: 7 }, { platform: process.platform, value: "" }, { platform: process.platform, value: "an earlier process" }, null, "b"]) {
+      expect(ownerGone({ pid: child.pid, birth })).toBe(false);
+    }
+    // control: the same PID with a well-formed birth of another process is gone
+    expect(ownerGone({ pid: child.pid, birth: earlierBirth })).toBe(true);
   });
 
   it("keeps legacy, foreign-platform and unreadable owners live", () => {
@@ -80,6 +107,6 @@ describe("owner records", () => {
 
   it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("keeps an owner whose probe is refused (EPERM)", () => {
     // pid 1 belongs to root: signal 0 is refused, which never proves it gone
-    expect(ownerGone({ pid: 1, birth: { platform: process.platform, value: "not init's birth" } })).toBe(false);
+    expect(ownerGone({ pid: 1, birth: earlierBirth })).toBe(false);
   });
 });

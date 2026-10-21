@@ -3,10 +3,12 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { descriptorLive, registerBridge, type BridgeDescriptor } from "./bridge.ts";
-import { guardLibrary, guardPath } from "./owner-guard.ts";
+import { guardLibrary, guardPath, OwnerGuardReleaseFailed } from "./owner-guard.ts";
 import { readProcessBirth } from "./process-owner.ts";
 
 let root = "", path = "";
+/** A well-formed birth no running process has: this platform's form, at the epoch. */
+const earlierBirth = { platform: process.platform, value: process.platform === "linux" ? `${readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()}:1` : process.platform === "darwin" ? "Thu Jan 1 00:00:00 1970" : "1" };
 const others: Bun.Subprocess<"pipe", "ignore", "ignore">[] = [];
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "bridge-registry-"));
@@ -45,7 +47,7 @@ describe("bridge registration", () => {
   it("replaces a descriptor whose PID another process now holds", () => {
     // regression (fails on main, which took any live PID for the bridge): a reused PID
     const reused = other();
-    writeFileSync(path, descriptor({ pid: reused.pid, generation: "crashed", birth: { platform: process.platform, value: "an earlier process" } }));
+    writeFileSync(path, descriptor({ pid: reused.pid, generation: "crashed", birth: earlierBirth }));
     registerBridge(4242, "new-token", { path });
     expect(read()).toMatchObject({ port: 4242, pid: process.pid });
     expect(alive(reused.pid)).toBe(true);
@@ -64,13 +66,29 @@ describe("bridge registration", () => {
     }
   });
 
+  it("keeps a live bridge's descriptor whose recorded birth is malformed", () => {
+    // regression: a missing, numeric or empty birth once read as another process's, and the live
+    // bridge's descriptor and credential were overwritten
+    const bridge = other();
+    for (const birth of [{ platform: process.platform }, { platform: process.platform, value: 7 }, { platform: process.platform, value: "" }, { platform: process.platform, value: "an earlier process" }, null]) {
+      const text = descriptor({ pid: bridge.pid, generation: "live", birth: birth as never });
+      writeFileSync(path, text);
+      const registration = registerBridge(4242, "new-token", { path });
+      expect(readFileSync(path, "utf8")).toBe(text);
+      expect(descriptorLive(JSON.parse(text))).toBe(true);
+      registration.close();
+      expect(readFileSync(path, "utf8")).toBe(text);
+    }
+    expect(alive(bridge.pid)).toBe(true);
+  });
+
   it("refuses a descriptor that changed after it was sampled", () => {
     const reused = other(), bridge = other();
     const reading = readProcessBirth(bridge.pid);
     if (reading.state !== "identified") throw new Error(`no birth for ${bridge.pid}`);
     // the replacement may itself look stale: a changed sample is never replaced
-    for (const replacement of [descriptor({ pid: bridge.pid, generation: "won", birth: reading.birth }), descriptor({ pid: reused.pid, generation: "other", birth: { platform: process.platform, value: "x" } })]) {
-      writeFileSync(path, descriptor({ pid: reused.pid, generation: "crashed", birth: { platform: process.platform, value: "an earlier process" } }));
+    for (const replacement of [descriptor({ pid: bridge.pid, generation: "won", birth: reading.birth }), descriptor({ pid: reused.pid, generation: "other", birth: earlierBirth })]) {
+      writeFileSync(path, descriptor({ pid: reused.pid, generation: "crashed", birth: earlierBirth }));
       const registration = registerBridge(4242, "new-token", { path, sampled() { writeFileSync(path, replacement); } });
       expect(readFileSync(path, "utf8")).toBe(replacement);
       registration.close();
@@ -87,9 +105,35 @@ describe("bridge registration", () => {
     expect(readFileSync(path, "utf8")).toBe(later);
   });
 
+  it("fails a registration whose guard was not released, and logs a close that was not clean", () => {
+    // one failing native call: the POSIX unlock, or Windows' UnlockFileEx; the real close still runs
+    const fail = () => {
+      if (process.platform === "win32") guardLibrary.windows = (calls) => ({ ...calls, UnlockFileEx: (...args: Parameters<typeof calls.UnlockFileEx>) => (calls.UnlockFileEx(...args), 0) });
+      else guardLibrary.posix = (calls) => ({ ...calls, flock: (fd, operation) => operation === 8 ? -1 : calls.flock(fd, operation) });
+    };
+    const restore = () => { delete guardLibrary.posix; delete guardLibrary.windows; };
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      fail();
+      expect(() => registerBridge(4242, "new-token", { path })).toThrow(OwnerGuardReleaseFailed);
+      restore();
+      rmSync(path);
+      const registration = registerBridge(4242, "new-token", { path });
+      fail();
+      registration.close();
+      expect(String(logged.mock.calls[0]?.[0])).toStartWith(`The bridge descriptor ${path} may have been left in place: ${guardPath(path)} was not released cleanly: unlocking failed`);
+      expect(String(logged.mock.calls[0]?.[0])).not.toContain("new-token");
+    } finally {
+      restore();
+      logged.mockRestore();
+    }
+    // the guard was handed back by its close: registration works again
+    registerBridge(4243, "next-token", { path }).close();
+  });
+
   it("fails closed when the guard is unavailable", () => {
     const reused = other();
-    const stale = descriptor({ pid: reused.pid, generation: "crashed", birth: { platform: process.platform, value: "an earlier process" } });
+    const stale = descriptor({ pid: reused.pid, generation: "crashed", birth: earlierBirth });
     writeFileSync(path, stale);
     const original = guardLibrary.path;
     const logged = spyOn(console, "error").mockImplementation(() => {});

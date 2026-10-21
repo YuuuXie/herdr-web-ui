@@ -72,6 +72,8 @@ export function registerBridge(port: number, token = randomBytes(32).toString("h
     });
     if (!registered) return unregistered;
   } catch (error) {
+    // a guard that could not be released (OwnerGuardReleaseFailed) fails the start: this process
+    // must not keep serving on a guard it may still hold
     if (!(error instanceof OwnerGuardUnavailable)) throw error;
     // fails closed: this server runs unregistered and the descriptor is left as it was
     console.error(`This bridge was not registered (descriptor ${path}): ${error.message}`);
@@ -82,10 +84,14 @@ export function registerBridge(port: number, token = randomBytes(32).toString("h
     close() {
       try {
         withOwnerGuard(path, () => {
-          const current = JSON.parse(readFileSync(path, "utf8")) as BridgeDescriptor;
-          if (current.pid === process.pid && current.generation === record.generation) unlinkSync(path);
+          let current: Partial<BridgeDescriptor> | null;
+          try { current = JSON.parse(readFileSync(path, "utf8")) as Partial<BridgeDescriptor> | null; }
+          catch { return; /* already gone or unreadable: nothing of ours to remove */ }
+          if (current?.pid === process.pid && current.generation === record.generation) unlinkSync(path);
         });
-      } catch { /* already gone, replaced or unreadable: nothing of ours to remove */ }
+      } catch (error) {
+        console.error(`The bridge descriptor ${path} may have been left in place: ${error instanceof Error ? error.message : error}`);
+      }
     },
   };
 }

@@ -16,10 +16,28 @@ import { closeSync, constants, mkdirSync, openSync, readFileSync, renameSync, rm
 import { join } from "node:path";
 import { legacyOwnerReplaced, newOwnerRecord, ownerGone, parseOwnerRecord, type OwnerRecord } from "./process-owner.ts";
 
+/** The guard could not be taken; the callback did not run. */
 export class OwnerGuardUnavailable extends Error {}
+/** The callback ran, but the guard was not handed back cleanly (its unlock or its close failed). */
+export class OwnerGuardReleaseFailed extends Error {}
 
-/** The library the lock comes from; a test points it at a missing file to show the guard fails closed. */
-export const guardLibrary = { path: process.platform === "darwin" ? "libSystem.B.dylib" : process.platform === "win32" ? "kernel32.dll" : "libc.so.6" };
+/** The native calls the guard makes; `close` is the POSIX descriptor's. */
+export interface PosixGuardCalls { flock(fd: number, operation: number): number; errno(): number; close(fd: number): void }
+export interface WindowsGuardCalls {
+  CreateFileW(path: Uint8Array, access: number, share: number, security: null, disposition: number, flags: number, template: null): bigint;
+  LockFileEx(handle: bigint, flags: number, reserved: number, low: number, high: number, overlapped: Uint8Array): number;
+  UnlockFileEx(handle: bigint, reserved: number, low: number, high: number, overlapped: Uint8Array): number;
+  CloseHandle(handle: bigint): number;
+  GetLastError(): number;
+}
+
+/**
+ * The library the lock comes from. Test seams: `path` pointed at a missing file shows the guard
+ * fails closed; `posix`/`windows` wrap the loaded calls to make one of them fail.
+ */
+export const guardLibrary: { path: string; posix?(calls: PosixGuardCalls): PosixGuardCalls; windows?(calls: WindowsGuardCalls): WindowsGuardCalls } = {
+  path: process.platform === "darwin" ? "libSystem.B.dylib" : process.platform === "win32" ? "kernel32.dll" : "libc.so.6",
+};
 
 const LOCK_EX = 2, LOCK_UN = 8, EINTR = 4;
 const GENERIC_READ_WRITE = 0xc000_0000, FILE_SHARE_READ_WRITE = 3, OPEN_ALWAYS = 4, FILE_ATTRIBUTE_NORMAL = 0x80, LOCKFILE_EXCLUSIVE_LOCK = 2;
@@ -27,13 +45,15 @@ const INVALID_HANDLE = 0xffff_ffff_ffff_ffffn;
 
 const flockSymbol = { args: [FFIType.i32, FFIType.i32], returns: FFIType.i32 } as const;
 const errnoSymbol = { args: [], returns: FFIType.ptr } as const;
-function posixLibrary(path: string) {
-  if (process.platform === "darwin") {
-    const { symbols } = dlopen(path, { flock: flockSymbol, __error: errnoSymbol });
-    return { flock: symbols.flock, errno: symbols.__error };
-  }
-  const { symbols } = dlopen(path, { flock: flockSymbol, __errno_location: errnoSymbol });
-  return { flock: symbols.flock, errno: symbols.__errno_location };
+function posixLibrary(path: string): Omit<PosixGuardCalls, "close"> {
+  const { symbols } = process.platform === "darwin"
+    ? dlopen(path, { flock: flockSymbol, __error: errnoSymbol })
+    : dlopen(path, { flock: flockSymbol, __errno_location: errnoSymbol });
+  const location = "__error" in symbols ? symbols.__error : symbols.__errno_location;
+  return {
+    flock: (fd, operation) => symbols.flock(fd, operation),
+    errno: () => { const at = location(); return at === null ? -1 : read.i32(at, 0); },
+  };
 }
 function windowsLibrary(path: string) {
   return dlopen(path, {
@@ -56,52 +76,76 @@ function library() {
   return loaded;
 }
 
-/** Blocks until this process holds the guard; the returned function releases it. */
+const describeError = (error: unknown) => (error as NodeJS.ErrnoException)?.code ?? (error instanceof Error ? error.message : String(error));
+
+/**
+ * Blocks until this process holds the guard; the returned function releases it. Every native
+ * failure is reported: the handle or descriptor is always closed, and a failed unlock or close
+ * throws OwnerGuardReleaseFailed instead of passing for a clean release.
+ */
 function lockGuard(path: string): () => void {
   if (process.platform === "win32") {
-    const { symbols } = library() as ReturnType<typeof windowsLibrary>;
-    const handle = symbols.CreateFileW(Buffer.from(`${path}\0`, "utf16le"), GENERIC_READ_WRITE, FILE_SHARE_READ_WRITE, null, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, null);
-    if (handle === INVALID_HANDLE) throw new OwnerGuardUnavailable(`${path} could not be opened (error ${symbols.GetLastError()})`);
+    const loaded: WindowsGuardCalls = (library() as ReturnType<typeof windowsLibrary>).symbols;
+    const calls = guardLibrary.windows ? guardLibrary.windows(loaded) : loaded;
+    const handle = calls.CreateFileW(Buffer.from(`${path}\0`, "utf16le"), GENERIC_READ_WRITE, FILE_SHARE_READ_WRITE, null, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, null);
+    if (handle === INVALID_HANDLE) throw new OwnerGuardUnavailable(`${path} could not be opened (error ${calls.GetLastError()})`);
     const overlapped = new Uint8Array(32);
-    if (!symbols.LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, overlapped)) {
-      const code = symbols.GetLastError();
-      symbols.CloseHandle(handle);
-      throw new OwnerGuardUnavailable(`${path} could not be locked (error ${code})`);
+    if (!calls.LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, overlapped)) {
+      const code = calls.GetLastError();
+      const closed = calls.CloseHandle(handle) ? "" : `; closing it failed too (error ${calls.GetLastError()})`;
+      throw new OwnerGuardUnavailable(`${path} could not be locked (error ${code})${closed}`);
     }
     return () => {
-      symbols.UnlockFileEx(handle, 0, 1, 0, overlapped);
-      // closing releases the byte range even if the unlock failed
-      if (!symbols.CloseHandle(handle)) throw new OwnerGuardUnavailable(`${path} could not be closed (error ${symbols.GetLastError()})`);
+      const failures: string[] = [];
+      if (!calls.UnlockFileEx(handle, 0, 1, 0, overlapped)) failures.push(`unlocking failed (error ${calls.GetLastError()})`);
+      // closing releases the byte range even if the unlock failed, so it is always attempted
+      if (!calls.CloseHandle(handle)) failures.push(`closing failed (error ${calls.GetLastError()})`);
+      if (failures.length) throw new OwnerGuardReleaseFailed(`${path} was not released cleanly: ${failures.join("; ")}`);
     };
   }
-  const symbols = library() as ReturnType<typeof posixLibrary>;
-  const errno = () => {
-    const at = symbols.errno();
-    return at === null ? -1 : read.i32(at, 0);
-  };
+  const loaded: PosixGuardCalls = { ...(library() as ReturnType<typeof posixLibrary>), close: closeSync };
+  const calls = guardLibrary.posix ? guardLibrary.posix(loaded) : loaded;
   let fd: number;
   try { fd = openSync(path, constants.O_RDWR | constants.O_CREAT, 0o600); }
-  catch (error) { throw new OwnerGuardUnavailable(`${path} could not be opened: ${(error as NodeJS.ErrnoException).code ?? error}`); }
+  catch (error) { throw new OwnerGuardUnavailable(`${path} could not be opened: ${describeError(error)}`); }
   for (;;) {
-    if (symbols.flock(fd, LOCK_EX) === 0) break;
-    const code = errno();
+    if (calls.flock(fd, LOCK_EX) === 0) break;
+    const code = calls.errno();
     if (code === EINTR) continue;
-    closeSync(fd);
-    throw new OwnerGuardUnavailable(`${path} could not be locked (errno ${code})`);
+    let closed = "";
+    try { calls.close(fd); } catch (error) { closed = `; closing it failed too (${describeError(error)})`; }
+    throw new OwnerGuardUnavailable(`${path} could not be locked (errno ${code})${closed}`);
   }
   return () => {
-    symbols.flock(fd, LOCK_UN);
-    // closing releases the lock even if the unlock failed
-    closeSync(fd);
+    const failures: string[] = [];
+    if (calls.flock(fd, LOCK_UN) !== 0) failures.push(`unlocking failed (errno ${calls.errno()})`);
+    // closing releases the lock even if the unlock failed, so it is always attempted
+    try { calls.close(fd); } catch (error) { failures.push(`closing failed (${describeError(error)})`); }
+    if (failures.length) throw new OwnerGuardReleaseFailed(`${path} was not released cleanly: ${failures.join("; ")}`);
   };
 }
 
 export function guardPath(lockPath: string): string { return `${lockPath}.guard`; }
 
-/** Runs `fn` while holding the guard of `lockPath`; `fn` must be synchronous. Throws OwnerGuardUnavailable, without running `fn`, when the guard cannot be taken. */
+/**
+ * Runs `fn` while holding the guard of `lockPath`; `fn` must be synchronous. Throws
+ * OwnerGuardUnavailable, without running `fn`, when the guard cannot be taken, and
+ * OwnerGuardReleaseFailed, after `fn` ran, when it cannot be released cleanly (with `fn`'s own
+ * error as its cause when `fn` threw too).
+ */
 export function withOwnerGuard<T>(lockPath: string, fn: () => T): T {
   const release = lockGuard(guardPath(lockPath));
-  try { return fn(); } finally { release(); }
+  let result: T;
+  try { result = fn(); }
+  catch (error) {
+    try { release(); }
+    catch (failed) {
+      throw new OwnerGuardReleaseFailed(`${(failed as Error).message}, after: ${error instanceof Error ? error.message : error}`, { cause: error });
+    }
+    throw error;
+  }
+  release();
+  return result;
 }
 
 /** What a lock directory holds at one moment; two equal samples mean nobody changed it in between. */
@@ -199,6 +243,9 @@ export function acquireOwnerDirectory(lock: string, errors: { running: string; s
     });
   } catch (error) {
     if (error instanceof OwnerGuardUnavailable) throw new Error(`${errors.starting} (${describe(lock, seen)}; ${error.message})`);
+    // the start fails rather than run on a guard it may still hold; a lock it published names
+    // this process, so it is reclaimed once this process has exited
+    if (error instanceof OwnerGuardReleaseFailed) throw new Error(`${errors.starting} (lock ${lock}; ${error.message})`, { cause: error });
     throw error;
   }
   return {
@@ -211,7 +258,7 @@ export function acquireOwnerDirectory(lock: string, errors: { running: string; s
           if (now.directory === published && now.owner !== null && parseOwnerRecord(now.owner)?.generation === record.generation) rmSync(lock, { recursive: true, force: true });
         });
       } catch (error) {
-        console.error(`The startup lock ${lock} was left in place: ${error instanceof Error ? error.message : error}`);
+        console.error(`Releasing the startup lock ${lock} failed: ${error instanceof Error ? error.message : error}`);
       }
     },
   };

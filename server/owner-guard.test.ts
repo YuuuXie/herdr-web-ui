@@ -1,9 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { acquireOwnerDirectory, guardLibrary, guardPath, OwnerGuardUnavailable, withOwnerGuard } from "./owner-guard.ts";
+import { acquireOwnerDirectory, guardLibrary, guardPath, OwnerGuardReleaseFailed, OwnerGuardUnavailable, withOwnerGuard } from "./owner-guard.ts";
 import { parseOwnerRecord } from "./process-owner.ts";
 
 const windows = process.platform === "win32";
@@ -50,6 +50,9 @@ try {
   process.exitCode = 3;
 }
 `;
+
+/** A well-formed birth no running process has: this platform's form, at the epoch. */
+const earlierBirth = { platform: process.platform, value: process.platform === "linux" ? `${readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()}:1` : process.platform === "darwin" ? "Thu Jan 1 00:00:00 1970" : "1" };
 
 type Event = { event: string; pid: number; session: number | null; [key: string]: unknown };
 
@@ -149,7 +152,7 @@ const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catc
 function staleLock(lock: string, pid: number) {
   mkdirSync(lock);
   writeFileSync(join(lock, "pid"), String(pid));
-  writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid, generation: "crashed-owner", birth: { platform: process.platform, value: "an earlier process" } }));
+  writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid, generation: "crashed-owner", birth: earlierBirth }));
 }
 const ownerOf = (lock: string) => parseOwnerRecord(readFileSync(join(lock, "owner.json"), "utf8"));
 const identity = (path: string) => { const stat = statSync(path); return `${stat.dev}:${stat.ino}`; };
@@ -413,6 +416,118 @@ describe("owner guard", () => {
       expect(alive(other.pid)).toBe(true);
     }
   }, 60_000);
+});
+
+/**
+ * Native calls that fail on demand. Every failing call still makes the real one where a resource is
+ * involved (a close really closes), so no descriptor or handle outlives the test.
+ */
+describe("owner guard native failures", () => {
+  const LOCK_EX = 2, LOCK_UN = 8, EBADF = 9, ERROR_NOT_LOCKED = 158, ERROR_INVALID_HANDLE = 6, ERROR_LOCK_VIOLATION = 33;
+  let closes = 0;
+  /** The calls of this platform, `fail` naming the ones that report failure. */
+  function failing(...fail: ("lock" | "unlock" | "close")[]) {
+    closes = 0;
+    let code: number | null = null;
+    if (windows) {
+      guardLibrary.windows = (calls) => ({
+        ...calls,
+        LockFileEx: (...args: Parameters<typeof calls.LockFileEx>) => fail.includes("lock") ? (code = ERROR_LOCK_VIOLATION, 0) : calls.LockFileEx(...args),
+        UnlockFileEx: (...args: Parameters<typeof calls.UnlockFileEx>) => { const ok = calls.UnlockFileEx(...args); return fail.includes("unlock") ? (code = ERROR_NOT_LOCKED, 0) : ok; },
+        CloseHandle: (handle: Parameters<typeof calls.CloseHandle>[0]) => { closes++; const ok = calls.CloseHandle(handle); return fail.includes("close") ? (code = ERROR_INVALID_HANDLE, 0) : ok; },
+        GetLastError: () => code ?? calls.GetLastError(),
+      });
+    } else {
+      guardLibrary.posix = (calls) => ({
+        flock: (fd, operation) => {
+          if ((operation === LOCK_EX && fail.includes("lock")) || (operation === LOCK_UN && fail.includes("unlock"))) { code = EBADF; return -1; }
+          return calls.flock(fd, operation);
+        },
+        errno: () => code ?? calls.errno(),
+        close: (fd) => {
+          closes++;
+          calls.close(fd);
+          if (fail.includes("close")) throw Object.assign(new Error("input/output error"), { code: "EIO" });
+        },
+      });
+    }
+  }
+  const unlockFailed = windows ? `unlocking failed (error ${ERROR_NOT_LOCKED})` : `unlocking failed (errno ${EBADF})`;
+  const closeFailed = windows ? `closing failed (error ${ERROR_INVALID_HANDLE})` : "closing failed (EIO)";
+  afterEach(() => { delete guardLibrary.posix; delete guardLibrary.windows; });
+  /** The guard is free again: taking it now (in this process, on a new descriptor or handle) does not block. */
+  const free = (lock: string) => expect(withOwnerGuard(lock, () => "taken")).toBe("taken");
+
+  it("reports a failed unlock and still closes the guard", () => {
+    const lock = join(root, "supervisor.lock");
+    failing("unlock");
+    let ran = false;
+    expect(() => withOwnerGuard(lock, () => { ran = true; return "result"; })).toThrow(new OwnerGuardReleaseFailed(`${guardPath(lock)} was not released cleanly: ${unlockFailed}`));
+    expect(ran).toBe(true);
+    expect(closes).toBe(1);
+    failing();
+    free(lock);
+  });
+
+  it("reports a failed close", () => {
+    const lock = join(root, "supervisor.lock");
+    failing("unlock", "close");
+    expect(() => withOwnerGuard(lock, () => "result")).toThrow(new OwnerGuardReleaseFailed(`${guardPath(lock)} was not released cleanly: ${unlockFailed}; ${closeFailed}`));
+    failing("close");
+    expect(() => withOwnerGuard(lock, () => "result")).toThrow(new OwnerGuardReleaseFailed(`${guardPath(lock)} was not released cleanly: ${closeFailed}`));
+    expect(closes).toBe(1);
+    failing();
+    free(lock);
+  });
+
+  it("closes a guard it could not lock, runs nothing and reports a failed close", () => {
+    const lock = join(root, "supervisor.lock");
+    const lockFailed = windows ? `could not be locked (error ${ERROR_LOCK_VIOLATION})` : `could not be locked (errno ${EBADF})`;
+    for (const fail of [["lock"], ["lock", "close"]] as const) {
+      failing(...fail);
+      let ran = false;
+      const closing = fail.length === 2 ? `; closing it failed too (${windows ? `error ${ERROR_INVALID_HANDLE}` : "EIO"})` : "";
+      expect(() => withOwnerGuard(lock, () => { ran = true; })).toThrow(new OwnerGuardUnavailable(`${guardPath(lock)} ${lockFailed}${closing}`));
+      expect(ran).toBe(false);
+      expect(closes).toBe(1);
+    }
+    failing();
+    free(lock);
+  });
+
+  it("keeps the callback's own error when the release fails after it", () => {
+    const lock = join(root, "supervisor.lock");
+    failing("unlock");
+    const thrown = (() => { try { withOwnerGuard(lock, () => { throw new Error("callback failed"); }); } catch (error) { return error as Error; } })();
+    expect(thrown).toBeInstanceOf(OwnerGuardReleaseFailed);
+    expect(thrown?.message).toBe(`${guardPath(lock)} was not released cleanly: ${unlockFailed}, after: callback failed`);
+    expect((thrown?.cause as Error).message).toBe("callback failed");
+    expect(closes).toBe(1);
+  });
+
+  it("fails a start whose guard was not released, and logs a release that was not clean", () => {
+    const other = unrelated();
+    const lock = join(root, "supervisor.lock");
+    staleLock(lock, other.pid);
+    failing("unlock");
+    // the start does not pass for a success; what it published names this process, so it is reclaimed once this process exits
+    expect(() => acquireOwnerDirectory(lock, ERRORS)).toThrow(`another start (lock ${lock}; ${guardPath(lock)} was not released cleanly: ${unlockFailed})`);
+    expect(ownerOf(lock)?.pid).toBe(process.pid);
+    expect(closes).toBe(1);
+    rmSync(lock, { recursive: true });
+    failing();
+    const lease = acquireOwnerDirectory(lock, ERRORS);
+    failing("close");
+    const logged = spyOn(console, "error").mockImplementation(() => {});
+    let message = "";
+    try { lease.release(); message = String(logged.mock.calls[0]?.[0]); } finally { logged.mockRestore(); }
+    expect(message).toBe(`Releasing the startup lock ${lock} failed: ${guardPath(lock)} was not released cleanly: ${closeFailed}`);
+    // the removal itself ran under the guard; only handing the guard back failed
+    expect(existsSync(lock)).toBe(false);
+    expect(alive(other.pid)).toBe(true);
+    failing();
+    free(lock);
+  });
 });
 
 /** `holder` takes `lock`, a second starter spelling it `alias` waits in the kernel, then finds the holder's record and refuses. */

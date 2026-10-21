@@ -44,6 +44,9 @@ describe("remote entry socket selection", () => {
   });
 });
 
+/** A well-formed birth no running process has: this platform's form, at the epoch. */
+const earlierBirth = { platform: process.platform, value: process.platform === "linux" ? `${readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim()}:1` : process.platform === "darwin" ? "Thu Jan 1 00:00:00 1970" : "1" };
+
 /**
  * The real entry under a temporary home: herdr's socket is missing and its binary is a path that
  * does not exist, so a start that gets past the startup lock ends at "start herdr", touching no herdr.
@@ -68,7 +71,7 @@ describe("remote entry startup lock", () => {
     return child;
   }
   const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-  function ownerLock(pid: number, birth: { platform: string; value: string }) {
+  function ownerLock(pid: number, birth: unknown) {
     mkdirSync(lock);
     writeFileSync(join(lock, "pid"), String(pid));
     writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid, generation: "earlier-start", birth }));
@@ -86,7 +89,7 @@ describe("remote entry startup lock", () => {
   it("reclaims a startup lock whose PID another process now holds", async () => {
     // regression (fails on main, which waited for any live PID): a reused PID is not a starter
     const reused = other();
-    ownerLock(reused.pid, { platform: process.platform, value: "an earlier process" });
+    ownerLock(reused.pid, earlierBirth);
     const run = await start();
     expect(run.output).not.toContain("Another bridge is starting");
     expect(run.output).toContain(join(home, "missing-herdr"));
@@ -109,9 +112,30 @@ describe("remote entry startup lock", () => {
     expect(readFileSync(join(lock, "owner.json"), "utf8")).toBe(owner);
   }, 60_000);
 
+  it("keeps a live starter's lock and a live bridge's descriptor whose recorded birth is malformed", async () => {
+    // regression: a missing, numeric or empty birth once read as another process's
+    const starter = other(), bridge = other();
+    ownerLock(starter.pid, { platform: process.platform, value: "" });
+    const owner = readFileSync(join(lock, "owner.json"), "utf8");
+    const refused = await start();
+    expect(refused.code).not.toBe(0);
+    expect(refused.output).toContain(`Another bridge is starting; retry shortly (lock ${lock}, owner pid ${starter.pid})`);
+    expect(readFileSync(join(lock, "owner.json"), "utf8")).toBe(owner);
+    rmSync(lock, { recursive: true });
+    const text = JSON.stringify({ port: 1, token: "registered-secret", pid: bridge.pid, generation: "g", birth: { platform: process.platform }, socket_path: "s", bridge_protocol: 1, bundle_version: "v" });
+    writeFileSync(descriptor, text);
+    const run = await start();
+    // the live bridge is left serving: no herdr is started and its descriptor is untouched
+    expect(run.code).toBe(0);
+    expect(run.output).not.toContain(join(home, "missing-herdr"));
+    expect(readFileSync(descriptor, "utf8")).toBe(text);
+    expect(existsSync(lock)).toBe(false);
+    expect([alive(starter.pid), alive(bridge.pid)]).toEqual([true, true]);
+  }, 60_000);
+
   it("fails closed when the guard is unavailable", async () => {
     const reused = other();
-    ownerLock(reused.pid, { platform: process.platform, value: "an earlier process" });
+    ownerLock(reused.pid, earlierBirth);
     const owner = readFileSync(join(lock, "owner.json"), "utf8");
     const preload = join(home, "no-guard.ts");
     writeFileSync(preload, `import { guardLibrary } from ${JSON.stringify(join(import.meta.dir, "owner-guard.ts"))};\nguardLibrary.path = ${JSON.stringify(join(home, "missing-libc.so.6"))};\n`);
@@ -129,7 +153,7 @@ describe("remote entry startup lock", () => {
     if (reading.state !== "identified") throw new Error(`no birth for ${bridge.pid}`);
     const registered = (pid: number, birth: { platform: string; value: string }) =>
       writeFileSync(descriptor, JSON.stringify({ port: 1, token: "registered-secret", pid, generation: "g", birth, socket_path: "s", bridge_protocol: 1, bundle_version: "v" }));
-    registered(reused.pid, { platform: process.platform, value: "an earlier process" });
+    registered(reused.pid, earlierBirth);
     expect((await start()).output).toContain(join(home, "missing-herdr"));
     // control: a live bridge is left serving, and no herdr is started for it
     registered(bridge.pid, reading.birth);
