@@ -34,11 +34,11 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
+import { closeSync, fstatSync, openSync, readFileSync, readSync, realpathSync, statSync } from "node:fs";
 import nodePath, { type PlatformPath } from "node:path";
 
 import type { ConversationMetadata, ConversationPart, ConversationTurn, HerdrPane, SessionSnapshot } from "../shared/protocol.ts";
-import { herdrRpc, paneRead, sessionSnapshot, type ProcessInfo } from "./herdr/client.ts";
+import { herdrRpc, paneProcessInfo, paneRead, sessionSnapshot, type ProcessInfo } from "./herdr/client.ts";
 import { resolveAgent } from "./pane-context.ts";
 import { codexHistorySegments, createCodexTranscriptParser, codexOutputText, codexTranscriptPath, defaultCodexHome, forgetAllCodexState, forgetCodexStateFor, paneCodexHome, parseCodexTranscript, readRange } from "./codex.ts";
 import { CODEX_IMAGE_REF, codexTranscriptImage } from "./codex-images.ts";
@@ -58,6 +58,8 @@ import { resolveAgyStore, sameAgyStore, type AgyStore } from "./agy-store.ts";
 import { withinRetentionBudget } from "./retention-budget.ts";
 import { forgetAllPiIndexes, forgetPiIndex, piAbandonedTurns, piBranchRecords, piBranchSegments } from "./pi-tree.ts";
 import { trimOutput } from "./tool-output.ts";
+import { copilotOutput, copilotRootRecord, parseCopilotTranscript } from "./copilot.ts";
+import { copilotTranscriptFile, openCopilotFile } from "./copilot-store.ts";
 import { parseConversationMetadata } from "./conversation-metadata.ts";
 import { forgetHermesTranscriptState, hermesConversationPage, hermesToolOutput, hermesTranscriptForPane } from "./hermes.ts";
 
@@ -541,7 +543,7 @@ export class HistoryChanged extends Error {
 /** What paneConversation resolved: which store the turns came from, and where they start. */
 export type RecognizedConversation = {
   activity?: "thinking" | "working" | "idle";
-  source: "grok-transcript" | "agy-transcript" | "claude-transcript" | "omp-transcript" | "omo-transcript" | "gjc-transcript" | "pi-transcript" | "cmd-transcript" | "codex-transcript" | "devin-transcript" | "opencode-transcript" | "hermes-transcript";
+  source: "copilot-transcript" | "grok-transcript" | "agy-transcript" | "claude-transcript" | "omp-transcript" | "omo-transcript" | "gjc-transcript" | "pi-transcript" | "cmd-transcript" | "codex-transcript" | "devin-transcript" | "opencode-transcript" | "hermes-transcript";
   turns: ConversationTurn[];
   metadata: ConversationMetadata;
   /** `metadata` was read off the agent's own screen (ConversationResponse.screen) */
@@ -760,11 +762,12 @@ function followClaudeBranch(branch: ClaudeBranch, line: Buffer, start: number, e
 
 /** Reset markers are small native control records. Scan each appended byte once,
  * in bounded chunks; retain offsets, never a session-sized string.
- * The same pass keeps an omp-family transcript's latest model and thinking-level
- * records (small lines): a change between the metadata head and the newest page
- * is otherwise never read, and the chat showed the level the session started at. */
+ * The same pass keeps the latest provider-specific metadata controls (small lines):
+ * changes between the head and newest page are otherwise never read. */
 const SETTING_TYPES = ['"model_change"', '"thinking_level_change"'];
-const clearScans = new Map<string, { id: string; scanned: number; floor: number; tail: string; settings: Partial<Record<"model_change" | "thinking_level_change", { offset: number; end: number; line: string }>>; branch?: ClaudeBranch }>();
+const COPILOT_SETTING_TYPES = ['"session.model_change"', '"session.resume"'];
+type SettingType = "model_change" | "thinking_level_change" | "copilot_model" | "copilot_effort";
+const clearScans = new Map<string, { id: string; scanned: number; floor: number; tail: string; settings: Partial<Record<SettingType, { offset: number; end: number; line: string }>>; branch?: ClaudeBranch }>();
 function applyHistoryBoundary(path: string, stream: TranscriptStream, source: RecognizedConversation["source"]): void {
   if (source === "codex-transcript" || source === "grok-transcript" || source === "agy-transcript") return;
   let scan = clearScans.get(path);
@@ -787,10 +790,24 @@ function applyHistoryBoundary(path: string, stream: TranscriptStream, source: Re
     for (let newline = bytes.indexOf(0x0a); newline !== -1; newline = bytes.indexOf(0x0a, offset)) {
       const line = bytes.subarray(offset, newline);
       if (!skipping && isClear(line)) scan.floor = base + offset;
-      else if (!skipping && source !== "claude-transcript" && SETTING_TYPES.some((type) => line.includes(type))) {
+      else if (!skipping && source !== "claude-transcript" && (source === "copilot-transcript" ? COPILOT_SETTING_TYPES : SETTING_TYPES).some((type) => line.includes(type))) {
         try {
-          const type: unknown = JSON.parse(line.toString("utf8"))?.type;
-          if (type === "model_change" || type === "thinking_level_change") scan.settings[type] = { offset: base + offset, end: base + newline, line: line.toString("utf8") };
+          const entry: unknown = JSON.parse(line.toString("utf8"));
+          const type = entry !== null && typeof entry === "object" && "type" in entry ? entry.type : null;
+          if (source === "copilot-transcript") {
+            if ((type === "session.model_change" || type === "session.resume") && copilotRootRecord(entry)) {
+              const data = entry !== null && typeof entry === "object" && "data" in entry ? entry.data : null;
+              if (data !== null && typeof data === "object" && !Array.isArray(data)) {
+                const model = type === "session.model_change" ? "newModel" in data ? data.newModel : null
+                  : "selectedModel" in data ? data.selectedModel : null;
+                const setting = { offset: base + offset, end: base + newline, line: line.toString("utf8") };
+                if (typeof model === "string" && model.trim() && !model.startsWith("<")) scan.settings.copilot_model = setting;
+                if ("reasoningEffort" in data) scan.settings.copilot_effort = setting;
+              }
+            }
+          } else if (type === "model_change" || type === "thinking_level_change") {
+            scan.settings[type] = { offset: base + offset, end: base + newline, line: line.toString("utf8") };
+          }
         } catch { /* not a record */ }
       }
       if (branch) {
@@ -824,6 +841,7 @@ function applyHistoryBoundary(path: string, stream: TranscriptStream, source: Re
 /** the mark of another session's message in a Claude record, in either of its forms (claudePeerNotice) */
 const PEER_MARK = Buffer.from('"kind":"peer"');
 const TURN_MARK: Record<StreamSource, Buffer> = {
+  "copilot-transcript": Buffer.from('"user.message"'),
   "grok-transcript": Buffer.from('"user_message_chunk"'),
   "agy-transcript": Buffer.from('"USER_INPUT"'),
   "codex-transcript": Buffer.from('"task_started"'),
@@ -842,9 +860,11 @@ const TURN_MARK: Record<StreamSource, Buffer> = {
  * and the same for pi, whose prompts are `message` records with a user role.
  */
 function opensTurn(source: StreamSource, line: string): boolean {
-  let entry: { type?: unknown; isMeta?: unknown; isCompactSummary?: unknown; payload?: { type?: unknown }; message?: { role?: unknown; content?: unknown } };
+  let entry: { type?: unknown; agentId?: unknown; data?: { content?: unknown; parentAgentTaskId?: unknown; agentId?: unknown }; isMeta?: unknown; isCompactSummary?: unknown; payload?: { type?: unknown }; message?: { role?: unknown; content?: unknown } };
   try { entry = JSON.parse(line); } catch { return false; }
   if (entry === null || typeof entry !== "object") return false;
+  if (source === "copilot-transcript") return entry.type === "user.message" && copilotRootRecord(entry)
+    && typeof entry.data?.content === "string" && !!entry.data.content.trim();
   if (source === "codex-transcript") return entry.type === "event_msg" && entry.payload?.type === "task_started";
   if (source !== "claude-transcript") {
     const message = piMessage(entry);
@@ -1070,6 +1090,7 @@ function subagentsOnPage(path: string, text: string): ReadonlyMap<string, Subage
 }
 
 function parseTurns(source: RecognizedConversation["source"], path: string, text: string, taskTitles?: Map<string, string>, noticed?: Set<string>): ConversationTurn[] {
+  if (source === "copilot-transcript") return parseCopilotTranscript(text, Infinity);
   if (source === "grok-transcript") {
     try { return parseGrokTranscript(text, path); } catch (error) {
       if (error instanceof GrokUnavailable) throw new ConversationUnavailable("transcript_missing");
@@ -1187,6 +1208,8 @@ function metadataHead(path: string, stream: TranscriptStream, source: Recognized
     // a record the head cuts in two is read whole here
     .filter((setting) => setting.end > end && setting.offset < start)
     .sort((a, b) => a.offset - b.offset)
+    // One control may update both fields; replay the native line once.
+    .filter((setting, index, settings) => index === 0 || setting.offset !== settings[index - 1]!.offset)
     .map((setting) => setting.line);
   return [readStream(stream, stream.floor, end).toString("utf8"), ...later].join("\n");
 }
@@ -1392,7 +1415,7 @@ export async function paneProcessRoots(paneId: string, agent: string | null | un
     ...(typeof candidate.name === "string" ? { name: candidate.name } : {}),
     cwd: typeof candidate.cwd === "string" ? candidate.cwd : "",
   }));
-  const matched = agent && ["claude", "codex", "omp", "gjc", "pi", "opencode", "devin", "grok", "hermes", "agy"].includes(agent)
+  const matched = agent && ["claude", "codex", "omp", "gjc", "pi", "opencode", "devin", "grok", "hermes", "agy", "copilot"].includes(agent)
     ? agentProcesses(foreground, agent)[0] ?? null : null;
   for (const process of foreground) {
     const identity = omoProcessIdentity(process, "", home);
@@ -1536,6 +1559,7 @@ async function ompTranscriptPath(paneId: string, cwd: string): Promise<string> {
     if (held === null) throw new ConversationUnavailable("no_session_path");
     return held;
   }
+
   // omp names its session file at start and writes it with the first answer
   const unwritten = unwrittenSession(path, store);
   if (unwritten !== null) throw new ConversationNotStarted(unwritten.id, "omp-transcript", unwritten.path);
@@ -1543,6 +1567,26 @@ async function ompTranscriptPath(paneId: string, cwd: string): Promise<string> {
   const inStore = piTranscriptInStore(path, store);
   if (inStore === null) throw new ConversationUnavailable("no_session_path");
   return inStore;
+}
+
+/** Herdr's SessionStart hook owns the identity; argv and directory recency never do. */
+async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[]): Promise<string> {
+  const report = pane.agent_session;
+  if (pane.agent !== "copilot" || report?.agent !== "copilot" || report.kind !== "id"
+    || report.source !== "herdr:copilot" || typeof report.value !== "string" || !SESSION_ID.test(report.value)
+    || panes.some((peer) => peer.pane_id !== pane.pane_id && peer.agent_session?.agent === "copilot"
+      && peer.agent_session.kind === "id" && peer.agent_session.value === report.value)) {
+    throw new ConversationUnavailable("no_session_id");
+  }
+  const info = await paneProcessInfo(pane.pane_id).catch(() => null);
+  const processes = agentProcesses(info?.foreground_processes ?? [], "copilot");
+  const foreground = processes[0];
+  if (process.platform !== "linux" || processes.length !== 1 || typeof foreground?.pid !== "number") {
+    throw new ConversationUnavailable("no_session_path");
+  }
+  const path = copilotTranscriptFile(report.value, processEnviron(foreground.pid), foreground.argv ?? [], foreground.pid);
+  if (path === null) throw new ConversationUnavailable("no_session_path");
+  return path;
 }
 
 /** Where a pane's conversation is: a transcript file, or a session in OpenCode's database. */
@@ -1587,6 +1631,7 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
   // session headers name the one they run in
   const sessionCwd = typeof pane.foreground_cwd === "string" && pane.foreground_cwd.length > 0 ? pane.foreground_cwd : cwd;
   try {
+    if (agent === "copilot") return { source: "copilot-transcript", path: await copilotTranscriptPath(pane, panes ?? [pane]) };
     if (agent === "grok") {
       const found = await resolveGrokStore(pane, grokHome);
       if (!found) throw new ConversationUnavailable("no_session_path");
@@ -1780,6 +1825,7 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
     if (!(error instanceof ConversationUnavailable)) throw error;
     const pane = snapshot.panes.find((candidate) => candidate.pane_id === paneId);
     if (pane === undefined) { launchedAgents.forget(paneId); throw error; }
+    if (pane.agent === "copilot" && (page.before !== undefined || page.since !== undefined || page.from !== undefined)) throw new HistoryChanged();
     // an agent this server started writes no session before its first message (launched-agents.ts)
     const launch = launchedAgents.notBegun(paneId, pane.agent_status);
     if (launch === null) {
@@ -1940,6 +1986,13 @@ export async function readCommandTranscript(paneId: string, codexHome?: string):
 
 /** One page of a resolved transcript (paneConversation's `page`). */
 export function transcriptPage(source: StreamSource, path: string, page: ConversationPage = {}, codexHome?: string): RecognizedConversation {
+  if (source === "copilot-transcript") {
+    let fd: number;
+    try { fd = openCopilotFile(path); }
+    catch { throw new ConversationUnavailable("transcript_missing"); }
+    try { return transcriptPageRead(source, path, page, codexHome, undefined, fd); }
+    finally { closeSync(fd); }
+  }
   if (source === "agy-transcript") {
     try { return withAgyHistory(path, (projection, fd) => ({ ...transcriptPageRead(source, path, page, codexHome, projection, fd), activity: projection.activity })); }
     catch (error) {
@@ -1954,6 +2007,10 @@ function transcriptPageRead(source: StreamSource, path: string, page: Conversati
   let stat: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number };
   try {
     stat = statSync(path);
+    if (fd !== undefined) {
+      const pinned = fstatSync(fd);
+      if (pinned.dev !== stat.dev || pinned.ino !== stat.ino || pinned.size !== stat.size) throw new ConversationUnavailable("transcript_missing");
+    }
   } catch {
     throw new ConversationUnavailable("transcript_missing");
   }
@@ -2120,6 +2177,13 @@ export function transcriptToolOutput(source: StreamSource, path: string, ref: st
   if (source === "grok-transcript") return grokToolOutput(path, ref);
   if (source === "agy-transcript") return agyToolOutput(path, ref);
   if (source === "pi-transcript" || source === "cmd-transcript") return piToolOutput(path, ref);
+  if (source === "copilot-transcript") {
+    let fd: number;
+    try { fd = openCopilotFile(path); } catch { return null; }
+    try {
+      return copilotOutput(fd, ref, TOOL_OUTPUT_MAX);
+    } finally { closeSync(fd); }
+  }
   let text: string;
   try { text = readFileSync(path, "utf8"); } catch { return null; }
   return outputInText(source, text, ref);
