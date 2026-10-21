@@ -192,7 +192,8 @@ function verdict(state: OwnerSample): Verdict {
   if (state.pid === null && state.owner === null) return "stale"; // record-less: abandoned by an older or interrupted start
   const named = owner(state);
   if (!named || (state.owner !== null && parseOwnerRecord(state.owner) === null)) return "live"; // malformed: unknown
-  if (named.record) return ownerGone(named.record) ? "stale" : "live";
+  if (named.record?.birth) return ownerGone(named.record) ? "stale" : "live";
+  // a PID-only record, or one whose owner could not read its own birth
   return ownerGone({ pid: named.pid }) || (state.recordedAt !== null && legacyOwnerReplaced(named.pid, state.recordedAt)) ? "stale" : "live";
 }
 

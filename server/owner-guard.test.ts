@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -190,6 +190,23 @@ describe("owner guard", () => {
     expect(() => acquireOwnerDirectory(lock, ERRORS)).toThrow("unknown owner");
     expect(readFileSync(join(lock, "pid"), "utf8")).toBe("not a pid");
     expect(alive(other.pid)).toBe(true);
+  });
+
+  it.skipIf(!windows)("reclaims a birth-less record whose PID a later process holds", () => {
+    // the owner could not read its own birth, then a forced shutdown left its lock and Windows
+    // handed its PID to a process that started after the record was written
+    const other = unrelated();
+    const lock = join(root, "supervisor.lock");
+    mkdirSync(lock);
+    writeFileSync(join(lock, "pid"), String(other.pid));
+    writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid: other.pid, generation: "birthless-owner" }));
+    // control: written after that process started, the record may still be its own
+    expect(() => acquireOwnerDirectory(lock, ERRORS)).toThrow(`already running (lock ${lock}, owner pid ${other.pid} generation birthless-owner)`);
+    utimesSync(join(lock, "pid"), new Date("2001-01-01T00:00:00Z"), new Date("2001-01-01T00:00:00Z"));
+    const lease = acquireOwnerDirectory(lock, ERRORS);
+    expect(ownerOf(lock)).toEqual(lease.record);
+    expect(alive(other.pid)).toBe(true);
+    lease.release();
   });
 
   it("reclaims abandoned record-less state", () => {
