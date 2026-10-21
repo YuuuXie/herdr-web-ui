@@ -23,6 +23,8 @@ import { claudeRewindOpen } from "./prompt.ts";
 import { expandedDirectory } from "./workspace-routes.ts";
 
 /** the native stores createServer was given; unset, each reader finds its own */
+const UINT32_MAX = 4294967295;
+
 export type PaneStores = { codexHome?: string; grokHome?: string; opencodeDb?: string; devinDbPath?: string; hermesHome?: string; openCodeStateDir?: string };
 
 /** the sides herdr's pane.swap and pane.resize take; anything else is refused before the RPC, which would answer invalid_request */
@@ -129,8 +131,10 @@ export async function handlePaneRequest(request: Request, url: URL, pathname: st
     if (!paneId) return badRequest("missing_pane_id", "pane_id query parameter is required");
     const linesRaw = url.searchParams.get("lines");
     const lines = linesRaw === null ? undefined : Number(linesRaw);
-    if (lines !== undefined && !Number.isFinite(lines)) {
-      return badRequest("invalid_lines", "lines must be a number");
+    // herdr's pane.read takes a uint32: anything else is refused here instead of reaching the RPC
+    // (Number("") is 0, so a blank value is refused before it can pass as zero)
+    if (lines !== undefined && (linesRaw!.trim() === "" || !Number.isInteger(lines) || lines < 0 || lines > UINT32_MAX)) {
+      return badRequest("invalid_lines", "lines must be an integer from 0 to 4294967295");
     }
     // herdr knows these enums and has its own answer for a wrong one, but a read this
     // route never meant to make is refused here rather than sent on as a guess
