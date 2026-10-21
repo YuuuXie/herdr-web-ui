@@ -4,13 +4,13 @@
  * after an install passes its health check the supervisor exits with HANDOVER_EXIT and the
  * launcher starts the new release's supervisor. `root` is always the source checkout.
  */
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { defaultStateDir, HANDOVER_EXIT, updateStateDir } from "./update-state.ts";
 import { herdrSocketPath } from "./herdr/client.ts";
+import { acquireOwnerDirectory } from "./owner-guard.ts";
 import { Updater, type Release } from "./updater.ts";
-import { windowsProcessTable } from "./windows-processes.ts";
 
 export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
   root = resolve(root);
@@ -22,28 +22,12 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
   const socketPath = resolve(herdrSocketPath());
   const stateDir = updateStateDir(root, port);
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-  const lock = join(stateDir, "supervisor.lock");
-  try { mkdirSync(lock); }
-  catch {
-    const pid = Number(readFileSync(join(lock, "pid"), "utf8"));
-    if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error(`Invalid update lock: ${lock}`);
-    let alive = true;
-    try { process.kill(pid, 0); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ESRCH") alive = false; }
-    if (alive && process.platform === "win32") {
-      // Forced Windows shutdown skips lock cleanup; the old PID may now belong to someone else.
-      const recordedAt = statSync(join(lock, "pid")).mtimeMs;
-      const owner = (await windowsProcessTable()).find(row => row.pid === pid);
-      if (owner?.started !== undefined && owner.started > recordedAt) {
-        if (Number(readFileSync(join(lock, "pid"), "utf8")) !== pid || statSync(join(lock, "pid")).mtimeMs !== recordedAt) {
-          throw new Error("Another server is starting. Try again.");
-        }
-        alive = false;
-      }
-    }
-    if (alive) throw new Error("A managed server is already running for this checkout and port.");
-    rmSync(lock, { recursive: true }); mkdirSync(lock);
-  }
-  writeFileSync(join(lock, "pid"), String(process.pid), { mode: 0o600 });
+  // A crash or a forced Windows shutdown skips lock cleanup, and the old PID may belong to
+  // someone else by now: the lock records the owner's birth, so only a provably gone owner is replaced.
+  const lock = acquireOwnerDirectory(join(stateDir, "supervisor.lock"), {
+    running: "A managed server is already running for this checkout and port.",
+    starting: "Another server is starting. Try again.",
+  });
   let child: ReturnType<typeof Bun.spawn> | null = null;
   let active: Release | null = null;
   let switching = true, stopping = false;
@@ -132,7 +116,7 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
     if (stopping) return;
     stopping = true; updater.stop();
     await stopChild();
-    rmSync(lock, { recursive: true, force: true });
+    lock.release();
     process.exit(code);
   }
   process.on("SIGTERM", () => void shutdown(0));

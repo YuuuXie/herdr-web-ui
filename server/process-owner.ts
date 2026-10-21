@@ -1,0 +1,122 @@
+/**
+ * Who owns a startup lock or a bridge descriptor, proved by the owner's birth rather than its PID:
+ * a crashed owner's PID can belong to an unrelated process later, and that process must neither
+ * block a restart nor be signalled (only signal 0 ever probes it). A birth is the kernel's own
+ * start record, read the same way every time; elapsed-time estimates are never compared.
+ * Everything here is synchronous, so it can run inside the owner guard (server/owner-guard.ts).
+ */
+import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+
+export interface ProcessBirth { platform: string; value: string }
+/** `generation` is fresh for every acquisition, so a later owner with the same PID is never mistaken for this one. */
+export interface OwnerRecord { pid: number; generation: string; birth?: ProcessBirth }
+/** absent: the PID is free; identified: it runs with this birth; unknown: it runs (or may) and its birth cannot be read. */
+export type BirthReading = { state: "absent" } | { state: "identified"; birth: ProcessBirth } | { state: "unknown" };
+
+/** Field 22 of /proc/<pid>/stat (start time in clock ticks after boot), counted after the last ") " because the command name may hold one. */
+export function linuxStartTicks(stat: string): string | null {
+  const end = stat.lastIndexOf(") ");
+  if (end < 0) return null;
+  const ticks = stat.slice(end + 2).split(" ")[19];
+  return ticks !== undefined && /^\d+$/.test(ticks) ? ticks : null;
+}
+
+/** `ps -o lstart=` under LC_ALL=C and TZ=UTC, e.g. "Wed Oct 21 17:41:40 2026". */
+export function parseLstart(text: string): string | null {
+  const value = text.trim().replace(/\s+/g, " ");
+  return /^[A-Z][a-z]{2} [A-Z][a-z]{2} \d{1,2} \d{2}:\d{2}:\d{2} \d{4}$/.test(value) ? value : null;
+}
+
+/** Signal 0 sends nothing: ESRCH proves the PID free, EPERM means someone else's process runs there. */
+export function probeProcess(pid: number): "absent" | "running" | "denied" {
+  try {
+    process.kill(pid, 0);
+    return "running";
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === "ESRCH" ? "absent" : code === "EPERM" ? "denied" : "running";
+  }
+}
+
+function birthValue(pid: number): string | null {
+  try {
+    if (process.platform === "linux") {
+      const ticks = linuxStartTicks(readFileSync(`/proc/${pid}/stat`, "utf8"));
+      const boot = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+      return ticks && boot ? `${boot}:${ticks}` : null;
+    }
+    if (process.platform === "darwin") {
+      const ps = Bun.spawnSync(["/bin/ps", "-o", "lstart=", "-p", String(pid)], {
+        stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: 2000, env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
+      });
+      return ps.exitCode === 0 ? parseLstart(ps.stdout.toString()) : null;
+    }
+    if (process.platform === "win32") {
+      // the creation time Windows records for the process; StartTime throws for a protected process, which leaves it unknown
+      const ps = Bun.spawnSync(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+        `$p = Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if ($p) { ([DateTimeOffset]$p.StartTime).ToUnixTimeMilliseconds() }`],
+      { stdin: "ignore", stdout: "pipe", stderr: "ignore", timeout: 10_000, windowsHide: true });
+      const value = ps.exitCode === 0 ? ps.stdout.toString().trim() : "";
+      return /^\d+$/.test(value) ? value : null;
+    }
+  } catch { /* gone, unreadable or the probe failed: unknown */ }
+  return null;
+}
+
+/** The birth of whatever runs as `pid` now. */
+export function readProcessBirth(pid: number): BirthReading {
+  if (probeProcess(pid) === "absent") return { state: "absent" };
+  const value = birthValue(pid);
+  if (value !== null) return { state: "identified", birth: { platform: process.platform, value } };
+  // it may have ended between the probe and the read
+  return probeProcess(pid) === "absent" ? { state: "absent" } : { state: "unknown" };
+}
+
+let ownBirth: ProcessBirth | null | undefined;
+/** A new record for this process, with a fresh generation; the birth is left out where it cannot be read. */
+export function newOwnerRecord(): OwnerRecord {
+  if (ownBirth === undefined) {
+    const reading = readProcessBirth(process.pid);
+    ownBirth = reading.state === "identified" ? reading.birth : null;
+  }
+  return { pid: process.pid, generation: randomUUID(), ...(ownBirth ? { birth: ownBirth } : {}) };
+}
+
+/** A record as written by newOwnerRecord, or null for anything malformed. */
+export function parseOwnerRecord(text: string): OwnerRecord | null {
+  let value: unknown;
+  try { value = JSON.parse(text); } catch { return null; }
+  if (value === null || typeof value !== "object") return null;
+  const { pid, generation, birth } = value as Record<string, unknown>;
+  if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0) return null;
+  if (typeof generation !== "string" || !generation || generation.length > 200) return null;
+  if (birth === undefined) return { pid, generation };
+  if (birth === null || typeof birth !== "object") return null;
+  const { platform, value: started } = birth as Record<string, unknown>;
+  if (typeof platform !== "string" || typeof started !== "string" || !started) return null;
+  return { pid, generation, birth: { platform, value: started } };
+}
+
+/**
+ * Whether the recorded owner is proved gone: its PID is free, or a process of another birth runs
+ * there. A matching birth, an unreadable one, a refused probe (EPERM) and a record without a birth
+ * (written by an older version) all leave the owner live.
+ */
+export function ownerGone(owner: { pid: number; birth?: ProcessBirth }): boolean {
+  const probe = probeProcess(owner.pid);
+  if (probe === "absent") return true;
+  if (probe === "denied" || !owner.birth || owner.birth.platform !== process.platform) return false;
+  const reading = readProcessBirth(owner.pid);
+  return reading.state === "absent" || (reading.state === "identified" && reading.birth.value !== owner.birth.value);
+}
+
+/**
+ * A PID-only record from an older version: on Windows, a process that started after the record was
+ * written is proved to be someone else (a forced shutdown skips cleanup and Windows hands the PID on).
+ */
+export function legacyOwnerReplaced(pid: number, recordedAt: number): boolean {
+  if (process.platform !== "win32") return false;
+  const reading = readProcessBirth(pid);
+  return reading.state === "identified" && Number(reading.birth.value) > recordedAt;
+}
