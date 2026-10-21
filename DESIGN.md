@@ -1343,13 +1343,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - From a workspace row's menu, **Earlier sessions…** (lucide `History`, beside Rename workspace),
   and from the chat: picking `/resume` in the `/` menu's Terminal commands opens it at once, and the
   terminal command's row over the composer offers **Earlier sessions…** beside Open Terminal. The
-  dialog is the worktree dialog's anatomy: **Agent** is a `.select` of the PC's installed agents
-  (the row's or the pane's agent first), under it the folder the sessions were started in, in
-  mono, then one `.session-row` per session as `GET /api/sessions/history` lists them, newest
-  first: the title (else the first prompt; else the id in mono) in `--fs-sm` medium, the first
-  prompt under it in `--text-dim`, each clamped to two lines, and at the trailing end the time it
-  was last touched (the chat turn's timestamp format; on hover the full date of its start, where the
-  store records one, and of its last touch) over the way on. The
+  dialog is the worktree dialog's anatomy: **Agent** is the New workspace dialog's picker
+  (`AgentPicker`: each agent with its mark, its chevron inset like the app's other controls, no
+  Shell entry; Escape on its open list closes the list, the next one the dialog) of the PC's
+  installed agents (the row's or the pane's agent first), under it the folder the sessions were
+  started in, in mono, then one `.session-row` per session as `GET /api/sessions/history` lists
+  them, newest first: the title (else the first prompt; else the id in mono) in `--fs-sm` medium,
+  the first prompt under it in `--text-dim`, each clamped to two lines, and at the trailing end
+  the time it was last touched (the chat turn's timestamp format; on hover the full date of its
+  start, where the store records one, and of its last touch) over the way on. The
   way on is a quiet `.btn` **Resume**, never the primary style: a list of up to fifty rows carries
   no fifty accents. A session a pane of the workspace already shows (its `agent_session`, by id or
   by file name) gets an **Already open** pill (over the button on a phone, beside it elsewhere) and
