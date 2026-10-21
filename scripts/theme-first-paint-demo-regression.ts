@@ -45,13 +45,18 @@ interface Case {
   cssFails?: boolean;
   /** the row the case must draw, written out so the check does not only compare the code with itself */
   expected: [id: string, mode: "dark" | "light"];
-  /** the cases whose frames are kept as evidence at both widths */
+  /** the cases whose frames are kept as evidence, at both widths unless `widths` names them */
   headline?: string;
+  widths?: readonly ("390" | "1440")[];
+  /** a Korean page: the browser's locale is ko-KR (the main record names the language itself) */
+  korean?: boolean;
 }
 
 const CASES: Case[] = [
   { name: "saved light", main: { theme: "light", darkTheme: "codex", lightTheme: "codex" }, themes: { darkTheme: "codex", lightTheme: "codex" }, scheme: "dark", expected: ["codex", "light"], headline: "light" },
   { name: "saved dark", main: { theme: "dark", darkTheme: "nord", lightTheme: "codex" }, themes: { darkTheme: "nord", lightTheme: "codex" }, scheme: "light", expected: ["nord", "dark"], headline: "dark" },
+  { name: "saved light, Korean", main: { language: "ko", theme: "light", darkTheme: "codex", lightTheme: "codex" }, themes: { darkTheme: "codex", lightTheme: "codex" }, scheme: "dark", korean: true, expected: ["codex", "light"], headline: "light-ko", widths: ["390"] },
+  { name: "saved dark, Korean", main: { language: "ko", theme: "dark", darkTheme: "nord", lightTheme: "codex" }, themes: { darkTheme: "nord", lightTheme: "codex" }, scheme: "light", korean: true, expected: ["nord", "dark"], headline: "dark-ko", widths: ["390"] },
   { name: "Dracula on the light side", main: { theme: "light", lightTheme: "dracula" }, themes: null, scheme: "light", expected: ["dracula", "dark"], headline: "single-mode" },
   { name: "system dark", main: { theme: "system", darkTheme: "tokyo-night", lightTheme: "tokyo-night-day" }, themes: null, scheme: "dark", expected: ["tokyo-night", "dark"] },
   { name: "system light", main: { theme: "system", darkTheme: "tokyo-night", lightTheme: "tokyo-night-day" }, themes: null, scheme: "light", expected: ["tokyo-night-day", "light"], headline: "system" },
@@ -161,7 +166,7 @@ function pageSetup({ main, themes, blocked, keys }: { main: Stored; themes: Stor
 interface Frame { phase: string; center: number[]; corner: number[]; luminance: number; ok: boolean; png?: string }
 interface BootOrder { bootAt: number; parsedAt: number; booted: boolean }
 interface Run { case: string; base: string; width: string; expected: { id: string; mode: string; bg: string }; frames: Frame[]; firstVisible: Frame | null; preCss: Record<string, string | null>;
-  bootOrder: { atCommit: BootOrder; afterApp: BootOrder }; lang: string;
+  bootOrder: { atCommit: BootOrder; afterApp: BootOrder }; lang: string; locale: string;
   boot: Record<string, unknown> | null; documentCsp: string | null; violations: string[]; errors: string[]; values: string[]; finalBackground: string; failures: string[] }
 
 /**
@@ -241,7 +246,8 @@ async function runCase(item: Case, base: "root" | "demo", url: string, width: "3
   const [id, mode] = item.expected;
   const failures: string[] = [];
   if (row !== rowFor(id, mode) || row.id !== id || row.mode !== mode) failures.push(`loadSettings draws ${row.id}/${row.mode}, the case expects ${id}/${mode}`);
-  const context = await browser!.newContext({ ...VIEWPORTS[width], colorScheme: item.scheme, serviceWorkers: "block" });
+  const locale = item.korean ? "ko-KR" : "en-US";
+  const context = await browser!.newContext({ ...VIEWPORTS[width], colorScheme: item.scheme, locale, serviceWorkers: "block" });
   try {
     await context.addInitScript(pageSetup, { main: item.main, themes: item.themes, blocked: item.blocked ?? false, keys: [SETTINGS_KEY, THEMES_KEY] as [string, string] });
     const page = await context.newPage();
@@ -310,6 +316,8 @@ async function runCase(item: Case, base: "root" | "demo", url: string, width: "3
     const afterApp = await bootOrder(page);
     if (afterApp.booted !== atCommit.booted || afterApp.bootAt !== atCommit.bootAt) failures.push(`the boot order read late (${JSON.stringify(afterApp)}) differs from the one read at commit (${JSON.stringify(atCommit)})`);
     const lang = await page.evaluate(() => document.documentElement.lang);
+    const pageLocale = await page.evaluate(() => navigator.language);
+    if (pageLocale !== locale) failures.push(`the page ran in ${pageLocale}, the case seeds ${locale}`);
 
     const recorded = await page.evaluate(() => (window as unknown as { __boot: { violations: string[]; errors: { thrown: boolean; message: string }[]; values: string[] } }).__boot);
     // the errors main.tsx itself reports: not the browser's benign ResizeObserver notice
@@ -351,11 +359,34 @@ async function runCase(item: Case, base: "root" | "demo", url: string, width: "3
       }
     }
     return { case: item.name, base, width, expected: { id, mode, bg: row.bg }, frames: sampled.map(({ png: _png, ...frame }) => frame),
-      firstVisible: sampled[0] ? { ...sampled[0], png: undefined } : null, preCss, bootOrder: { atCommit, afterApp }, lang, boot: bootResponse, documentCsp, violations: seen.violations,
+      firstVisible: sampled[0] ? { ...sampled[0], png: undefined } : null, preCss, bootOrder: { atCommit, afterApp }, lang, locale: pageLocale, boot: bootResponse, documentCsp, violations: seen.violations,
       errors: seen.errors, values: [...new Set(seen.values)], finalBackground, failures };
   } finally {
     await context.close();
   }
+}
+
+/**
+ * Waits until a service worker controls the page. The listener goes on before the current state is
+ * read, in one evaluation, so a claim that lands between two calls cannot be missed; a page that is
+ * already controlled answers at once. Bounded: a worker that never claims fails the check.
+ */
+function controlled(page: Page): Promise<"already controlled" | "controllerchange"> {
+  return page.evaluate((limit) => new Promise<"already controlled" | "controllerchange">((resolve, reject) => {
+    const worker = navigator.serviceWorker;
+    const done = (how: "already controlled" | "controllerchange"): void => {
+      clearTimeout(timer);
+      worker.removeEventListener("controllerchange", changed);
+      resolve(how);
+    };
+    const changed = (): void => done("controllerchange");
+    const timer = setTimeout(() => {
+      worker.removeEventListener("controllerchange", changed);
+      reject(new Error(`no service worker controlled the page within ${limit} ms`));
+    }, limit);
+    worker.addEventListener("controllerchange", changed);
+    if (worker.controller !== null) done("already controlled");
+  }), 30_000);
 }
 
 /** The root build loaded again from its installed service worker: the boot script comes from the worker's cache, and it is this build's. */
@@ -369,9 +400,7 @@ async function warmServiceWorker(url: string): Promise<Record<string, unknown>> 
     await page.goto(url);
     await page.evaluate(async () => { await navigator.serviceWorker.ready; });
     // the first load registered the worker; the next one is answered by it
-    if (!(await page.evaluate(() => navigator.serviceWorker.controller !== null))) {
-      await page.evaluate(() => new Promise<void>((resolve) => navigator.serviceWorker.addEventListener("controllerchange", () => resolve(), { once: true })));
-    }
+    const firstControl = await controlled(page);
     const answered = async (response: Response): Promise<{ url: string; fromServiceWorker: boolean; status: number; sha256: string }> => ({ url: response.url(), fromServiceWorker: response.fromServiceWorker(),
       status: response.status(), sha256: createHash("sha256").update(await response.body()).digest("hex") });
     const kept = page.waitForResponse((response) => /\/assets\/theme-bootstrap-/.test(response.url()));
@@ -383,6 +412,8 @@ async function warmServiceWorker(url: string): Promise<Record<string, unknown>> 
     await page.reload({ waitUntil: "commit" });
     const second = await answered(await again);
     await page.evaluate(() => (window as unknown as { __appApplied: Promise<void> }).__appApplied);
+    // a page the worker already controls: the same wait answers at once, without an event
+    const reloadedControl = await controlled(page);
     const seen = await page.evaluate(() => (window as unknown as { __boot: { values: string[]; violations: string[] } }).__boot);
     const html = readFileSync(join(rootDir, "index.html"), "utf8");
     const file = /<script src="\/(assets\/theme-bootstrap-[0-9a-f]{10}\.js)"><\/script>/.exec(html)?.[1];
@@ -391,11 +422,13 @@ async function warmServiceWorker(url: string): Promise<Record<string, unknown>> 
     const result = {
       case: "warm service worker", expected: { id: row.id, mode: row.mode },
       bootFile: file, listedForWorker: file ? worker.includes(`"/${file}"`) : false,
+      control: { firstLoad: firstControl, reloaded: reloadedControl },
       responses: [first, second],
       onDisk, values: [...new Set(seen.values)], violations: seen.violations,
     };
     const failures: string[] = [];
     if (!result.listedForWorker) failures.push("the worker does not list the boot script");
+    if (reloadedControl !== "already controlled") failures.push(`the reloaded page was not controlled when asked: ${reloadedControl}`);
     for (const response of result.responses) {
       if (!response.url.endsWith(`/${file}`)) failures.push(`the page asked for ${response.url}, not this build's ${file}`);
       if (response.sha256 !== onDisk) failures.push(`the boot script served ${response.sha256}, the build holds ${onDisk}`);
@@ -427,7 +460,7 @@ try {
   const decoder = await decoderContext.newPage();
   for (const base of ["root", "demo"] as const) {
     for (const item of CASES) {
-      for (const width of item.headline ? (["390", "1440"] as const) : (["390"] as const)) {
+      for (const width of item.widths ?? (item.headline ? (["390", "1440"] as const) : (["390"] as const))) {
         const run = await runCase(item, base, urls[base], width, decoder);
         runs.push(run);
         const status = run.failures.length ? "FAIL" : "ok";
