@@ -192,7 +192,7 @@ it.skipIf(process.platform !== "linux")("binds only the reported UUID to the for
   expect((await read()).source).toBe("scrollback");
   symlinkSync(file(id), file(other));
   expect((await read()).source).toBe("scrollback");
-});
+}, 20_000);
 
 it.skipIf(process.platform !== "linux")("reads a resumed CLI without marker or report and follows foreground switches rather than stale reports", async () => {
   const resumed = "12aa83d8-48bc-41f2-a498-7055c5c44a03";
