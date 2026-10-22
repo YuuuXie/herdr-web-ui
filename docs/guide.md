@@ -155,6 +155,7 @@ Every agent herdr runs shows up with its live status, terminal and alerts. The c
 | --- | --- | --- |
 | **Claude Code** | Native transcript, resolved through herdr | ✓ approvals, questions, plan and menu picks, and the `/model` list (picked for the session) |
 | **Codex** | Native rollout, with tool results and commentary/final phases | ✓ approvals and questions, including queued ones, and the `/model` lists (picked for the session) |
+| **Copilot CLI** | The terminal's text. Choose **GitHub Copilot** in **New workspace** or **New tab with agent…** where it is installed, or run `copilot` in a herdr pane's **Terminal**. | — use Terminal |
 | **omp** | Native session file | ✓ approvals, questions, and the model picker of `/model` and `/switch` (picked for the session: the chat sends `/model` as `/switch`, since omp's own `/model` opens its role hub) |
 | **omo** | Native session file, found through the pane's process tree | ✓ the `/model` list (picked for the session); other menus — use Terminal |
 | **gjc** | Native session file identified by GJC's SDK broker and the pane's process | — use Terminal |
