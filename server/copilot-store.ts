@@ -1,4 +1,4 @@
-import { constants, closeSync, fstatSync, openSync, opendirSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
+import { constants, closeSync, fstatSync, lstatSync, openSync, opendirSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -72,9 +72,8 @@ export function heldSessions(pid: number, store: string): Set<string> | null {
   return null;
 }
 
-/** Only the reported session, beneath the foreground process's own Copilot home. */
-export function copilotTranscriptFile(session: unknown, environment: readonly string[] | null, argv: readonly string[], pid: number): string | null {
-  if (typeof session !== "string" || !SESSION_ID.test(session) || environment === null || !Number.isSafeInteger(pid) || pid < 1) return null;
+function processSessionFile(environment: readonly string[] | null, argv: readonly string[], pid: number): { sessionId: string; path: string } | null {
+  if (environment === null || !Number.isSafeInteger(pid) || pid < 1) return null;
   const values = (key: string) => environment.filter((item) => item.startsWith(`${key}=`)).map((item) => item.slice(key.length + 1));
   const home = values("HOME");
   const explicit = values("COPILOT_HOME");
@@ -95,14 +94,36 @@ export function copilotTranscriptFile(session: unknown, environment: readonly st
     const store = join(canonicalHome, "session-state");
     if (realpathSync(store) !== store) return null;
     const held = heldSessions(pid, store);
-    if (held === null || held.size !== 1 || !held.has(session)) return null;
+    if (held === null || held.size !== 1) return null;
+    const session = [...held][0]!;
     const directory = join(store, session);
     if (realpathSync(directory) !== directory) return null;
-    const file = join(directory, "events.jsonl");
-    if (realpathSync(file) !== file) return null;
-    const fd = openCopilotFile(file);
+    return { sessionId: session, path: join(directory, "events.jsonl") };
+  } catch { return null; }
+}
+
+/** Only the reported session, beneath the foreground process's own Copilot home. */
+export function copilotTranscriptFile(session: unknown, environment: readonly string[] | null, argv: readonly string[], pid: number): string | null {
+  if (typeof session !== "string" || !SESSION_ID.test(session)) return null;
+  const held = processSessionFile(environment, argv, pid);
+  if (held === null || held.sessionId !== session) return null;
+  try {
+    const fd = openCopilotFile(held.path);
     try {
-      return file;
+      return held.path;
     } finally { closeSync(fd); }
   } catch { return null; }
+}
+
+/** A process-held session with no transcript yet, never permission to read unreported history. */
+export function copilotUnwrittenSession(environment: readonly string[] | null, argv: readonly string[], pid: number): { sessionId: string; path: string } | null {
+  if (argv.some((word) => word === "--continue" || word === "-r" || word === "--resume" || word.startsWith("--resume="))) return null;
+  const held = processSessionFile(environment, argv, pid);
+  if (held === null) return null;
+  try {
+    lstatSync(held.path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return held;
+  }
+  return null;
 }
