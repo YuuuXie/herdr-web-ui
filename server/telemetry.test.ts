@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SUPPORTED_AGENT_KINDS } from "../shared/supported-agents.ts";
-import { ACTIVE_LATE_DAYS, NOTICE_VERSION, TELEMETRY_HARNESSES, type TelemetryActive, type TelemetryChange, type TelemetryEvent, type TelemetrySettings } from "../shared/telemetry.ts";
+import { ACTIVE_LATE_DAYS, harnessOf, NOTICE_VERSION, TELEMETRY_HARNESSES, type TelemetryActive, type TelemetryChange, type TelemetryEvent, type TelemetrySettings } from "../shared/telemetry.ts";
 import { DEFAULT_SETTINGS, telemetrySettingsSnapshot, type Settings } from "../src/lib/settings.ts";
 import { handleTelemetryRequest, installMethod, Telemetry, telemetryBlocked } from "./telemetry.ts";
 
@@ -407,10 +407,20 @@ describe("daily active message", () => {
     expect(telemetry.status().active).toEqual({ ...before, harnesses: ["claude", "codex"] });
   });
 
-  test("(h) every supported agent kind is a telemetry harness", () => {
-    const missing = [...SUPPORTED_AGENT_KINDS].filter((kind) => !(TELEMETRY_HARNESSES as readonly string[]).includes(kind));
-    if (missing.length > 0) throw new Error(`${missing.join(", ")}: add it to TELEMETRY_HARNESSES and deploy the Worker`);
-    expect(missing).toEqual([]);
+  test("(h) every supported agent kind maps to a deployed telemetry harness", () => {
+    for (const kind of SUPPORTED_AGENT_KINDS) {
+      // The deployed receiver has no Copilot category; enabling its launcher must not change the wire format.
+      const expected = kind === "copilot" ? "other" : kind;
+      expect(harnessOf(kind) === expected, kind).toBeTrue();
+      expect(TELEMETRY_HARNESSES as readonly string[]).toContain(expected);
+    }
+  });
+
+  test("(i) Copilot launches retain the deployed receiver's other category", async () => {
+    const { telemetry, actives } = setup();
+    seen(telemetry);
+    await telemetry.active(["copilot"]);
+    expect(actives.map((active) => active.harnesses)).toEqual([["other"]]);
   });
 
   test("(j) a visit before the notice is delivered once the grace after the notice has passed", async () => {
