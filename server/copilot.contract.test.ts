@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { createServer } from "./index.ts";
 import { herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 import { forgetTranscriptState } from "./conversation.ts";
+import { launchedAgents } from "./launched-agents.ts";
 
 const id = "12aa83d8-48bc-41f2-a498-7055c5c44a01";
 const other = "12aa83d8-48bc-41f2-a498-7055c5c44a02";
@@ -56,6 +57,7 @@ console.log("fixture ready");`);
 
 afterAll(async () => {
   app?.stop();
+  if (pane) launchedAgents.forget(pane);
   if (workspace) await workspaceClose(workspace);
   forgetTranscriptState();
   rmSync(root, { recursive: true, force: true });
@@ -70,9 +72,16 @@ it.skipIf(process.platform !== "linux")("binds only the reported UUID to the for
   };
   await report(id, 1, "untrusted");
   expect((await read()).source).toBe("scrollback");
+  launchedAgents.launched(pane, "copilot");
+  const pending = await read();
+  expect(pending.source).toBe("copilot-transcript");
+  expect(pending.turns).toEqual([]);
+  expect(pending.history_id).toStartWith("unwritten:launch:");
+  expect((await read()).history_id).toBe(pending.history_id);
   await report(id, 2);
   const first = await read();
   expect(first.source).toBe("copilot-transcript");
+  expect(first.history_id).not.toBe(pending.history_id);
   expect(first.turns[0]?.parts[0]?.text).toBe("session A");
   appendFileSync(file(id), event("assistant.message", { content: "Checking.", phase: "commentary",
     toolRequests: [{ toolCallId: "call-1", name: "shell", arguments: { command: "pwd" } }], model: "fixture-model" }));
