@@ -1,7 +1,7 @@
 /** Real-browser regressions against owned herdr panes. Run after `bun run build`. */
 import "./test-herdr.ts"; // a herdr session of its own: nothing shows in the user's
 import assert from "node:assert/strict";
-import { copyFileSync, chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, chmodSync, existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmdirSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { chromium } from "playwright-core";
@@ -1439,10 +1439,17 @@ try {
   assert.equal(await page.getByRole("alert").filter({ hasText: /the first \d+ of \d+ files/ }).count(), 0, "nothing was left out");
   limitedUploads.length = 0;
   // the first file is over the size limit: its error and the count left out both stay in the note
-  await page.locator('input[type="file"]').setInputFiles([
-    { name: "huge.bin", mimeType: "application/octet-stream", buffer: Buffer.alloc(MAX_ATTACHMENT_BYTES + 1) },
-    ...Array.from({ length: 100 }, (_, index) => ({ name: `many-${index}.png`, mimeType: "image/png", buffer: png })),
-  ]);
+  // Paths let Chromium pick the real files. A buffer sends 32 MB through Playwright's injected
+  // base64 decoder on the page before the app can reject it by size, timing out on a busy runner.
+  const hugeFile = join(root, "huge.bin");
+  writeFileSync(hugeFile, "");
+  truncateSync(hugeFile, MAX_ATTACHMENT_BYTES + 1);
+  const manyFiles = Array.from({ length: 100 }, (_, index) => {
+    const path = join(root, `many-${index}.png`);
+    writeFileSync(path, png);
+    return path;
+  });
+  await page.locator('input[type="file"]').setInputFiles([hugeFile, ...manyFiles]);
   await until(async () => (await ready.count()) === readyBefore + 6 + 99, "the files within both limits uploaded");
   const note = page.getByRole("alert").filter({ hasText: "Too large to attach: huge.bin" });
   await note.waitFor();

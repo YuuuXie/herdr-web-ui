@@ -23,6 +23,7 @@ import { sheetsSettled } from "./sheets-settled.ts";
 import { runMoreItem } from "./header-more.ts";
 import type { Machine } from "../shared/protocol.ts";
 import { chromePath } from "./chrome-path.ts";
+import { routeDrained } from "./drained-route.ts";
 
 const openFiles = async (page: import("playwright-core").Page) => {
   const headerButton = page.locator(".header-files-button");
@@ -88,7 +89,10 @@ writeFileSync(join(root, "deep.md"), `${">".repeat(20_000)} deepest\n`);
 // Chromium highlights 256 KB of it in under half a second, within the worker's budget.
 writeFileSync(join(root, "slow.md"), `Notes on a slow file.\n\n\`\`\`yaml\n${"-".repeat(90_000)}\n\`\`\`\n`);
 // ordinary Markdown past the load limit: its start is previewed
-writeFileSync(join(root, "long.md"), "# Notes\n\nA paragraph of ordinary notes, with *emphasis* and a [link](./notes.txt).\n\n".repeat(4_000));
+const longNotes = "# Notes\n\nA paragraph of ordinary notes, with *emphasis* and a [link](./notes.txt).\n\n".repeat(4_000);
+writeFileSync(join(root, "long.md"), longNotes);
+const longPrefix = longNotes.slice(0, TEXT_LOAD_LIMIT);
+const longPreviewHeadings = longPrefix.slice(0, longPrefix.lastIndexOf("\n") + 1).split("\n").filter((line) => line.startsWith("# ")).length;
 // more lines than the source budget keeps (SOURCE_PREVIEW_LINES): 256 KB of line breaks, cut at the line cap
 writeFileSync(join(root, "lines.txt"), "\n".repeat(TEXT_LOAD_LIMIT));
 // more list items than a Preview draws (PREVIEW_ELEMENT_LIMIT): 65 536 of them held the page 1.6 s
@@ -513,6 +517,9 @@ try {
   await page.keyboard.press("Escape");
   await panel.waitFor({ state: "detached" });
   assert.equal(await page.evaluate(() => history.state?.["ovis:file-preview"]), undefined, "Escape in the panel consumes the preview entry");
+  // A history traversal removes the panel and restores focus: detachment alone is not the
+  // focus signal. Keep the focus assertion, but wait for the state it actually checks.
+  await page.waitForFunction((link) => document.activeElement === link, await notesLink.elementHandle());
   assert.equal(await notesLink.evaluate((link) => document.activeElement === link), true, "Escape in the panel returns the focus to the link that opened the file");
   // the left edge dragged 100px to the left widens the panel by as much, and the width is stored
   await notesLink.click();
@@ -1212,7 +1219,7 @@ try {
       localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
       sessionStorage.setItem("ovis:selection", JSON.stringify({ machine_id: stored, pane_id: pane }));
     }, { stored: target === "local" ? "remote-fixture" : "local", pane });
-    await ownerContext.route("**/api/**", async (route) => {
+    const unrouteOwner = await routeDrained(ownerContext, "**/api/**", async (route) => {
       const request = new URL(route.request().url());
       if (request.pathname === "/api/machines/events") { await route.abort(); return; }
       if (request.pathname === "/api/machines") { await route.fulfill({ json: { machines: [...roster.machines, remote] } }); return; }
@@ -1260,6 +1267,9 @@ try {
       await ownerPage.reload();
       await ownerPage.locator(".file-viewer-markdown").getByRole("heading", { name: "Markdown preview", exact: true }).waitFor();
     }
+    // Images and project icons can still be fetching after the document's text is ready.
+    // Finish their fetch/fulfill handlers before closing the context disposes its responses.
+    await unrouteOwner();
     await ownerContext.close();
     console.log(`PASS file-only link PC ownership, stored selection and pane independence: ${target}`);
   }
@@ -1302,9 +1312,14 @@ try {
   const long = page.getByRole("dialog", { name: "long.md", exact: true });
   await long.locator(".file-viewer-markdown .markdown-h1").first().waitFor();
   assert.match(await long.locator(".file-viewer-meta .file-viewer-notice").getAttribute("title") ?? "", /^Showing the first 256 KB of /);
-  await long.getByRole("button", { name: "Show source", exact: true }).waitFor();
+  // Let the whole loaded prefix render, not just its first progressive chunk, before closing it.
+  await long.locator(".file-viewer-markdown .markdown-h1").nth(longPreviewHeadings - 1).waitFor();
+  // The preview can contain thousands of file-link buttons. Query its toolbar, not every
+  // accessible name in the document: the check itself must not monopolize the page.
+  const longHeader = long.locator(".file-viewer-header");
+  await longHeader.getByRole("button", { name: "Show source", exact: true }).waitFor();
   console.log("PASS A Markdown file past the load limit previews its first 256 KB and says it is cut");
-  await page.getByRole("button", { name: "Close file", exact: true }).click();
+  await longHeader.getByRole("button", { name: "Close file", exact: true }).click();
   await page.locator(".file-viewer").waitFor({ state: "hidden" });
 
   // a file of more lines than the source budget keeps shows its first 200 000 as a window of rows,
