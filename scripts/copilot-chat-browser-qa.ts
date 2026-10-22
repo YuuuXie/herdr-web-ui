@@ -80,8 +80,8 @@ console.log("fixture ready");`);
   page.on("pageerror", (error) => errors.push(error.message));
   page.setDefaultTimeout(15_000);
   await page.addInitScript((paneId) => {
-    localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en" }));
-    localStorage.setItem(`herdr-web-ui:view:${paneId}`, "chat");
+    localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
+    localStorage.setItem(`ovis:view:${paneId}`, "chat");
   }, pane);
   await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(pane)}`);
   const log = page.locator(`.pane-frame[data-layout-pane="${pane}"]`).getByRole("log");

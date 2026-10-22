@@ -111,7 +111,7 @@ async function pointer(ssh: SshConnection, inspection: HostInspection, runtime: 
 
 async function start(ssh: SshConnection, runtime: string, herdr: string, session: string | undefined) {
   // Unlike upstream's version alias, the immutable path also works during cross-version recovery.
-  await ssh.run(REMOTE_PATH + `umask 077; mkdir -p "$HOME/.config/herdr-web-ui/bridges"; HERDR_REMOTE_SESSION=${shellQuote(session ?? "")} OVIS_HERDR_BIN=${shellQuote(herdr)} HERDR_WEB_HERDR_BIN=${shellQuote(herdr)} nohup ${shellQuote(runtime + "/bin/bun")} ${shellQuote(runtime + "/server/remote-entry.ts")} </dev/null >>"$HOME/.config/herdr-web-ui/bridges/bridge.log" 2>&1 &`);
+  await ssh.run(REMOTE_PATH + `umask 077; mkdir -p "$HOME/.config/herdr-web-ui/bridges"; HERDR_REMOTE_SESSION=${shellQuote(session ?? "")} OVIS_HERDR_BIN=${shellQuote(herdr)} nohup ${shellQuote(runtime + "/bin/bun")} ${shellQuote(runtime + "/server/remote-entry.ts")} </dev/null >>"$HOME/.config/herdr-web-ui/bridges/bridge.log" 2>&1 &`);
 }
 
 async function ready(ssh: SshConnection, inspection: HostInspection, runtime: string, version: string, saved: Saved) {

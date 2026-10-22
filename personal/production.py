@@ -117,7 +117,7 @@ class Production:
         filename = logs / (label + ".log")
         print(f"{label}: {filename}", flush=True)
         with filename.open("w") as output:
-            result = subprocess.run(args, cwd=release, env=self.env, stdout=output, stderr=subprocess.STDOUT)
+            result = subprocess.run(args, cwd=release, env=self.env, stdout=output, stderr=subprocess.STDOUT, umask=0o022)
         if result.returncode:
             print("\n".join(filename.read_text(errors="replace").splitlines()[-70:]), file=sys.stderr)
             raise RuntimeError(f"{label} failed ({result.returncode}); running production was not changed")
@@ -324,11 +324,11 @@ class Production:
         release = (self.data / "current").resolve(strict=True)
         self.check_release(release)
         revision = self.git("rev-parse", "HEAD", cwd=release)
-        env = {**self.env, "HOST": "127.0.0.1", "PORT": str(self.config["port"]),
+        compatibility = self.config.get("fallback_environment", {}) if release == Path(self.config["fallback_release"]).resolve() else {}
+        env = {**self.env, **compatibility, "HOST": "127.0.0.1", "PORT": str(self.config["port"]),
                "HERDR_SOCKET": self.config["herdr_socket"],
-               "OVIS_STATE_DIR": self.config["state_dir"], "HERDR_WEB_STATE_DIR": self.config["state_dir"],
-               "OVIS_REVISION": revision, "HERDR_WEB_REVISION": revision,
-               "OVIS_AUTO_UPDATE": "0", "HERDR_WEB_AUTO_UPDATE": "0"}
+               "OVIS_STATE_DIR": self.config["state_dir"], "OVIS_REVISION": revision,
+               "OVIS_AUTO_UPDATE": "0"}
         os.chdir(release)
         os.execve(self.config["bun"], [self.config["bun"], "server/index.ts"], env)
 
