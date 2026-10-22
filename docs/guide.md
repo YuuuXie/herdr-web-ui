@@ -156,7 +156,7 @@ Every agent herdr runs shows up with its live status, terminal and alerts. The c
 | --- | --- | --- |
 | **Claude Code** | Native transcript, resolved through herdr | ✓ approvals, questions, plan and menu picks, and the `/model` list (picked for the session) |
 | **Codex** | Native rollout, with tool results and commentary/final phases | ✓ approvals and questions, including queued ones, and the `/model` lists (picked for the session) |
-| **Copilot CLI** | Linux native `events.jsonl` when Herdr's Copilot `SessionStart` hook reports an exact UUID and the pane's unique foreground process holds **only that session** in its own `COPILOT_HOME` (otherwise its own `HOME/.copilot`). Follows the existing Codex-style chat presentation for text, tool calls/results and recorded model/effort. In the effective Copilot home (including any `COPILOT_HOME` or `--config-dir`), run `herdr integration install copilot` before starting `copilot` from a Herdr pane's **Terminal**. Ovis neither installs the hook automatically nor changes your home. This native path was verified on Linux with Copilot CLI 1.0.102-1 and Herdr 0.9.3. Herdr may keep the old ID after `/new`, `/clear` or in-process `/resume`; Copilot may also hold older sessions open. If the current session cannot be proved, chat uses Terminal instead of showing a guessed or stale session. Exit Copilot and start a fresh process (resume there if needed) to regain native chat after an ambiguous in-process switch. Missing hooks, ambiguous holds and macOS/Windows use Terminal. This is a reader of existing panes, not a Copilot option in **New workspace**. | — approvals and menus use Terminal |
+| **Copilot CLI** | Linux native `events.jsonl` when the pane's foreground process has a verifiable open CLI log recording the current foreground UUID, or Herdr reports the UUID and that process holds its unique session marker. The process's own `COPILOT_HOME` (otherwise `HOME/.copilot`) supplies the transcript. This follows `/resume`, `/fork` and switch-back without selecting by recency, even when older sessions remain open; Copilot CLI 1.0.103 was observed emitting foreground lifecycle events. Text, tools, recorded model/effort, `ask_user` question choices and Autopilot completion summaries are shown. Run `herdr integration install copilot` in the effective Copilot home before starting a pane to enable the Herdr session report; Ovis never changes your CLI setup. If the process-owned log is missing, truncated, rotated without continuity, unreadable, or lacks a verifiable foreground registration, only an unambiguous marker **and** trusted Herdr report allow reading history. Otherwise Chat falls back to Terminal rather than showing another session; macOS/Windows use Terminal. Existing panes with neither proof cannot be recovered by a server restart. This reads existing panes, not a Copilot option in **New workspace**. | — recorded choices are read-only; answer interactive questions and approvals in Terminal |
 | **omp** | Native session file | ✓ approvals, questions, and the model picker of `/model` and `/switch` (picked for the session: the chat sends `/model` as `/switch`, since omp's own `/model` opens its role hub) |
 | **omo** | Native session file, found through the pane's process tree | ✓ the `/model` list (picked for the session); other menus — use Terminal |
 | **gjc** | Native session file identified by GJC's SDK broker and the pane's process | — use Terminal |
@@ -169,11 +169,12 @@ Every agent herdr runs shows up with its live status, terminal and alerts. The c
 | **Antigravity (agy)** | **Experimental; macOS untested.** Native ledger, selected by the running process’s held conversation lock. Linux native-tested; Windows uses terminal text. See [Agy behavior and limits](agy-chat.md). | — use Terminal |
 | **Anything else** | The terminal's text | — use Terminal |
 
-Before its first message, a new Linux Copilot process can show an empty chat even when started
-from Terminal. The bridge verifies that the pane's process holds exactly one session in its own
-Copilot home and that its transcript does not exist yet. Existing history still requires the
-SessionStart hook; unreadable files, explicit resume/continue launches and ambiguous identities
-keep the terminal fallback rather than appearing as an empty conversation.
+Before its first message, a genuinely new Linux Copilot process can show an empty chat when its
+process-owned log or unique held session marker identifies an unwritten session. An explicit
+resume/continue without current foreground proof never gets a fresh-session placeholder. CLI
+user-input requests are ephemeral, not persisted to the transcript: recorded `ask_user` choices
+can be read in Chat, but live answers still belong to the CLI's Terminal; the bridge never sends
+guessed selection keys or treats a question as an approval.
 
 GJC chat requires GJC 0.18.9 or later for its broker-bound SDK session CLI, with `gjc`
 on the server PC's PATH and its SDK broker already running. An older GJC opens in Terminal.
@@ -294,7 +295,7 @@ Serve the app over **HTTPS** to install it and receive push alerts. The simplest
 tailscale serve --bg --https=443 http://127.0.0.1:7317
 ```
 
-The one-line installer runs this for you when Tailscale runs on the PC and does not serve the app yet, on the first free port of 443, 8443, 7317 and 17317, and prints the command that undoes it. To keep 443 for something else, name the port in `OVIS_TAILSCALE_HTTPS_PORT` (see [Configuration](#configuration)), or set it for the installer's run alone: `curl -fsSL https://ovis.sh/install.sh | OVIS_TAILSCALE_HTTPS_PORT=9443 sh`. On Linux, `tailscale serve` needs root or `sudo tailscale set --operator=$USER` once; the installer says so when Tailscale refuses.
+The one-line installer runs this for you when Tailscale runs on the PC and does not serve the app yet, on the first free port of 443, 8443, 7317 and 17317, and prints the command that undoes it. To keep 443 for something else, name the port in `OVIS_TAILSCALE_HTTPS_PORT` (see [Configuration](#configuration)), or set it for the installer's run alone: `curl -fsSL https://ovis.sh/install.sh | OVIS_TAILSCALE_HTTPS_PORT=9443 sh`. On Linux, `tailscale serve` needs root or `sudo tailscale set --operator="$(id -un)"` once; the installer says so when Tailscale refuses.
 
 An address that already serves the app is kept as it is. To move it to another port, turn the old one off (`tailscale serve --https=443 off`), then run the installer again. The installed app on a phone stays on the address it was installed from, so install it again from the new one.
 

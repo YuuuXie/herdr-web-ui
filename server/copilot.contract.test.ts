@@ -29,7 +29,14 @@ beforeAll(async () => {
 import { join } from "node:path";
 const home = process.env.COPILOT_HOME;
 const hold = (id) => { const dir = join(home, "session-state", id); mkdirSync(dir, { recursive: true }); openSync(join(dir, \`inuse.\${process.pid}.hold\`), "w"); };
-hold(process.argv[2]);
+const lifecycle = process.argv.includes("--lifecycle");
+const log = join(home, "logs", \`process-100-\${process.pid}.log\`);
+let selected = process.argv[2];
+if (lifecycle) {
+  mkdirSync(join(home, "logs"), { recursive: true });
+  openSync(log, "w");
+  appendFileSync(log, new Date().toISOString() + " [INFO] Registering foreground session: " + selected + "\\n");
+} else if (!process.argv.includes("--no-proof")) hold(selected);
 process.stdin.setEncoding("utf8");
 let buffer = "";
 process.stdin.on("data", (chunk) => {
@@ -37,6 +44,12 @@ process.stdin.on("data", (chunk) => {
   for (let at; (at = buffer.indexOf("\\n")) !== -1;) {
     const line = buffer.slice(0, at); buffer = buffer.slice(at + 1);
     if (line.startsWith(":hold ")) hold(line.slice(6));
+    else if (line.startsWith(":switch ") && lifecycle) {
+      const next = line.slice(8);
+      appendFileSync(log, new Date().toISOString() + " [INFO] Unregistering foreground session: " + selected + "\\n");
+      appendFileSync(log, new Date().toISOString() + " [INFO] Registering foreground session: " + next + "\\n");
+      selected = next;
+    }
     else if (line === ":quit") process.exit(0);
     else appendFileSync(join(home, "input.txt"), line + "\\n");
   }
@@ -167,4 +180,89 @@ it.skipIf(process.platform !== "linux")("binds only the reported UUID to the for
   expect((await read()).source).toBe("scrollback");
   symlinkSync(file(id), file(other));
   expect((await read()).source).toBe("scrollback");
+});
+
+it.skipIf(process.platform !== "linux")("reads a resumed CLI without marker or report and follows foreground switches rather than stale reports", async () => {
+  const resumed = "12aa83d8-48bc-41f2-a498-7055c5c44a03";
+  const forked = "12aa83d8-48bc-41f2-a498-7055c5c44a04";
+  for (const id of [resumed, forked]) {
+    mkdirSync(join(home, "session-state", id), { recursive: true });
+    writeFileSync(file(id), fixture(id, id) + event("assistant.message", {
+      toolRequests: [{ toolCallId: `call-${id}`, name: "shell", arguments: {} }],
+    }) + event("tool.execution_complete", { toolCallId: `call-${id}`, result: { content: `output-${id}` } }));
+  }
+  const created = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-copilot-lifecycle" });
+  const current = created.root_pane.pane_id;
+  try {
+    await herdrRpc("pane.send_text", { pane_id: current, text: `COPILOT_HOME=${home} node ${executable} ${resumed} --resume=${resumed} --lifecycle\n` });
+    for (const deadline = Date.now() + 10_000;;) {
+      if ((await sessionSnapshot()).panes.find((p) => p.pane_id === current)?.agent === "copilot") break;
+      if (Date.now() > deadline) throw new Error("owned resumed fixture not detected");
+      await Bun.sleep(50);
+    }
+    const url = `http://127.0.0.1:${app.port}/api/pane/conversation?pane_id=${encodeURIComponent(current)}`;
+    const read = async () => (await fetch(url)).json() as Promise<{
+      source: string; turns: { parts: { text?: string }[] }[]; cursor?: string; history_id?: string;
+    }>;
+    const initial = await read();
+    expect(initial.source).toBe("copilot-transcript");
+    expect(initial.turns[0]?.parts[0]?.text).toBe(resumed);
+    expect(initial.history_id).not.toStartWith("unwritten:");
+    const duplicate = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-copilot-log-peer" });
+    try {
+      const peer = duplicate.root_pane.pane_id;
+      await herdrRpc("pane.send_text", { pane_id: peer, text: `COPILOT_HOME=${home} node ${executable} ${resumed} --resume=${resumed} --lifecycle\n` });
+      for (const deadline = Date.now() + 10_000;;) {
+        if ((await sessionSnapshot()).panes.find((p) => p.pane_id === peer)?.agent === "copilot") break;
+        if (Date.now() > deadline) throw new Error("log-only duplicate fixture not detected");
+        await Bun.sleep(50);
+      }
+      expect((await read()).source).toBe("scrollback");
+      const peerUrl = `http://127.0.0.1:${app.port}/api/pane/conversation?pane_id=${encodeURIComponent(peer)}`;
+      expect((await (await fetch(peerUrl)).json()).source).toBe("scrollback");
+    } finally { await workspaceClose(duplicate.workspace.workspace_id); }
+    expect((await read()).source).toBe("copilot-transcript");
+    await herdrRpc("pane.report_agent_session", { pane_id: current, agent: "copilot", source: "herdr:copilot",
+      seq: Date.now() * 1000, agent_session_id: resumed });
+    await herdrRpc("pane.send_text", { pane_id: current, text: `:hold ${resumed}\n:hold ${forked}\n:switch ${forked}\n` });
+    for (const deadline = Date.now() + 5000;;) {
+      if ((await read()).turns[0]?.parts[0]?.text === forked) break;
+      if (Date.now() > deadline) throw new Error("logged fork was not selected");
+      await Bun.sleep(50);
+    }
+    expect((await fetch(`${url}&from=${encodeURIComponent(initial.cursor ?? initial.history_id!)}`)).status).toBe(409);
+    const staleTool = new URLSearchParams({ pane_id: current, ref: `call-${resumed}` });
+    expect((await fetch(`http://127.0.0.1:${app.port}/api/pane/conversation/tool-output?${staleTool}`)).status).toBe(404);
+    await herdrRpc("pane.send_text", { pane_id: current, text: `:switch ${resumed}\n` });
+    for (const deadline = Date.now() + 5000;;) {
+      if ((await read()).turns[0]?.parts[0]?.text === resumed) break;
+      if (Date.now() > deadline) throw new Error("switch-back was not selected");
+      await Bun.sleep(50);
+    }
+  } finally {
+    await workspaceClose(created.workspace.workspace_id);
+  }
+});
+
+it.skipIf(process.platform !== "linux")("never mistakes an explicitly resumed launch without current evidence for a fresh empty chat", async () => {
+  const resumed = "12aa83d8-48bc-41f2-a498-7055c5c44a05";
+  mkdirSync(join(home, "session-state", resumed), { recursive: true });
+  writeFileSync(file(resumed), fixture(resumed, "existing history"));
+  const created = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-copilot-no-proof" });
+  const current = created.root_pane.pane_id;
+  try {
+    await herdrRpc("pane.send_text", { pane_id: current, text: `COPILOT_HOME=${home} node ${executable} ${resumed} --resume=${resumed} --no-proof\n` });
+    for (const deadline = Date.now() + 10_000;;) {
+      if ((await sessionSnapshot()).panes.find((p) => p.pane_id === current)?.agent === "copilot") break;
+      if (Date.now() > deadline) throw new Error("owned no-proof fixture not detected");
+      await Bun.sleep(50);
+    }
+    launchedAgents.launched(current, "copilot");
+    const url = `http://127.0.0.1:${app.port}/api/pane/conversation?pane_id=${encodeURIComponent(current)}`;
+    expect((await (await fetch(url)).json()).source).toBe("scrollback");
+    expect((await fetch(`${url}&from=stale`)).status).toBe(409);
+  } finally {
+    launchedAgents.forget(current);
+    await workspaceClose(created.workspace.workspace_id);
+  }
 });

@@ -59,7 +59,7 @@ import { withinRetentionBudget } from "./retention-budget.ts";
 import { forgetAllPiIndexes, forgetPiIndex, piAbandonedTurns, piBranchRecords, piBranchSegments } from "./pi-tree.ts";
 import { trimOutput } from "./tool-output.ts";
 import { copilotOutput, copilotRootRecord, parseCopilotTranscript } from "./copilot.ts";
-import { copilotTranscriptFile, copilotUnwrittenSession, openCopilotFile } from "./copilot-store.ts";
+import { copilotExplicitResume, copilotLoggedSession, copilotTranscriptFile, copilotUnwrittenSession, openCopilotFile } from "./copilot-store.ts";
 import { parseConversationMetadata } from "./conversation-metadata.ts";
 import { forgetHermesTranscriptState, hermesConversationPage, hermesToolOutput, hermesTranscriptForPane } from "./hermes.ts";
 
@@ -1572,11 +1572,24 @@ async function ompTranscriptPath(paneId: string, cwd: string): Promise<string> {
 /** History requires Herdr's hook; a process-held unwritten session can show an empty chat. */
 async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[]): Promise<string> {
   const report = pane.agent_session;
-  const claimedByPeer = (session: string) => panes.some((peer) => peer.pane_id !== pane.pane_id
-    && peer.agent_session?.agent === "copilot" && peer.agent_session.kind === "id" && peer.agent_session.value === session);
+  const claimedByPeer = async (session: string): Promise<boolean> => {
+    for (const peer of panes) {
+      if (peer.pane_id === pane.pane_id || peer.agent !== "copilot") continue;
+      const info = await paneProcessInfo(peer.pane_id).catch(() => null);
+      const processes = agentProcesses(info?.foreground_processes ?? [], "copilot");
+      if (processes.length === 1 && typeof processes[0]?.pid === "number") {
+        const live = copilotLoggedSession(processEnviron(processes[0].pid), processes[0].argv ?? [], processes[0].pid);
+        if (live !== null) {
+          if (live === session) return true;
+          continue;
+        }
+      }
+      if (peer.agent_session?.agent === "copilot" && peer.agent_session.kind === "id" && peer.agent_session.value === session) return true;
+    }
+    return false;
+  };
   if (pane.agent !== "copilot" || (report != null && (report.agent !== "copilot" || report.kind !== "id"
-    || report.source !== "herdr:copilot" || typeof report.value !== "string" || !SESSION_ID.test(report.value)
-    || claimedByPeer(report.value)))) {
+    || report.source !== "herdr:copilot" || typeof report.value !== "string" || !SESSION_ID.test(report.value)))) {
     throw new ConversationUnavailable("no_session_id");
   }
   const info = await paneProcessInfo(pane.pane_id).catch(() => null);
@@ -1587,15 +1600,24 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
   }
   const environment = processEnviron(foreground.pid);
   const argv = foreground.argv ?? [];
+  const logged = copilotLoggedSession(environment, argv, foreground.pid);
+  if (logged !== null && !(await claimedByPeer(logged))) {
+    const path = copilotTranscriptFile(logged, environment, argv, foreground.pid);
+    if (path !== null && nodePath.basename(nodePath.dirname(path)) === logged) return path;
+  }
   if (report != null) {
-    const path = copilotTranscriptFile(report.value, environment, argv, foreground.pid);
-    if (path !== null) return path;
+    if (await claimedByPeer(report.value)) throw new ConversationUnavailable("no_session_id");
+    if (logged === null) {
+      const path = copilotTranscriptFile(report.value, environment, argv, foreground.pid);
+      if (path !== null && nodePath.basename(nodePath.dirname(path)) === report.value) return path;
+    }
   }
   const pending = copilotUnwrittenSession(environment, argv, foreground.pid);
-  if (pending !== null && (report == null || report.value === pending.sessionId) && !claimedByPeer(pending.sessionId)) {
+  if (pending !== null && (report == null || logged === pending.sessionId || report.value === pending.sessionId)
+    && !(await claimedByPeer(pending.sessionId))) {
     throw new ConversationNotStarted(pending.sessionId, "copilot-transcript", pending.path);
   }
-  throw new ConversationUnavailable(report == null ? "no_session_id" : "no_session_path");
+  throw new ConversationUnavailable(copilotExplicitResume(argv) ? "copilot_resume_unknown" : report == null ? "no_session_id" : "no_session_path");
 }
 
 /** Where a pane's conversation is: a transcript file, or a session in OpenCode's database. */
@@ -1835,6 +1857,12 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
     const pane = snapshot.panes.find((candidate) => candidate.pane_id === paneId);
     if (pane === undefined) { launchedAgents.forget(paneId); throw error; }
     if (pane.agent === "copilot" && (page.before !== undefined || page.since !== undefined || page.from !== undefined)) throw new HistoryChanged();
+    if (pane.agent === "copilot" && error.message === "copilot_resume_unknown") throw error;
+    if (pane.agent === "copilot") {
+      const info = await paneProcessInfo(paneId).catch(() => null);
+      const processes = agentProcesses(info?.foreground_processes ?? [], "copilot");
+      if (processes.length !== 1 || copilotExplicitResume(processes[0]?.argv ?? [])) throw error;
+    }
     // an agent this server started writes no session before its first message (launched-agents.ts)
     const launch = launchedAgents.notBegun(paneId, pane.agent_status);
     if (launch === null) {

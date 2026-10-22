@@ -3,7 +3,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseCopilotTranscript } from "./copilot.ts";
-import { copilotTranscriptFile, copilotUnwrittenSession, heldSessions } from "./copilot-store.ts";
+import { copilotLoggedSession, copilotTranscriptFile, copilotUnwrittenSession, heldSessions } from "./copilot-store.ts";
 import { ConversationUnavailable, forgetTranscriptState, HistoryChanged, transcriptPage, transcriptToolOutput } from "./conversation.ts";
 import { parseConversationMetadata } from "./conversation-metadata.ts";
 
@@ -63,6 +63,33 @@ it("keeps unphased completed prose available as an answer, and explicit commenta
   const turns = parseCopilotTranscript(start + prompt("question") + line("assistant.message", { content: "work", phase: "commentary" })
     + line("assistant.message", { content: "unphased answer" }) + line("assistant.turn_end", {}));
   expect(turns.at(-1)?.parts).toEqual([{ kind: "text", text: "work", phase: "commentary" }, { kind: "text", text: "unphased answer" }]);
+});
+
+it("renders completed Autopilot summaries as final replies without duplicating an explicit answer or a child completion", () => {
+  const completion = (id: string, summary: string) =>
+    line("assistant.message", { toolRequests: [{ toolCallId: id, name: "task_complete", arguments: { summary } }] })
+    + line("tool.execution_complete", { toolCallId: id, success: true, result: { content: "Task complete." } });
+  const transcript = start + prompt("first") + answer("Working", "commentary")
+    + completion("done-1", "Completed first task.")
+    + line("session.task_complete", { summary: "Completed first task." })
+    + prompt("second") + completion("done-2", "Tool fallback.")
+    + line("session.task_complete", { summary: "Authoritative second summary." })
+    + answer("Actual final reply.")
+    + line("session.task_complete", { summary: "Do not repeat the final reply." })
+    + prompt("third") + line("assistant.message", { content: "child", phase: "commentary" }, "child")
+    + line("session.task_complete", { summary: "child secret", agentId: "child" }, "child")
+    + line("assistant.message", { toolRequests: [{ toolCallId: "failed", name: "task_complete", arguments: { summary: "failed" } }] })
+    + line("tool.execution_complete", { toolCallId: "failed", success: false, result: { content: "failed" } });
+  const turns = parseCopilotTranscript(transcript);
+  expect(turns[1]?.parts.filter((part) => part.kind === "text")).toEqual([
+    { kind: "text", text: "Working", phase: "commentary" },
+    { kind: "text", text: "Completed first task.", phase: "final_answer" },
+  ]);
+  expect(turns[3]?.parts.filter((part) => part.kind === "text")).toEqual([
+    { kind: "text", text: "Actual final reply.", phase: "final_answer" },
+  ]);
+  expect(JSON.stringify(turns)).not.toContain("child secret");
+  expect(JSON.stringify(turns)).not.toContain('"text":"failed"');
 });
 
 it.each(["commentary", "final_answer", undefined])("tracks the latest assistant message timestamp with phase %s", (phase) => {
@@ -224,6 +251,7 @@ it.skipIf(process.platform !== "linux")("uses only the process home and a canoni
           console.log("ok");
         }
       });
+
       console.log("ready");
     `, custom, join(defaultHome, ".copilot"), legacy], { stdin: "pipe", stdout: "pipe", stderr: "inherit" });
     stop = () => { child.kill(); return child.exited; };
@@ -281,6 +309,70 @@ it.skipIf(process.platform !== "linux")("uses only the process home and a canoni
     expect(copilotTranscriptFile(session, [`HOME=${defaultHome}`, `COPILOT_HOME=${custom}`], ["copilot", "--config-dir", legacy], pid)).toBe(legacyFile);
   } finally {
     if (stop) await stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it.skipIf(process.platform !== "linux")("follows process-owned foreground evidence through fork and switch-back with multiple holds", async () => {
+  const root = mkdtempSync(join(tmpdir(), "copilot-foreground-"));
+  const home = join(root, "home");
+  const logs = join(home, "logs");
+  const other = "12aa83d8-48bc-41f2-a498-7055c5c44a02";
+  const options = [`COPILOT_HOME=${home}`];
+  const args = ["copilot", "--resume", session];
+  for (const id of [session, other]) {
+    const directory = join(home, "session-state", id);
+    mkdirSync(directory, { recursive: true });
+    writeFileSync(join(directory, "events.jsonl"), line("session.start", { sessionId: id }) + prompt(id));
+  }
+  mkdirSync(logs);
+  const child = Bun.spawn(["node", "-e", `
+    const { openSync, appendFileSync } = require("node:fs");
+    const { join } = require("node:path");
+    const root = process.argv[1];
+    const ids = process.argv.slice(2);
+    const path = join(root, "logs", "process-100-" + process.pid + ".log");
+    openSync(path, "w");
+    for (const id of ids) openSync(join(root, "session-state", id, "inuse." + process.pid + ".hold"), "w");
+    const event = (action, id) => appendFileSync(path, new Date().toISOString() + " [INFO] " + action + " foreground session: " + id + "\\n");
+    event("Registering", ids[0]);
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (input) => { for (const command of input.trim().split("\\n")) {
+      if (command === "fork") { event("Unregistering", ids[0]); event("Registering", ids[1]); }
+      if (command === "back") { event("Unregistering", ids[1]); event("Registering", ids[0]); }
+      if (command === "incomplete") appendFileSync(path, new Date().toISOString() + " [INFO] Registering foreground session: " + ids[1]);
+      console.log("ok");
+    } });
+    console.log("ready");
+  `, home, session, other], { stdin: "pipe", stdout: "pipe", stderr: "inherit" });
+  const reader = child.stdout.getReader();
+  try {
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain("ready");
+    const command = async (value: string) => {
+      child.stdin.write(`${value}\n`);
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain("ok");
+    };
+    expect(heldSessions(child.pid, join(home, "session-state"))?.size).toBe(2);
+    expect(copilotLoggedSession(options, args, child.pid)).toBe(session);
+    expect(copilotTranscriptFile(null, options, args, child.pid)).toBe(join(home, "session-state", session, "events.jsonl"));
+    const log = join(logs, `process-100-${child.pid}.log`);
+    for (let n = 0; n < 17; n++) {
+      appendFileSync(log, `unrelated ${".".repeat(1024 * 1024)}\n`);
+      expect(copilotLoggedSession(options, args, child.pid)).toBe(session);
+    }
+    expect(copilotLoggedSession(options, args, child.pid)).toBe(session);
+    await command("fork");
+    expect(copilotLoggedSession(options, args, child.pid)).toBe(other);
+    expect(copilotTranscriptFile(session, options, args, child.pid)).toBeNull();
+    expect(copilotTranscriptFile(other, options, args, child.pid)).toBe(join(home, "session-state", other, "events.jsonl"));
+    await command("back");
+    expect(copilotLoggedSession(options, args, child.pid)).toBe(session);
+    await command("incomplete");
+    expect(copilotLoggedSession(options, args, child.pid)).toBeNull();
+    expect(copilotTranscriptFile(session, options, args, child.pid)).toBeNull();
+  } finally {
+    child.kill();
+    await child.exited;
     rmSync(root, { recursive: true, force: true });
   }
 });

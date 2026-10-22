@@ -33,7 +33,17 @@ export function copilotRecords(jsonl: string): { type: string; data: Row; timest
 export function parseCopilotTranscript(jsonl: string, maxTurns = MAX_TURNS): ConversationTurn[] {
   const turns: ConversationTurn[] = [];
   const pending = new Map<string, Extract<ConversationPart, { kind: "tool" }>>();
+  const completionTools = new Map<string, string>();
   let finished = false;
+  let completion: string | null = null;
+  const flushCompletion = (): void => {
+    const last = turns.at(-1);
+    if (completion !== null && last?.role === "assistant"
+      && !last.parts.some((part) => part.kind === "text" && part.phase === "final_answer")) {
+      last.parts.push({ kind: "text", text: completion, phase: "final_answer" });
+    }
+    completion = null;
+  };
   const assistant = (ts: string | null): ConversationTurn => {
     const last = turns.at(-1);
     if (last?.role === "assistant" && !finished) return last;
@@ -46,8 +56,10 @@ export function parseCopilotTranscript(jsonl: string, maxTurns = MAX_TURNS): Con
     if (type === "user.message") {
       const content = text(data.content);
       if (content !== null) {
+        flushCompletion();
         turns.push({ role: "user", ts: timestamp, parts: [{ kind: "text", text: content }] });
         pending.clear();
+        completionTools.clear();
         finished = false;
       }
     } else if (type === "assistant.message") {
@@ -72,6 +84,7 @@ export function parseCopilotTranscript(jsonl: string, maxTurns = MAX_TURNS): Con
         };
         turn.parts.push(part);
         pending.set(request.toolCallId, part);
+        if (name === "task_complete" && text(args.summary) !== null) completionTools.set(request.toolCallId, text(args.summary)!);
       }
       if (data.phase === "final_answer") finished = true;
     } else if (type === "tool.execution_start") {
@@ -85,6 +98,7 @@ export function parseCopilotTranscript(jsonl: string, maxTurns = MAX_TURNS): Con
       };
       assistant(timestamp).parts.push(part);
       pending.set(id, part);
+      if (name === "task_complete" && text(args.summary) !== null) completionTools.set(id, text(args.summary)!);
     } else if (type === "tool.execution_complete") {
       const id = data.toolCallId;
       const part = typeof id === "string" ? pending.get(id) : undefined;
@@ -92,12 +106,18 @@ export function parseCopilotTranscript(jsonl: string, maxTurns = MAX_TURNS): Con
       const output = text(row(data.result)?.content) ?? "";
       trimOutput(part, output, id);
       if (data.success === false) part.error = true;
+      if (data.success !== false && completionTools.has(id)) completion ??= completionTools.get(id)!;
       pending.delete(id);
+      completionTools.delete(id);
+    } else if (type === "session.task_complete") {
+      if (turns.length && turns.at(-1)?.role === "user") assistant(timestamp);
+      completion = text(data.summary) ?? completion;
     } else if (type === "assistant.turn_end") {
       const last = turns.at(-1);
       if (last?.role === "assistant" && timestamp !== null) last.end_ts = timestamp;
     }
   }
+  flushCompletion();
   return turns.filter((turn) => turn.parts.length > 0).slice(-maxTurns);
 }
 
