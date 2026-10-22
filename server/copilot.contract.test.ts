@@ -23,6 +23,7 @@ let workspace: string;
 let pane: string;
 
 beforeAll(async () => {
+  if (process.platform !== "linux") return;
   for (const session of [id, other]) mkdirSync(join(home, "session-state", session), { recursive: true });
   writeFileSync(executable, `import { openSync, mkdirSync, writeFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";

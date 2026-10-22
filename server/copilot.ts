@@ -55,6 +55,7 @@ export function parseCopilotTranscript(jsonl: string, maxTurns = MAX_TURNS): Con
       const requests = Array.isArray(data.toolRequests) ? data.toolRequests : [];
       if (content === null && requests.length === 0) continue;
       const turn = assistant(timestamp);
+      if (timestamp !== null) turn.end_ts = timestamp;
       if (content !== null) turn.parts.push({
         kind: "text", text: content,
         ...(data.phase === "final_answer" || data.phase === "commentary" ? { phase: data.phase } : {}),
@@ -94,7 +95,7 @@ export function parseCopilotTranscript(jsonl: string, maxTurns = MAX_TURNS): Con
       pending.delete(id);
     } else if (type === "assistant.turn_end") {
       const last = turns.at(-1);
-      if (last?.role === "assistant" && !finished && timestamp !== null) last.end_ts = timestamp;
+      if (last?.role === "assistant" && timestamp !== null) last.end_ts = timestamp;
     }
   }
   return turns.filter((turn) => turn.parts.length > 0).slice(-maxTurns);

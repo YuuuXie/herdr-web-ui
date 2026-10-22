@@ -65,6 +65,34 @@ it("keeps unphased completed prose available as an answer, and explicit commenta
   expect(turns.at(-1)?.parts).toEqual([{ kind: "text", text: "work", phase: "commentary" }, { kind: "text", text: "unphased answer" }]);
 });
 
+it.each(["commentary", "final_answer", undefined])("tracks the latest assistant message timestamp with phase %s", (phase) => {
+  const stamp = "2026-10-21T00:00:05Z";
+  const transcript = start + prompt("question") + answer("Working.", "commentary")
+    + JSON.stringify({ type: "assistant.message", timestamp: stamp, data: { content: "Latest message.", phase } }) + "\n";
+  expect(parseCopilotTranscript(transcript).at(-1)).toMatchObject({
+    ts: "2026-10-21T00:00:00Z", end_ts: stamp,
+  });
+  const missingTimestamp = JSON.stringify({ type: "assistant.turn_end", data: {}, timestamp: null }) + "\n";
+  expect(parseCopilotTranscript(transcript + missingTimestamp).at(-1)?.end_ts).toBe(stamp);
+});
+
+it("advances activity time past intermediate tool rounds and the final answer without changing turn boundaries", () => {
+  const at = (type: string, data: object, second: number) =>
+    JSON.stringify({ type, data, timestamp: `2026-10-21T00:00:0${second}Z` }) + "\n";
+  const work = start + prompt("question") + at("assistant.message", { content: "Working.", phase: "commentary" }, 1)
+    + at("assistant.turn_end", {}, 2);
+  const final = work + at("assistant.message", { content: "Done.", phase: "final_answer" }, 3);
+  const completed = final + at("assistant.turn_end", {}, 4);
+  expect(parseCopilotTranscript(work).at(-1)?.end_ts).toBe("2026-10-21T00:00:02Z");
+  expect(parseCopilotTranscript(final).at(-1)?.end_ts).toBe("2026-10-21T00:00:03Z");
+  expect(parseCopilotTranscript(completed).at(-1)?.end_ts).toBe("2026-10-21T00:00:04Z");
+  const turns = parseCopilotTranscript(completed + at("user.message", { content: "Next question." }, 5)
+    + at("assistant.turn_end", {}, 6));
+  expect(turns.map(({ role }) => role)).toEqual(["user", "assistant", "user"]);
+  expect(turns[1]?.end_ts).toBe("2026-10-21T00:00:04Z");
+  expect(turns[2]?.end_ts).toBeUndefined();
+});
+
 it("pages bounded native turns and observes append, torn lines, and same-file resume without reset", () => {
   const dir = mkdtempSync(join(tmpdir(), "copilot-page-"));
   const path = join(dir, "events.jsonl");
