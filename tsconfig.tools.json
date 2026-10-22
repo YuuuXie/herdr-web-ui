@@ -4,6 +4,9 @@
     "noEmit": true
   },
   "files": [
+    "personal/remote.ts",
+    "personal/remote.test.ts",
+    "personal/menu-qa.ts",
     "scripts/herdr-themes.ts",
     "scripts/herdr-theme-proposal.ts",
     "scripts/herdr-theme-overrides.ts",
