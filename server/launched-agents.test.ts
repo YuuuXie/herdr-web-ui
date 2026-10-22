@@ -29,6 +29,17 @@ describe("LaunchedAgents", () => {
     expect(launched.notBegun("w1:p1", "done", 60_000)).toBeNull();
   });
 
+  it("keeps a new Copilot chat empty until its first turn, without claiming an untracked pane", () => {
+    const launched = new LaunchedAgents();
+    launched.launched("w1:p1", "copilot", 0);
+    const first = launched.notBegun("w1:p1", "idle", 5_000);
+    expect(first).toEqual({ source: "copilot-transcript", historyId: "unwritten:launch:w1:p1:1" });
+    expect(launched.notBegun("w1:p1", "idle", 6_000)).toEqual(first);
+    expect(launched.notBegun("w1:p2", "idle", 6_000)).toBeNull();
+    expect(launched.notBegun("w1:p1", "working", 7_000)).toBeNull();
+    expect(launched.notBegun("w1:p1", "done", 8_000)).toBeNull();
+  });
+
   it("takes an agent at work long after its launch for one on its first turn", () => {
     const launched = new LaunchedAgents();
     launched.launched("w1:p1", "opencode", 0);
