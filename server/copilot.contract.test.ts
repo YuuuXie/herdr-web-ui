@@ -53,6 +53,10 @@ process.stdin.on("data", (chunk) => {
     else if (line === ":unregister" && lifecycle) {
       appendFileSync(log, new Date().toISOString() + " [INFO] Unregistering foreground session: " + selected + "\\n");
     }
+    else if (line.startsWith(":register ") && lifecycle) {
+      selected = line.slice(10);
+      appendFileSync(log, new Date().toISOString() + " [INFO] Registering foreground session: " + selected + "\\n");
+    }
     else if (line === ":quit") process.exit(0);
     else appendFileSync(join(home, "input.txt"), line + "\\n");
   }
@@ -285,6 +289,12 @@ it.skipIf(process.platform !== "linux")("reads a resumed CLI without marker or r
     const latestRef = unobserved.turns.flatMap((turn) => turn.parts).find((part) => part.output_ref)?.output_ref;
     expect(latestRef).toBeDefined();
     expect((await fetch(outputUrl(latestRef!))).status).toBe(404);
+    await herdrRpc("pane.send_text", { pane_id: current, text: `:register ${forked}\n` });
+    for (const deadline = Date.now() + 5000;;) {
+      if ((await read()).turns[0]?.parts[0]?.text === forked) break;
+      if (Date.now() > deadline) throw new Error("new registration was not selected after unregistration");
+      await Bun.sleep(50);
+    }
   } finally {
     await workspaceClose(created.workspace.workspace_id);
   }
