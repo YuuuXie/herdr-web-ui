@@ -14,8 +14,8 @@ import { createPushService } from "./push.ts";
 describe("slow structural roster refreshes", () => {
   for (const remote of [false, true]) {
     it(`publishes each slow ${remote ? "remote" : "local"} roster while structural changes continue`, async () => {
-      const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-test-slow-roster-"));
-      const workspace = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-slow-roster" });
+      const root = mkdtempSync(join(tmpdir(), "ovis-test-slow-roster-"));
+      const workspace = await workspaceCreate({ cwd: root, label: "ovis-test-slow-roster" });
       let manager: MachineManager | undefined;
       let bridge: ReturnType<typeof Bun.serve> | undefined;
       let pending: { snapshot: SessionSnapshot; resolve: (snapshot: SessionSnapshot) => void } | undefined;
@@ -113,11 +113,11 @@ describe("slow structural roster refreshes", () => {
 
 describe("workspace order evidence across a real bridge", () => {
   it("relays the source's own move receipt, and the roster carries the source's pairs untouched", async () => {
-    const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-test-order-bridge-"));
-    const first = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-order-bridge-first" });
-    const second = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-order-bridge-second" });
-    const managedBoot = process.env["HERDR_WEB_BOOT_ID"];
-    delete process.env["HERDR_WEB_BOOT_ID"];
+    const root = mkdtempSync(join(tmpdir(), "ovis-test-order-bridge-"));
+    const first = await workspaceCreate({ cwd: root, label: "ovis-test-order-bridge-first" });
+    const second = await workspaceCreate({ cwd: root, label: "ovis-test-order-bridge-second" });
+    const managedBoot = process.env["OVIS_BOOT_ID"];
+    delete process.env["OVIS_BOOT_ID"];
     const token = "test-order-bridge-token";
     const bridge = createServer({ port: 0, hostname: "127.0.0.1", token, machines: false, stateDir: join(root, "bridge"), tailscaleOwner: null });
     let clock = 0;
@@ -162,7 +162,7 @@ describe("workspace order evidence across a real bridge", () => {
     } finally {
       manager.stop();
       bridge.stop();
-      if (managedBoot === undefined) delete process.env["HERDR_WEB_BOOT_ID"]; else process.env["HERDR_WEB_BOOT_ID"] = managedBoot;
+      if (managedBoot === undefined) delete process.env["OVIS_BOOT_ID"]; else process.env["OVIS_BOOT_ID"] = managedBoot;
       await workspaceClose(first.workspace.workspace_id).catch(() => {});
       await workspaceClose(second.workspace.workspace_id).catch(() => {});
       rmSync(root, { recursive: true, force: true });

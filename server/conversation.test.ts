@@ -286,6 +286,8 @@ describe("Devin pane identity", () => {
     const pane = { pane_id: "pane-a", cwd, agent: "devin", agent_session: { agent: "devin", kind: "id", value: "one" } } as HerdrPane;
     const db = new Database(dbPath);
     try {
+      // Cache identity needs committed rows, not a durable sync for each fixture node.
+      db.exec("PRAGMA synchronous = OFF");
       db.exec("CREATE TABLE sessions(id TEXT, working_directory TEXT, main_chain_id INTEGER, hidden INTEGER, model TEXT); CREATE TABLE message_nodes(session_id TEXT,node_id INTEGER,parent_node_id INTEGER,chat_message TEXT,created_at INTEGER); CREATE TABLE tool_call_state(session_id TEXT,tool_call_id TEXT,tool_call_json TEXT,tool_call_update_json TEXT)");
       // more turns than one page holds, so the newest page carries a cursor
       db.query("INSERT INTO sessions VALUES ('one', ?, 120, 0, NULL)").run(cwd);
@@ -1859,6 +1861,8 @@ describe("Agy native ledger through shared paging", () => {
     mkdirSync(join(path, ".."), { recursive: true });
     mkdirSync(join(root, "conversations"));
     db = new Database(join(root, "conversations", `${session}.db`));
+    // The ledger tests observe committed DB changes, never recovery after a crash.
+    db.exec("PRAGMA synchronous = OFF");
     db.exec("CREATE TABLE steps(idx INTEGER PRIMARY KEY)");
     writeFileSync(path, "");
     forgetTranscriptState();

@@ -80,7 +80,7 @@ describe("isolate", () => {
     try {
       expect(first.env["PATH"]).toBe("/bin");
       expect(first.env["XDG_CONFIG_HOME"]).not.toBe("/home/someone/.config");
-      for (const name of ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "HERDR_WEB_STATE_DIR"]) {
+      for (const name of ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "OVIS_STATE_DIR"]) {
         expect(existsSync(first.env[name]!)).toBe(true);
         expect(first.env[name]).not.toBe(second.env[name]);
       }
@@ -88,7 +88,7 @@ describe("isolate", () => {
       expect(first.env["HERDR_TEST_SESSION"]).toMatch(/^check-[0-9a-f]{6}$/);
       expect(first.env["HERDR_TEST_SESSION"]).not.toBe(second.env["HERDR_TEST_SESSION"]);
       if (process.platform !== "win32") {
-        for (const name of ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "HERDR_WEB_STATE_DIR"]) expect(statSync(first.env[name]!).mode & 0o777).toBe(0o700);
+        for (const name of ["XDG_CONFIG_HOME", "XDG_STATE_HOME", "OVIS_STATE_DIR"]) expect(statSync(first.env[name]!).mode & 0o777).toBe(0o700);
       }
       // one integration file at a time unless asked otherwise
       expect(first.env["HERDR_TEST_SHARDS"]).toBe("1");
@@ -115,8 +115,8 @@ describe("isolate", () => {
   it("refuses to run in the herdr the user works in, and hands on nothing that names it", () => {
     expect(() => isolate({ HERDR_TEST_LIVE: "1" }, scratch())).toThrow("HERDR_TEST_LIVE");
     // as a shell inside one of the user's panes has them
-    const { env } = isolate({ HERDR_SOCKET: "/live.sock", HERDR_SOCKET_PATH: "/live.sock", HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1", HERDR_TAB_ID: "w1:t1", HERDR_WORKSPACE_ID: "w1", HERDR_WEB_HERDR_BIN: "/bin/herdr" }, scratch());
-    expect(Object.keys(env).filter((name) => name.startsWith("HERDR_")).sort()).toEqual(["HERDR_TEST_DISPOSABLE_CONFIG", "HERDR_TEST_SESSION", "HERDR_TEST_SHARDS", "HERDR_WEB_HERDR_BIN", "HERDR_WEB_STATE_DIR"]);
+    const { env } = isolate({ HERDR_SOCKET: "/live.sock", HERDR_SOCKET_PATH: "/live.sock", HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1", HERDR_TAB_ID: "w1:t1", HERDR_WORKSPACE_ID: "w1", OVIS_HERDR_BIN: "/bin/herdr" }, scratch());
+    expect(Object.keys(env).filter((name) => name.startsWith("HERDR_") || name.startsWith("OVIS_")).sort()).toEqual(["HERDR_TEST_DISPOSABLE_CONFIG", "HERDR_TEST_SESSION", "HERDR_TEST_SHARDS", "OVIS_HERDR_BIN", "OVIS_STATE_DIR"]);
   });
 });
 

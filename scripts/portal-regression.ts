@@ -125,7 +125,7 @@ try {
   browser = await chromium.launch({ executablePath: process.env.CHROME_PATH ?? chromium.executablePath(), headless: true, args: ["--no-sandbox"] });
   const ownerContext = await browser.newContext({ viewport: { width: 1100, height: 800 }, locale: "en-US" });
   contexts.push(ownerContext);
-  await ownerContext.addInitScript(() => localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en" })));
+  await ownerContext.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
   await portalFetchPage(ownerContext);
   const ownerPage = await ownerContext.newPage();
   ownerPage.setDefaultTimeout(10_000);
@@ -157,7 +157,7 @@ try {
 
   const watchContext = await browser.newContext({ viewport: { width: 1100, height: 800 }, locale: "en-US" });
   contexts.push(watchContext);
-  await watchContext.addInitScript(() => localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en" })));
+  await watchContext.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
   await watchContext.addCookies([{ name: DEVICE_COOKIE, value: watchToken, url: origin, httpOnly: true, sameSite: "Strict" }]);
   await portalFetchPage(watchContext);
   const watchPage = await watchContext.newPage();
@@ -325,7 +325,7 @@ try {
   servers.push(blockedServer);
   const blockedContext = await browser.newContext({ viewport: { width: 1100, height: 800 }, locale: "en-US" });
   contexts.push(blockedContext);
-  await blockedContext.addInitScript(() => localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en" })));
+  await blockedContext.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
   await portalFetchPage(blockedContext);
   const blockedPage = await blockedContext.newPage();
   blockedPage.setDefaultTimeout(10_000);
@@ -334,7 +334,7 @@ try {
   await blockedPage.locator(".conn-live").waitFor({ state: "attached", timeout: 15_000 });
   await openPhoneSettings(blockedPage);
   const blockedSettings = settingsOf(blockedPage);
-  await blockedSettings.getByText("Set HERDR_WEB_TOKEN on this PC and restart the app to start Portal.", { exact: true }).waitFor({ timeout: 10_000 });
+  await blockedSettings.getByText("Set OVIS_TOKEN on this PC and restart the app to start Portal.", { exact: true }).waitFor({ timeout: 10_000 });
   assert.equal(await blockedSettings.getByRole("button", { name: "Start", exact: true }).count(), 0, "Portal Start is unavailable without a configured token");
   assert.deepEqual(pageErrors, [], "the token-required page has no browser errors");
   console.log("PASS Portal token-required UI: the relay cannot be started without a configured token");

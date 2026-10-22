@@ -75,8 +75,8 @@ try {
     const context = await browser.newContext({ viewport: { width, height: touch ? 844 : 800 }, hasTouch: touch, isMobile: touch, colorScheme: scheme, locale: "en-US" });
     try {
       await context.addInitScript((theme) => {
-        localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en", theme }));
-        for (const pane of ["w1H:p1", "w1D:p1", "w1K:p1"]) localStorage.setItem(`herdr-web-ui:view:${pane}`, "chat");
+        localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme }));
+        for (const pane of ["w1H:p1", "w1D:p1", "w1K:p1"]) localStorage.setItem(`ovis:view:${pane}`, "chat");
       }, scheme);
       const page = await context.newPage();
       const errors: string[] = [];

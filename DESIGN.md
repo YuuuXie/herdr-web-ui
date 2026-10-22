@@ -615,7 +615,7 @@ The values are the ones in `src/styles.css`. Every token but `--fs-input` is `ca
   event, scoped to the active, presented pane and its PC; a modal or observe mode blocks it.
   It sends no text or keys and never takes an attach. The binding follows the existing shortcut
   customization and Mod+Shift policy.
-- All settings share one sanitized `localStorage["herdr-web-ui:settings"]` record.
+- All settings share one sanitized `localStorage["ovis:settings"]` record.
 
 ## 4. Spacing & Layout
 
@@ -741,7 +741,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   it to resize the sidebar between `240px` and `520px`, never past half the window; the arrow
   keys move the focused edge `16px`, Home and End go to the limits, and a double-click returns to
   `--sidebar-w`. The seam shows `--border-strong` under a pointer and `--accent` while held or
-  focused. The chosen width is kept per device (`herdr-web-ui:sidebar-width`) and written as
+  focused. The chosen width is kept per device (`ovis:sidebar-width`) and written as
   `--sidebar-user-w` on `.app`; the sidebar and its top row in the header both read
   `--sidebar-shown-w`. A phone's drawer keeps `--sidebar-w`.
 - The sidebar keeps its width on desktop until its edge is dragged, and is a `<=768px` drawer. The desktop collapse removes its
@@ -949,7 +949,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   that same open or closed folder takes its place. Where nothing hovers (touch) the folder always
   shows. For any other workspace it is a dim glyph or the icon, and no control. Worktree rows have no folder: they sit one cell in, their marks under the parent's.
   Worktree folds are remembered at
-  `herdr-web-ui:worktree-group-collapsed:<machineId>:<repo_key>`; a folded group keeps the selected
+  `ovis:worktree-group-collapsed:<machineId>:<repo_key>`; a folded group keeps the selected
   child visible, and status snapshots preserve a deliberate fold.
 - Worktree branches come from the existing `GET /api/worktree/list`, matched by repository key,
   open workspace ID and normalized checkout path. A listing-confirmed detached checkout reads
@@ -1080,13 +1080,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   Events carry the epoch too: changing it invalidates other panes' cached finish IDs until their
   next snapshot. The browser never infers a finish epoch from counters. An older bridge missing either
   field always keeps the dot; transitions wholly missed by the server cannot be counted.
-- Each `(PC, epoch, pane)` has its own `herdr-web-ui:finish:` localStorage key, containing the
+- Each `(PC, epoch, pane)` has its own `ovis:finish:` localStorage key, containing the
   greatest viewed finish ID, its write time and an optional completed-answer fingerprint. A
   delayed lower finish ID also stays read: counters only advance inside an epoch, while other
   epochs have separate keys. Tabs writing different panes cannot overwrite
   one another; storage events reconcile a same-pane race toward the maximum. A tab closed before
   reconciliation or storage eviction can bring back a read dot, never acknowledge a newer finish.
-  Old `herdr-web-ui:seen:<pc>` records are removed. Epochs this tab actually left are removed;
+  Old `ovis:seen:<pc>` records are removed. Epochs this tab actually left are removed;
   unfamiliar epochs are ignored, not deleted using a possibly stale first roster. Storage is
   capped at 2,000 keys, oldest first, never pruned by a tab's pane or PC roster. A record this
   browser writes is also sent to its server (`POST /api/seen`, shared/seen.ts), which keeps the
@@ -2029,7 +2029,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - Only an accepted direct send or an explicit **Send now** of a terminal command opens a
   **terminal peek** (`lib/terminalPeek.ts`): the pane's own attached grid over the chat's
   transcript, in the box the hidden grid already holds. It is this browser's state alone: the
-  lens stays Chat (the header keeps Chat pressed; `herdr-web-ui:view:<pane>` and `?view=` are not
+  lens stays Chat (the header keeps Chat pressed; `ovis:view:<pane>` and `?view=` are not
   written), nothing attaches anew and herdr's focus never moves. Queue acceptance and automatic
   delivery open none, refused or unconfirmed sends keep the draft and existing note, and a
   view-only device has no composer to open one from. The chat stays mounted under the grid
@@ -2446,8 +2446,17 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   labels kept whole; wrapped lines start at the left. The reconnecting banner's held preview
   (`Input held: “…”`) stays on one line in mono, cut with an ellipsis, with the whole text as its
   title: a command is never broken inside a word.
+- The touch input line keeps `--space-1` above and below its field and send button (and `--space-2`
+  at the sides, as the key bar), so neither sits on the key bar's rule; its row keeps the height it
+  had, so the grid and the pty are not resized. Keys draw at `--key-h` (`--keybar-h` less `3 * --space-1`), centered
+  in the bar with equal room above and below, and reach `--touch-target` through an invisible
+  expander inside the bar; the bar's safe-area padding is added below that.
 - The mobile key bar starts with Esc, Tab and `^C`, then sticky Ctrl/Alt/Shift, Enter and arrows;
-  it never steals typing focus. Modifiers remain highlighted until toggled off,
+  it never steals typing focus, and on a touch screen it never takes the focus either: a key tapped
+  with the keyboard put away leaves it away (only the keyboard key or a tap on the line or the grid
+  raises it). That follows the platform's own rule rather than an app's: a button never raises a
+  phone's keyboard, only a text field does. A fine pointer, which raises no keyboard, still moves
+  the focus to the grid. Modifiers remain highlighted until toggled off,
   leaving the pane/lens or disconnecting; each exposes `aria-pressed`.
 - That is the default row. Settings → Terminal → Key bar can add, remove and reorder every
   terminal key and register exact combinations. Removing a held modifier clears it immediately.

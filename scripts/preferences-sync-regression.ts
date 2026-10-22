@@ -19,15 +19,15 @@ let server = serve(0);
 const origin = `http://127.0.0.1:${server.port}`;
 
 interface Opened { context: BrowserContext; page: Page; puts: { settings: Record<string, unknown>; pins?: string[] }[] }
-const mainKey = "herdr-web-ui:settings";
+const mainKey = "ovis:settings";
 const qaDir = process.env["PREFERENCES_QA_DIR"];
 if (qaDir) mkdirSync(qaDir, { recursive: true });
 
 async function browserAt(browser: Awaited<ReturnType<typeof chromium.launch>>, own: Record<string, unknown> = {}, pins: string[] = [], before?: (context: BrowserContext) => Promise<void>): Promise<Opened> {
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
   await context.addInitScript(([own, pins]) => {
-    if (!localStorage.getItem("herdr-web-ui:settings")) localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en", theme: "dark", terminalFontSize: 13, ...own }));
-    if (!localStorage.getItem("herdr-web-ui:sidebar-agent-pins")) localStorage.setItem("herdr-web-ui:sidebar-agent-pins", JSON.stringify(pins));
+    if (!localStorage.getItem("ovis:settings")) localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark", terminalFontSize: 13, ...own }));
+    if (!localStorage.getItem("ovis:sidebar-agent-pins")) localStorage.setItem("ovis:sidebar-agent-pins", JSON.stringify(pins));
     const setItem = Storage.prototype.setItem;
     Storage.prototype.setItem = function (key, value) {
       setItem.call(this, key, value);
@@ -175,7 +175,7 @@ try {
     console.log("QA mode change reached second client");
     assert.deepEqual(a.puts.map((body) => Object.keys(body.settings)), [["theme"]]);
     assert.deepEqual(a.puts[0]?.pins, ["local:w1:pa"]);
-    await storageHolds(b.page, "herdr-web-ui:sidebar-agent-pins", ["local:w1:pa"]);
+    await storageHolds(b.page, "ovis:sidebar-agent-pins", ["local:w1:pa"]);
 
     await a.page.goto(`${origin}/?settings=terminal`);
     await a.page.getByRole("button", { name: "Increase terminal font size", exact: true }).click();
@@ -183,7 +183,7 @@ try {
     await windows([a, b]);
     assert.equal(a.puts.length, 1);
     await settingsHold(b.page, { terminalFontSize: 13 });
-    const aPins = storageHolds(a.page, "herdr-web-ui:sidebar-agent-pins", ["local:w9:p1"]);
+    const aPins = storageHolds(a.page, "ovis:sidebar-agent-pins", ["local:w9:p1"]);
     await write({}, ["local:w9:p1"]);
     await aPins;
     console.log("QA device settings and pins verified");
@@ -233,7 +233,7 @@ try {
 
     // A save that keeps failing pauses after three, keeps what is edited meanwhile, and goes out
     // on Retry or when the event stream reopens; another client converges on the latest values.
-    const pinnedWorkspace = (await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-preferences-pin" })).workspace.workspace_id;
+    const pinnedWorkspace = (await workspaceCreate({ cwd: root, label: "ovis-test-preferences-pin" })).workspace.workspace_id;
     try {
       const refusal = { error: { code: "preferences_unwritable", message: "EACCES: permission denied, open '/state/preferences.json.tmp'" } };
       let failing = false;
@@ -283,7 +283,7 @@ try {
       await e.page.locator(".settings-dialog").waitFor({ state: "detached" });
       await e.page.locator(`.workspace-group[data-workspace="${pinnedWorkspace}"] .workspace-select`).click({ button: "right" });
       await e.page.getByRole("menu").getByRole("menuitem", { name: "Pin workspace", exact: true }).click();
-      const pins: string[] = await e.page.evaluate(() => JSON.parse(localStorage.getItem("herdr-web-ui:sidebar-agent-pins") ?? "[]"));
+      const pins: string[] = await e.page.evaluate(() => JSON.parse(localStorage.getItem("ovis:sidebar-agent-pins") ?? "[]"));
       assert.ok(pins.includes(`local:workspace:${pinnedWorkspace}`));
       await e.page.locator(".sidebar-footer").getByRole("button", { name: "Settings", exact: true }).click();
       await e.page.getByRole("tab", { name: "Appearance" }).click();
@@ -323,7 +323,7 @@ try {
       assert.equal((await nextPut(e)).status(), 200);
       assert.equal(e.puts[5]?.settings["theme"], "light", "the edit made during the Retry goes next");
       await alert.waitFor({ state: "detached" });
-      await Promise.all([settingsHold(f.page, { theme: "light", showThinking: false }), storageHolds(f.page, "herdr-web-ui:sidebar-agent-pins", pins)]);
+      await Promise.all([settingsHold(f.page, { theme: "light", showThinking: false }), storageHolds(f.page, "ovis:sidebar-agent-pins", pins)]);
       const confirmed = await held();
       assert.equal(confirmed.settings["theme"], "light");
       assert.deepEqual(confirmed.pins, pins);

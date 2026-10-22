@@ -422,11 +422,11 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
         };
         relookup();
       };
-      const command = process.env["HERDR_WEB_HERDR_BIN"] || "herdr";
+      const command = process.env["OVIS_HERDR_BIN"] || "herdr";
       // node-pty reports a command it cannot exec only as a silent exit 1, which reads as an
       // ended attach (#925): look it up on the PATH and from the home directory the sidecar uses.
       if (!Bun.which(command, { PATH: process.env["PATH"] ?? "", cwd: process.env["HOME"] ?? "/" })) {
-        throw new HerdrError("attach_failed", `herdr could not be started: ${command} is not an executable on the server's PATH (set HERDR_WEB_HERDR_BIN to herdr's full path)`);
+        throw new HerdrError("attach_failed", `herdr could not be started: ${command} is not an executable on the server's PATH (set OVIS_HERDR_BIN to herdr's full path)`);
       }
       const session = new PtySession({
         command,

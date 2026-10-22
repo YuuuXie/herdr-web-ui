@@ -11,7 +11,7 @@ import { herdrRpc, workspaceClose, workspaceCreate } from "../server/herdr/clien
 import { chromePath } from "./chrome-path.ts";
 
 const repo = resolve(import.meta.dir, "..");
-const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-pwa-"));
+const root = mkdtempSync(join(tmpdir(), "ovis-pwa-"));
 const app = join(root, "app");
 const baseline = join(root, "baseline");
 const current = join(repo, "dist");
@@ -123,7 +123,7 @@ try {
   const standIn = join(root, "codex");
   writeFileSync(standIn, `#!/bin/sh\nprintf ready > "${join(root, "ready")}"\nwhile IFS= read -r line; do :; done\n`);
   chmodSync(standIn, 0o755);
-  const created = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-pwa" });
+  const created = await workspaceCreate({ cwd: root, label: "ovis-test-pwa" });
   workspace = created.workspace.workspace_id;
   const pane = created.root_pane.pane_id;
   const processReady = new Promise<void>((resolveReady, reject) => {
@@ -202,7 +202,7 @@ try {
       await placeholder.waitFor();
       assert.ok((await placeholder.textContent())?.trim(), "the cached app draws its connection state, not a blank root");
       assert.equal(await page.locator('script[type="module"][src]').getAttribute("src"), entry);
-      assert.equal(await page.evaluate((key) => localStorage.getItem(key), `herdr-web-ui:composer-draft:${pane}`), draft,
+      assert.equal(await page.evaluate((key) => localStorage.getItem(key), `ovis:composer-draft:${pane}`), draft,
         "the draft survives while the offline composer is unmounted");
       assert.ok(requests.some((request) => request.phase === phase && request.url === new URL(entry, origin).href && request.status === 200 && request.fromWorker),
         "the entry really loads from the service worker while offline");

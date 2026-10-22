@@ -53,17 +53,17 @@ async function activeTabInView(page: Page, label: string): Promise<void> {
 
 /** A phone's header and tab strip over a workspace with more tabs than fit the screen. */
 export async function checkMobileTabs(browser: Browser, origin: string): Promise<void> {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-web-ui-mobile-tabs-")));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-mobile-tabs-")));
   let workspaceId: string | null = null;
   let otherWorkspaceId: string | null = null;
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" });
   try {
-    const created = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-mobile-tabs" });
+    const created = await workspaceCreate({ cwd: root, label: "ovis-test-mobile-tabs" });
     workspaceId = created.workspace.workspace_id;
     const first = created.root_pane.pane_id;
     // herdr keeps the first pane in front: the split one is seen only where the browser opens it
     const second = (await paneSplit(first, "right", false)).pane_id;
-    const other = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-mobile-tabs-other" });
+    const other = await workspaceCreate({ cwd: root, label: "ovis-test-mobile-tabs-other" });
     otherWorkspaceId = other.workspace.workspace_id;
     const panes: string[] = [];
     for (const label of TAB_LABELS) panes.push((await tabCreate({ workspaceId, cwd: root, label })).root_pane.pane_id);
@@ -71,7 +71,7 @@ export async function checkMobileTabs(browser: Browser, origin: string): Promise
     await herdrRpc("pane.report_agent", { pane_id: first, source: "manual", agent: "claude", state: "idle" });
 
     await context.addInitScript(() => {
-      if (localStorage.getItem("herdr-web-ui:settings") === null) localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en" }));
+      if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
       const viewport = window.visualViewport!;
       let height: number | null = null;
       Object.defineProperty(viewport, "height", { get: () => height ?? window.innerHeight });
@@ -184,7 +184,7 @@ export async function checkMobileTabs(browser: Browser, origin: string): Promise
     for (const scrolled of [false, true]) {
       const slow = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US", serviceWorkers: "block" });
       try {
-        await slow.addInitScript(() => localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en" })));
+        await slow.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
         const late = await slow.newPage();
         const lateErrors: string[] = [];
         late.on("pageerror", (error) => lateErrors.push(error.message));
@@ -235,7 +235,7 @@ if (import.meta.main) {
   const { chromium } = await import("playwright-core");
   const { createServer } = await import("../server/index.ts");
   const { UsageService } = await import("../server/usage.ts");
-  const state = mkdtempSync(join(tmpdir(), "herdr-web-ui-mobile-tabs-state-"));
+  const state = mkdtempSync(join(tmpdir(), "ovis-mobile-tabs-state-"));
   const server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: state, usage: new UsageService(undefined, []) });
   const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
   try {

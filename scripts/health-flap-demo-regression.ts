@@ -207,7 +207,7 @@ export async function openDemo(browser: Browser, url: string, query: Record<stri
   const width = options.width ?? 1440;
   const mobile = options.mobile ?? width < 500;
   const context = await browser.newContext({ viewport: { width, height: mobile ? 844 : 900 }, deviceScaleFactor: mobile ? 3 : 1, isMobile: mobile, hasTouch: mobile, locale: "en-US" });
-  await context.addInitScript((settings) => localStorage.setItem("herdr-web-ui:settings", settings), JSON.stringify({ ...SETTINGS, ...options.settings }));
+  await context.addInitScript((settings) => localStorage.setItem("ovis:settings", settings), JSON.stringify({ ...SETTINGS, ...options.settings }));
   const page = await context.newPage();
   page.setDefaultTimeout(10_000);
   const errors: string[] = [];

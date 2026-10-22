@@ -39,7 +39,7 @@ function standIn(options: { version?: string; ready?: boolean; says?: string; ig
     `  version) echo '${options.version ?? "v2.6.1"}' ;;`,
     "  expose)",
     `    echo $$ >> '${pids}'`,
-    `    { printf '%s\\n' "$@"; echo "token=\${HERDR_WEB_TOKEN-unset} identity=\${IDENTITY_PATH-unset}"; } > '${seen}'`,
+    `    { printf '%s\\n' "$@"; echo "token=\${OVIS_TOKEN-unset} identity=\${IDENTITY_PATH-unset}"; } > '${seen}'`,
     "    id=''; previous=''; for arg in \"$@\"; do [ \"$previous\" = --identity-path ] && id=\"$arg\"; previous=\"$arg\"; done",
     "    [ -z \"$id\" ] || [ -f \"$id\" ] || echo '{\"fixture\":true}' > \"$id\"",
     options.ignoreTerm ? "    trap '' TERM" : "    trap 'exit 0' TERM",
@@ -120,7 +120,7 @@ function seedSavedPortal(stateDir: string, pid: number | null = process.pid): vo
 }
 
 // what a server started by the herdr plugin may carry: its own token, and Portal's own settings
-const inherited = { HERDR_WEB_TOKEN: "do-not-pass-this-on", IDENTITY_PATH: "/somewhere/else.json" };
+const inherited = { OVIS_TOKEN: "do-not-pass-this-on", IDENTITY_PATH: "/somewhere/else.json" };
 const previous: Record<string, string | undefined> = {};
 beforeEach(() => {
   for (const [name, value] of Object.entries(inherited)) { previous[name] = process.env[name]; process.env[name] = value; }
@@ -476,7 +476,7 @@ describe("running Portal", () => {
     );
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({
-      error: { code: "portal_state_in_use", message: expect.stringContaining("HERDR_WEB_STATE_DIR") },
+      error: { code: "portal_state_in_use", message: expect.stringContaining("OVIS_STATE_DIR") },
     });
     expect(alive(pid)).toBe(true);
     expect(readFileSync(join(stateDir, "portal", "state.json"), "utf8")).toContain('"port":7317');
@@ -927,10 +927,10 @@ describe("recovering Portal", () => {
     };
     const cases: Case[] = [
       { name: "no recovery authority", at: "exit", change: (c) => { c.authorize = false; }, says: "no authority" },
-      { name: "token removed", at: "exit", change: (c) => { c.guards.tokenSet = false; }, says: "HERDR_WEB_TOKEN" },
-      { name: "token removed before the spawn", at: "spawn", change: (c) => { c.guards.tokenSet = false; }, says: "HERDR_WEB_TOKEN" },
-      { name: "serve-only", at: "exit", change: (c) => { c.guards.serveOnly = true; }, says: "HERDR_WEB_TAILSCALE_SERVE_ONLY" },
-      { name: "serve-only before the spawn", at: "spawn", change: (c) => { c.guards.serveOnly = true; }, says: "HERDR_WEB_TAILSCALE_SERVE_ONLY" },
+      { name: "token removed", at: "exit", change: (c) => { c.guards.tokenSet = false; }, says: "OVIS_TOKEN" },
+      { name: "token removed before the spawn", at: "spawn", change: (c) => { c.guards.tokenSet = false; }, says: "OVIS_TOKEN" },
+      { name: "serve-only", at: "exit", change: (c) => { c.guards.serveOnly = true; }, says: "OVIS_TAILSCALE_SERVE_ONLY" },
+      { name: "serve-only before the spawn", at: "spawn", change: (c) => { c.guards.serveOnly = true; }, says: "OVIS_TAILSCALE_SERVE_ONLY" },
       { name: "saved port changed", at: "exit", change: (c) => rewrite(c.stateDir, { port: 7318 }), says: "saved state changed" },
       { name: "saved relay changed before the spawn", at: "spawn", change: (c) => rewrite(c.stateDir, { relay: "https://other.example" }), says: "saved state changed" },
       { name: "saved pid taken over before the spawn", at: "spawn", change: (c) => rewrite(c.stateDir, { pid: 987654321 }), says: "saved state changed" },

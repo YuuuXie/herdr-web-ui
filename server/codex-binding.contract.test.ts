@@ -10,7 +10,7 @@ import rolloutHeaders from "./fixtures/codex-rollout-headers.json";
 
 // Real herdr panes running a stand-in `codex` process: which rollout the chat reads
 // while nothing Codex said is on screen.
-const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-codex-binding-"));
+const root = mkdtempSync(join(tmpdir(), "ovis-codex-binding-"));
 const codexHome = join(root, "codex");
 const threads = {
   resumed: "01a0c7a1-56d9-7e20-9f08-f7a2d973bc01",
@@ -60,7 +60,7 @@ const codexRunning = async (paneId: string, not?: string): Promise<string> => {
 };
 
 const pane = async (label: string, command: string, cwd = root): Promise<string> => {
-  const created = await workspaceCreate({ cwd, label: `herdr-web-ui-test-codex-binding-${label}` });
+  const created = await workspaceCreate({ cwd, label: `ovis-test-codex-binding-${label}` });
   workspaces.push(created.workspace.workspace_id);
   const paneId = created.root_pane.pane_id;
   await herdrRpc("pane.send_text", { pane_id: paneId, text: `${command}\n` });

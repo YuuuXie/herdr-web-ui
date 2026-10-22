@@ -4,11 +4,11 @@
  * Code and friends) reads the path from the prompt text - the one image channel a pty
  * byte stream can carry; there is no clipboard or sixel hop in between.
  *
- * Files land in `<pane cwd>/.herdr-web-ui/`, not /tmp, on purpose: agents ask before
+ * Files land in `<pane cwd>/.ovis/`, not /tmp, on purpose: agents ask before
  * reading outside their project directory, and a path inside the project keeps the
  * attachment visible (and git-ignorable) next to the conversation. A pane without a
  * known cwd falls back to the OS temp dir - the path still works, it just may cost
- * the agent a read-permission prompt. `HERDR_WEB_PASTE_DIR` sends every attachment to
+ * the agent a read-permission prompt. `OVIS_PASTE_DIR` sends every attachment to
  * one directory instead, for those who would rather keep them out of the working tree.
  */
 
@@ -77,16 +77,16 @@ function storedName(name: string | undefined): { base: string; extension: string
   };
 }
 
-/** Where a pane's attachments go: `HERDR_WEB_PASTE_DIR` when set, else `<cwd>/.herdr-web-ui`. */
+/** Where a pane's attachments go: `OVIS_PASTE_DIR` when set, else `<cwd>/.ovis`. */
 export function pasteDirectory(cwd: string | null | undefined): string {
-  const override = process.env["HERDR_WEB_PASTE_DIR"]?.trim();
+  const override = process.env["OVIS_PASTE_DIR"]?.trim();
   if (override) {
     // the plugin's env file is not a shell: expand a leading ~ here, before either separator.
     // The separators are dropped with it: a leading one would make the rest an absolute path
     const home = /^~(?:[\\/]+(.*))?$/s.exec(override);
     return home ? resolve(homedir(), home[1] ?? "") : resolve(override);
   }
-  return join(cwd ?? join(tmpdir(), "herdr-web-ui"), ".herdr-web-ui");
+  return join(cwd ?? join(tmpdir(), "ovis"), ".ovis");
 }
 
 const EXTENSIONS: Record<string, string> = {

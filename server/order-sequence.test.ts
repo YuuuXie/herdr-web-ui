@@ -44,7 +44,7 @@ test("a server lifetime is its own epoch: another starts again at 0", () => {
 });
 
 test("a session read still waiting on herdr when a move is confirmed carries the number from before the move", async () => {
-  const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-order-fence-"));
+  const root = mkdtempSync(join(tmpdir(), "ovis-order-fence-"));
   const previousSocket = process.env.HERDR_SOCKET;
   const socketPath = join(root, "herdr.sock");
   const sockets = new Set<Socket>();

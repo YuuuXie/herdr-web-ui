@@ -5,7 +5,7 @@
  * Whatever a request asks, the guide's rules for a public proxy hold (docs/guide.md, Behind a
  * reverse proxy):
  *
- * - no address without a token, and none while HERDR_WEB_TAILSCALE_SERVE_ONLY says tailscale serve
+ * - no address without a token, and none while OVIS_TAILSCALE_SERVE_ONLY says tailscale serve
  *   is the only way in, not even one an earlier server left running;
  * - routed mode, which keeps the browser's Host and sends X-Forwarded-For and
  *   X-Forwarded-Proto: https, and drops a visitor's Tailscale-User-Login;
@@ -52,9 +52,9 @@ const PORTAL_ENV = ["PATH", "HOME", "USERPROFILE", "SystemRoot", "TMPDIR", "TEMP
 type Phase = PortalStatus["phase"];
 type Child = ReturnType<typeof Bun.spawn>;
 interface Guards {
-  /** HERDR_WEB_TOKEN is set */
+  /** OVIS_TOKEN is set */
   tokenSet: boolean;
-  /** HERDR_WEB_TAILSCALE_SERVE_ONLY: tailscale serve is declared the only way in */
+  /** OVIS_TAILSCALE_SERVE_ONLY: tailscale serve is declared the only way in */
   serveOnly: boolean;
 }
 interface StartRequest extends Guards {
@@ -439,8 +439,8 @@ export class PortalService {
     const guards = this.guards?.() ?? null;
     if (guards === null) throw new Error("this server gave no authority to restart it. Start it again.");
     const blocked = blockedBy(guards);
-    if (blocked === "token_required") throw new Error("HERDR_WEB_TOKEN is not set. Set it and restart the app before you start Portal again.");
-    if (blocked === "serve_only") throw new Error("HERDR_WEB_TAILSCALE_SERVE_ONLY says tailscale serve is the only way in. Turn it off and restart the app before you start Portal again.");
+    if (blocked === "token_required") throw new Error("OVIS_TOKEN is not set. Set it and restart the app before you start Portal again.");
+    if (blocked === "serve_only") throw new Error("OVIS_TAILSCALE_SERVE_ONLY says tailscale serve is the only way in. Turn it off and restart the app before you start Portal again.");
     const saved = this.saved();
     if (!saved.enabled || saved.relay !== relay || saved.port !== port || saved.pid !== recovery.pid) throw new Error("its saved state changed meanwhile. Start it again.");
     if (this.identityDigest() !== recovery.identity) throw new Error("its identity file changed or is missing, so the address would not be the same. Start it again.");
@@ -713,9 +713,9 @@ export async function handlePortalRequest(request: Request, pathname: string, po
   if (relay === null) return fail("invalid_relay", "Give the relay as an https address, such as https://relay.example.com.", 400);
   let started: ReturnType<PortalService["start"]>;
   try { started = portal.start({ ...context, relay }); } catch (error) { return errorResponse(error); }
-  if (started === "token_required") return fail("token_required", "Set HERDR_WEB_TOKEN and restart the app before you start Portal: anyone on the internet can open its address.", 409);
-  if (started === "serve_only") return fail("serve_only", "Turn off HERDR_WEB_TAILSCALE_SERVE_ONLY and restart the app before you start Portal: it says tailscale serve is the only way in.", 409);
+  if (started === "token_required") return fail("token_required", "Set OVIS_TOKEN and restart the app before you start Portal: anyone on the internet can open its address.", 409);
+  if (started === "serve_only") return fail("serve_only", "Turn off OVIS_TAILSCALE_SERVE_ONLY and restart the app before you start Portal: it says tailscale serve is the only way in.", 409);
   if (started === "busy") return fail("portal_busy", "Portal is busy; try again once it is idle.", 409);
-  if (started === "state_in_use") return fail("portal_state_in_use", "Another server owns this Portal state directory. Give this server its own HERDR_WEB_STATE_DIR.", 409);
+  if (started === "state_in_use") return fail("portal_state_in_use", "Another server owns this Portal state directory. Give this server its own OVIS_STATE_DIR.", 409);
   return reply({ accepted: true }, 202);
 }

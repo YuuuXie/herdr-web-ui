@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { DeviceRole, PairedDevice } from "../shared/protocol.ts";
 import type { Access } from "./access.ts";
-import { deviceCookie, isSecureRequest, noContent } from "./auth.ts";
+import { CLEAR_LEGACY_DEVICE_COOKIE, deviceCookie, isSecureRequest, noContent } from "./auth.ts";
 import { badRequest, isJsonObject, jsonResponse, setRequestRoute } from "./http.ts";
 import { sameOrigin } from "./machine-security.ts";
 import { writePrivateState } from "./private-state.ts";
@@ -260,7 +260,7 @@ export async function handleDeviceRequest(request: Request, pathname: string, st
     if (typeof body["code"] !== "string") return badRequest("missing_code", "code is required");
     const paired = store.pair(body["code"], normalizeLabel(body["label"], "Device"), "drive");
     if (paired === null) return jsonResponse({ error: { code: "invalid_code", message: "the code is wrong, spent or expired; start a new pairing on the PC" } }, 401);
-    return noContent(deviceCookie(paired.token, isSecureRequest(request)));
+    return noContent(deviceCookie(paired.token, isSecureRequest(request)), CLEAR_LEGACY_DEVICE_COOKIE);
   }
   if (pathname === "/api/devices") {
     setRequestRoute(pathname);

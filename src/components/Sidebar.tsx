@@ -36,7 +36,7 @@ import { currentSidebarPins, pinnedGroupIds, pinnedWorkspaceIds, pruneWorkspaceP
 
 const ERROR_NOTE_MS = 5000;
 
-const worktreeCollapsedKey = (machineId: string, repoKey: string) => `herdr-web-ui:worktree-group-collapsed:${machineId}:${repoKey}`;
+const worktreeCollapsedKey = (machineId: string, repoKey: string) => `ovis:worktree-group-collapsed:${machineId}:${repoKey}`;
 function storedWorktreeCollapsed(machineId: string, repoKeys: string[]): Set<string> {
   const collapsed = new Set<string>();
   try {

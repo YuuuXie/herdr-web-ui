@@ -95,7 +95,7 @@ async function checkPinned(page: Page, cdp?: CDPSession): Promise<void> {
   await childRow.focus();
   await page.keyboard.press("Alt+ArrowDown");
   assert.deepEqual(await restRows(), restBefore, "Alt+Down cannot move the repository's unpinned worktree");
-  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("herdr-web-ui:sidebar-agent-pins") ?? "[]") as string[]);
+  const stored = await page.evaluate(() => JSON.parse(localStorage.getItem("ovis:sidebar-agent-pins") ?? "[]") as string[]);
   assert.deepEqual(stored.filter((key) => key.includes(":workspace:")).map((key) => key.split(":workspace:")[1]), expected, "the pin list holds the new order");
   const unpinned = before[2]!;
   await drag(ids[0]!, unpinned);
@@ -201,7 +201,7 @@ type Browser = Awaited<ReturnType<typeof chromium.launch>>;
 async function openOrderPage(browser: Browser, url: string) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, locale: "en-US" });
   await context.addInitScript(() => {
-    localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en" }));
+    localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
     const commits: string[] = [];
     (window as unknown as { __orderCommits: string[] }).__orderCommits = commits;
     new MutationObserver(() => {
@@ -452,7 +452,7 @@ async function checkAdmission(browser: Browser, url: string): Promise<unknown> {
 async function checkOrderEvidence(browser: Browser, url: string): Promise<{ happy: unknown; failure: unknown }> {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, locale: "en-US" });
   await context.addInitScript(() => {
-    localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en" }));
+    localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
     const commits: string[] = [];
     (window as unknown as { __orderCommits: string[] }).__orderCommits = commits;
     new MutationObserver(() => {
@@ -634,7 +634,7 @@ async function checkOrderEvidence(browser: Browser, url: string): Promise<{ happ
 /** An older server (no pairs, receipts without numbers) on a PC never protected: the fallback, on its own page. */
 async function checkLegacyFallback(browser: Awaited<ReturnType<typeof chromium.launch>>, url: string): Promise<unknown> {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, locale: "en-US" });
-  await context.addInitScript(() => localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en" })));
+  await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
   const page = await context.newPage();
   await page.goto(url);
   await page.locator(".conn-live").waitFor({ state: "attached" });
@@ -690,7 +690,7 @@ try {
     const browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
     try {
       const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, locale: "en-US" });
-      await context.addInitScript(() => localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en" })));
+      await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
       const page = await context.newPage();
       const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
@@ -754,7 +754,7 @@ try {
       assert.deepEqual(errors, []);
       await context.close();
       const desktop = await browser.newContext({ viewport: { width: 1440, height: 1000 }, locale: "en-US" });
-      await desktop.addInitScript(() => localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en" })));
+      await desktop.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
       const desktopPage = await desktop.newPage();
       await desktopPage.goto(`http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/`);
       await desktopPage.locator(".conn-live").waitFor({ state: "attached" });

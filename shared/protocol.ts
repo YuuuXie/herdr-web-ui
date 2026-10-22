@@ -1,5 +1,5 @@
 /**
- * herdr-web-ui's own HTTP/WebSocket contract, shared by the Bun server and the React client.
+ * Ovis's own HTTP/WebSocket contract, shared by the Bun server and the React client.
  *
  * The herdr WIRE types are NOT hand-written here: they are generated from herdr's
  * published API schema into ./herdr-api.generated.ts and re-exported below, so a
@@ -213,7 +213,7 @@ export type { Machine, MachineEvent, MachineRoster, PaneTarget, SetupJob, SetupR
  *         (layout.set_split_ratio: a split in that tab, root at [], false follows the first child,
  *         true the second; finite ratio in 0.1..0.9; an absent split answers split_not_found)
  *  POST   /api/pane/image  { pane_id, content_type, data_base64, name? } -> { ok: true, path }
- *         pasted image -> file under <pane cwd>/.herdr-web-ui/ (under HERDR_WEB_PASTE_DIR when the
+ *         pasted image -> file under <pane cwd>/.ovis/ (under OVIS_PASTE_DIR when the
  *         server's environment sets it), path for the prompt. An image/png, image/jpeg, image/gif or
  *         image/webp upload is named paste-<stamp>.<png|jpg|gif|webp> after the signature of its
  *         bytes, whichever of the four it claims; bytes with none of those signatures answer 400
@@ -284,12 +284,12 @@ export type { Machine, MachineEvent, MachineRoster, PaneTarget, SetupJob, SetupR
  *  POST   /api/worktree/remove { workspace_id, force? } -> WorktreeRemoved (worktree.remove: deletes the
  *         checkout and closes its workspace, keeps the branch; a dirty checkout is refused without force:
  *         dirty_worktree_requires_force)
- *  POST   /api/auth        { token }     -> 204 + Set-Cookie herdr_web_token (401 invalid_token on mismatch)
+ *  POST   /api/auth        { token }     -> 204 + Set-Cookie ovis_token (401 invalid_token on mismatch)
  *  DELETE /api/auth                      -> 204, clears the token and the device cookies
  *  GET    /api/devices                   -> { devices: PairedDevice[] } (the paired devices; `current` marks the caller's)
  *  POST   /api/devices/pair/start        -> PairingCode: a six-digit code good for ten minutes, replacing any pending one
  *         (X-Herdr-Machine: 1 + same origin, from a client with full access)
- *  POST   /api/devices/pair { code, label? } -> 204 + Set-Cookie herdr_web_device (public, like /api/auth;
+ *  POST   /api/devices/pair { code, label? } -> 204 + Set-Cookie ovis_device (public, like /api/auth;
  *         401 invalid_code when the code is wrong, spent after five tries, or expired)
  *  PATCH  /api/devices/:id  { label }    -> PairedDevice;  DELETE /api/devices/:id -> 204 (revoked at its next request)
  *  GET    /api/push                      -> PushKey (the VAPID application server key)
@@ -304,9 +304,9 @@ export type { Machine, MachineEvent, MachineRoster, PaneTarget, SetupJob, SetupR
  *  Access: every route above except /api/health, /api/auth and /api/devices/pair, plus the
  *  /ws upgrade, needs the request to be one of: from this PC itself (no proxy in front);
  *  the PC's own Tailscale login, as `tailscale serve` states it — or, where
- *  HERDR_WEB_TAILSCALE_SERVE_ONLY=1 declares serve the only ingress on a tailnet one login
+ *  OVIS_TAILSCALE_SERVE_ONLY=1 declares serve the only ingress on a tailnet one login
  *  owns with no tagged node, a serve request that states no login; a paired device's cookie;
- *  the shared token (HERDR_WEB_TOKEN) as cookie or `Authorization: Bearer <token>`. With a
+ *  the shared token (OVIS_TOKEN) as cookie or `Authorization: Bearer <token>`. With a
  *  token configured, only the last two count, this PC and its Tailscale login included. Without one, and while no
  *  device is paired, anything that reaches the server is let in as before (the startup
  *  warning says so). Refusals answer 401 `unauthorized` (403 `other_user` for another Tailscale
@@ -431,7 +431,7 @@ export interface HealthAuth {
  * reach that address is let in (`open` in `server/access.ts`). It is a warning, never a gate:
  * nothing about who is let in changes because this field exists.
  *
- * Never sent to a request that did not get in. "This host runs herdr-web-ui with no token"
+ * Never sent to a request that did not get in. "This host runs Ovis with no token"
  * is reconnaissance for whoever is asking, not help.
  */
 export interface LanExposure {
@@ -470,7 +470,7 @@ export interface TailscaleAccess {
   readonly dns_name: string | null;
   /** the HTTPS address Tailscale already proxies to this server, when there is one */
   readonly serving_url: string | null;
-  /** otherwise, the command that publishes it on the first free of the usual HTTPS ports, or on the one HERDR_WEB_TAILSCALE_HTTPS_PORT names while it is free ... */
+  /** otherwise, the command that publishes it on the first free of the usual HTTPS ports, or on the one OVIS_TAILSCALE_HTTPS_PORT names while it is free ... */
   readonly serve_command: string | null;
   /** ... and the address that command gives, when the DNS name is known */
   readonly serve_url: string | null;

@@ -14,7 +14,7 @@
  *
  * Whatever needs herdr runs on a herdr of its own. Its config, its plugin state and the web UI's
  * state live in a directory made for this run (XDG_CONFIG_HOME, XDG_STATE_HOME,
- * HERDR_WEB_STATE_DIR), under a session name made for this run. Nothing reads the user's herdr
+ * OVIS_STATE_DIR), under a session name made for this run. Nothing reads the user's herdr
  * config, so no plugin installed there starts with the test servers, and two runs on one PC
  * share no socket and no file. The run stops its herdr servers and removes the directory when
  * it ends, also when it is interrupted. CHECK_DIR names a directory to use and keep instead.
@@ -164,7 +164,7 @@ export function isolate(base: Record<string, string | undefined>, kept: string |
     XDG_CONFIG_HOME: config,
     [DISPOSABLE_CONFIG_ENV]: config,
     XDG_STATE_HOME: join(dir, "state"),
-    HERDR_WEB_STATE_DIR: join(dir, "web-state"),
+    OVIS_STATE_DIR: join(dir, "web-state"),
     HERDR_TEST_SESSION: session,
     // One integration file at a time: four at once made the timing-bound contract tests fail in
     // turn on CI's four cores. HERDR_TEST_SHARDS raises it (scripts/ci-tests.ts).
@@ -811,8 +811,8 @@ async function main(): Promise<void> {
       if (todo.fast && code === 0 && !ending) code = await run("unit tests", [bun, "run", "test:unit"], plain);
     }
     if (todo.concurrent && code === 0 && !ending) {
-      const herdr = process.env["HERDR_WEB_HERDR_BIN"] || "herdr";
-      if (!Bun.which(herdr)) throw new Error("concurrent mode needs herdr on PATH (or HERDR_WEB_HERDR_BIN)");
+      const herdr = process.env["OVIS_HERDR_BIN"] || "herdr";
+      if (!Bun.which(herdr)) throw new Error("concurrent mode needs herdr on PATH (or OVIS_HERDR_BIN)");
       const herdrVersion = spawnSync(herdr, ["--version"], { encoding: "utf8", env: process.env, timeout: 5_000 });
       const herdrVersionLine = herdrVersion.stdout?.trim().split(/\r?\n/, 1)[0] ?? "";
       report.toolchain.herdrVersion = herdrVersion.status === 0 && /^herdr\s+v?\d+(?:\.\d+){1,3}(?:[-+][A-Za-z0-9.-]+)?$/i.test(herdrVersionLine)
@@ -882,8 +882,8 @@ async function main(): Promise<void> {
       code = unitCode !== 0 ? unitCode : lanesCode;
     }
     if (code === 0 && needsHerdr && !ending && !todo.concurrent) {
-      const herdr = process.env["HERDR_WEB_HERDR_BIN"] || "herdr";
-      if (!Bun.which(herdr)) throw new Error("this needs herdr on PATH (or HERDR_WEB_HERDR_BIN)");
+      const herdr = process.env["OVIS_HERDR_BIN"] || "herdr";
+      if (!Bun.which(herdr)) throw new Error("this needs herdr on PATH (or OVIS_HERDR_BIN)");
       const herdrVersion = spawnSync(herdr, ["--version"], { encoding: "utf8", env: process.env, timeout: 5_000 });
       const herdrVersionLine = herdrVersion.stdout?.trim().split(/\r?\n/, 1)[0] ?? "";
       report.toolchain.herdrVersion = herdrVersion.status === 0 && /^herdr\s+v?\d+(?:\.\d+){1,3}(?:[-+][A-Za-z0-9.-]+)?$/i.test(herdrVersionLine)

@@ -3,7 +3,7 @@
  * `fetch("/api/…")`, `new EventSource("/api/machines/events")` and `new WebSocket("…/ws")` from
  * fixtures (site/demo/fixtures/, captured by scripts/demo-fixtures.ts from the staged fictional
  * session) instead of the network. The app's own code is unchanged: it believes it talks to a
- * herdr web ui server on a PC called "workstation".
+ * Ovis server on a PC called "workstation".
  *
  * What works: the sidebar (two repositories, each with two agent worktrees) and its live statuses,
  * every chat, the Codex approval card (answering it sets Codex to work and ends the turn), the
@@ -932,12 +932,12 @@ const PLUGINS: PluginActions[] = [
 const NO_PORTAL: PortalStatus = { supported: false, version: null, min_version: "v2.6.1", usable: false, phase: "idle", relay: null, url: null, blocked: null, error: null, output: null };
 /**
  * The demo opens no public address, so its Portal section stays hidden. A QA script may stage a
- * fictional status (a recovering Portal, say) as JSON in sessionStorage["herdr-web-ui:demo-portal"]
+ * fictional status (a recovering Portal, say) as JSON in sessionStorage["ovis:demo-portal"]
  * before the app loads; starting and stopping stay refused either way.
  */
 function demoPortal(): PortalStatus {
   try {
-    const staged = window.sessionStorage.getItem("herdr-web-ui:demo-portal");
+    const staged = window.sessionStorage.getItem("ovis:demo-portal");
     if (staged !== null) return { ...NO_PORTAL, supported: true, ...(JSON.parse(staged) as Partial<PortalStatus>) };
   } catch { /* storage blocked or not JSON: the section stays hidden */ }
   return NO_PORTAL;
@@ -2163,7 +2163,7 @@ setTimeout(() => {
 // panes open in the chat here unless this browser already chose (the same key the app writes).
 for (const pane of snapshot().panes) {
   if (!pane.agent) continue;
-  const key = `herdr-web-ui:view:${pane.pane_id}`;
+  const key = `ovis:view:${pane.pane_id}`;
   try { if (window.localStorage.getItem(key) === null) window.localStorage.setItem(key, "chat"); } catch { /* storage blocked: the app falls back to its default */ }
 }
 

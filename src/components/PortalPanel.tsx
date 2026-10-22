@@ -33,7 +33,7 @@ export function PortalPanel({ readOnly = false }: { readOnly?: boolean }) {
       </SettingsRow>
     );
   } else if (status.blocked !== null) {
-    control = <p className="settings-item settings-hint">{status.blocked === "token_required" ? t("Set HERDR_WEB_TOKEN on this PC and restart the app to start Portal.") : t("Portal is a second way in: unset HERDR_WEB_TAILSCALE_SERVE_ONLY on this PC and restart the app first.")}</p>;
+    control = <p className="settings-item settings-hint">{status.blocked === "token_required" ? t("Set OVIS_TOKEN on this PC and restart the app to start Portal.") : t("Portal is a second way in: unset OVIS_TAILSCALE_SERVE_ONLY on this PC and restart the app first.")}</p>;
   } else if (!status.usable) {
     control = (
       <div className="settings-item">

@@ -73,7 +73,7 @@ try {
         try {
           await context.addInitScript(({ agent, theme }) => {
             window.rewindFixture = { agent, inputs: [], mutations: [] };
-            localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en", theme, defaultView: "chat", alertsOn: false }));
+            localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme, defaultView: "chat", alertsOn: false }));
           }, { agent, theme });
           const page = await context.newPage();
           page.setDefaultTimeout(10000);

@@ -192,7 +192,7 @@ export async function changeTelemetry(change: TelemetryChange): Promise<Telemetr
 }
 
 /**
- * A non-2xx answer from the herdr-web-ui API. `code` is the server's error-envelope
+ * A non-2xx answer from the Ovis API. `code` is the server's error-envelope
  * code when it sent one, so callers can branch on `status` (401 = the token gate)
  * without parsing the message.
  */
@@ -904,7 +904,7 @@ export async function fetchVoiceStatus(): Promise<VoiceStatus> {
   return (await response.json()) as VoiceStatus;
 }
 
-/** PUT /api/voice/config: ApiError 409 `key_from_env` when the key comes from HERDR_WEB_OPENAI_API_KEY. */
+/** PUT /api/voice/config: ApiError 409 `key_from_env` when the key comes from OVIS_OPENAI_API_KEY. */
 export async function saveVoiceConfig(update: VoiceConfigUpdate): Promise<VoiceStatus> {
   const response = await fetch("/api/voice/config", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(update) });
   if (!response.ok) throw await errorFrom("/api/voice/config", response);

@@ -29,7 +29,7 @@ const EXPECTED: Record<SessionHistoryAgent, [string, string]> = {
   devin: ["fixture-0002", "fixture-0001"],
 };
 
-const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-session-history-"));
+const root = mkdtempSync(join(tmpdir(), "ovis-session-history-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 let homes = 0;
 const newHome = () => { const home = join(root, `home-${++homes}`); mkdirSync(home); return home; };

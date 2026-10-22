@@ -27,7 +27,7 @@ import type { RepoDiffFileList, RepoDiffFilePatch, SessionHistoryResponse } from
 import { PendingInputError, PendingInputs } from "./pending-input.ts";
 
 /**
- * Contract test for herdr-web-ui's HTTP + WS surface.
+ * Contract test for Ovis's HTTP + WS surface.
  * Runs against the REAL herdr server on the developer's machine: these are the
  * integration seams the browser UI depends on, so a mock here would prove nothing.
  * Tests never mutate a user's pane; mutation cases create labeled workspaces and close them in afterAll.
@@ -35,7 +35,7 @@ import { PendingInputError, PendingInputs } from "./pending-input.ts";
  * user's ~/.config/herdr-web-ui holds their real devices, which a test must never page.
  */
 let server: { port: number; stop: () => void };
-const stateDir = mkdtempSync(join(tmpdir(), "herdr-web-ui-contract-"));
+const stateDir = mkdtempSync(join(tmpdir(), "ovis-contract-"));
 
 beforeAll(() => {
   server = createServer({ port: 0, stateDir, alertTiming: { short: 0, long: 0, longTurn: 0 }, pushLoopbackHttp: true });
@@ -62,7 +62,7 @@ describe("removed Chat rewind API", () => {
 
 describe("Grok conversation API", () => {
   it.skipIf(process.platform !== "linux")("uses exact process/session evidence, validators and revision-bound output refs", async () => {
-    const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-grok-contract-"));
+    const root = mkdtempSync(join(tmpdir(), "ovis-grok-contract-"));
     const id = "00000000-0000-4000-8000-000000000001";
     const directory = join(root, "sessions", "%2Ffictional", id);
     mkdirSync(directory, { recursive: true });
@@ -84,7 +84,7 @@ describe("Grok conversation API", () => {
     const executable = join(root, "grok");
     const nativeExecutable = join(root, "grok-1.0.52-linux-x86_64");
     copyFileSync("/bin/sleep", nativeExecutable); symlinkSync("grok-1.0.52-linux-x86_64", executable); chmodSync(executable, 0o755);
-    const created = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-grok-api" });
+    const created = await workspaceCreate({ cwd: root, label: "ovis-test-grok-api" });
     let app: ReturnType<typeof createServer> | undefined;
     try {
       const paneId = created.root_pane.pane_id;
@@ -148,7 +148,7 @@ describe("Grok conversation API", () => {
 
 describe("Agy conversation API", () => {
   it.skipIf(process.platform !== "linux")("binds the selected held lock, honors saved rewinds and recovers from an unwritten store", async () => {
-    const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-agy-contract-"));
+    const root = mkdtempSync(join(tmpdir(), "ovis-agy-contract-"));
     const id = "00000000-0000-4000-8000-000000000031";
     const path = join(root, "brain", id, ".system_generated", "logs", "transcript_full.jsonl");
     mkdirSync(join(path, ".."), { recursive: true });
@@ -159,7 +159,7 @@ describe("Agy conversation API", () => {
     writeFileSync(join(root, "presence", "00000000-0000-4000-8000-000000000032.lock"), "");
     const executable = join(root, "agy");
     copyFileSync("/bin/sleep", executable); chmodSync(executable, 0o755);
-    const created = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-agy-api" });
+    const created = await workspaceCreate({ cwd: root, label: "ovis-test-agy-api" });
     let app: ReturnType<typeof createServer> | undefined, db: Database | undefined;
     let monitor: ConversationMonitor | undefined;
     try {
@@ -254,8 +254,8 @@ describe("GET /api/pane/plan", () => {
 
 describe("Devin conversation API", () => {
   it("keeps the terminal fallback rather than guessing a shell pane's session", async () => {
-    const state = mkdtempSync(join(tmpdir(), "herdr-web-ui-devin-contract-"));
-    const created = await workspaceCreate({ cwd: state, label: "herdr-web-ui-test-devin-identity" });
+    const state = mkdtempSync(join(tmpdir(), "ovis-devin-contract-"));
+    const created = await workspaceCreate({ cwd: state, label: "ovis-test-devin-identity" });
     const dbPath = join(state, "sessions.db");
     let bridge: ReturnType<typeof createServer> | undefined;
     try {
@@ -347,7 +347,7 @@ describe("voice API", () => {
         return new Response(`data: ${JSON.stringify({ type: "transcript.text.done", text: "git status" })}\n\n`, { headers: { "content-type": "text/event-stream" } });
       },
     });
-    const voice = new VoiceService({ stateDir: voiceState, env: { HERDR_WEB_OPENAI_BASE_URL: `http://127.0.0.1:${provider.port}/v1` }, fetch });
+    const voice = new VoiceService({ stateDir: voiceState, env: { OVIS_OPENAI_BASE_URL: `http://127.0.0.1:${provider.port}/v1` }, fetch });
     const open = createServer({ port: 0, stateDir: voiceState, voice });
     const gated = createServer({ port: 0, stateDir: voiceState, voice, token: "test-voice-token" });
     const at = (path: string) => `http://localhost:${open.port}${path}`;
@@ -853,7 +853,7 @@ describe("tab rename and close", () => {
   });
 
   it("renames a tab, closes one beside another, and takes the workspace with its last tab", async () => {
-    const owned = await workspaceCreate({ cwd: tmpdir(), label: "herdr-web-ui-test-tab-rename-close" });
+    const owned = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-tab-rename-close" });
     const id = owned.workspace.workspace_id;
     let closed = false;
     try {
@@ -904,7 +904,7 @@ describe("tab reorder", () => {
     expect(((await missing.json()) as ApiError).error.code).toBe("tab_not_found");
   });
   it("uses boundaries before removal, preserves focus and IDs, and rejects out-of-range moves", async () => {
-    const owned = await workspaceCreate({ cwd: tmpdir(), label: "herdr-web-ui-test-tab-reorder" });
+    const owned = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-tab-reorder" });
     const id = owned.workspace.workspace_id;
     try {
       const second = await tabCreate({ workspaceId: id, label: "build" });
@@ -942,7 +942,7 @@ describe("agent rename", () => {
     (await herdrRpc<{ agents: Array<{ pane_id: string; name?: string | null }> }>("agent.list", {})).agents.find((agent) => agent.pane_id === paneId)?.name ?? null;
 
   it("sets, reads back and clears a pane's agent name, and passes herdr's refusals through", async () => {
-    const owned = await workspaceCreate({ cwd: tmpdir(), label: "herdr-web-ui-test-agent-rename" });
+    const owned = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-agent-rename" });
     const id = owned.workspace.workspace_id;
     const paneId = owned.root_pane.pane_id;
     try {
@@ -951,7 +951,7 @@ describe("agent rename", () => {
       expect(shell.status).toBe(404);
       expect(((await shell.json()) as ApiError).error.code).toBe("agent_not_found");
 
-      await herdrRpc("pane.report_agent", { pane_id: paneId, source: "herdr-web-ui-test", agent: "claude", state: "idle" });
+      await herdrRpc("pane.report_agent", { pane_id: paneId, source: "ovis-test", agent: "claude", state: "idle" });
       const set = await post({ pane_id: paneId, name: "webui-rename-a" });
       expect(set.status).toBe(200);
       expect(await set.json()).toEqual({ ok: true });
@@ -970,7 +970,7 @@ describe("agent rename", () => {
 
       // unique among the session's live agents
       const second = await tabCreate({ workspaceId: id });
-      await herdrRpc("pane.report_agent", { pane_id: second.root_pane.pane_id, source: "herdr-web-ui-test", agent: "codex", state: "working" });
+      await herdrRpc("pane.report_agent", { pane_id: second.root_pane.pane_id, source: "ovis-test", agent: "codex", state: "working" });
       const taken = await post({ pane_id: second.root_pane.pane_id, name: "webui-rename-a" });
       expect(taken.status).toBe(404);
       expect(((await taken.json()) as ApiError).error.code).toBe("agent_name_taken");
@@ -987,9 +987,9 @@ describe("agent rename", () => {
   });
 
   it("forwards a remote rename with the registered bridge token, not the browser's", async () => {
-    const owned = await workspaceCreate({ cwd: tmpdir(), label: "herdr-web-ui-test-agent-rename-bridge" });
+    const owned = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-agent-rename-bridge" });
     const paneId = owned.root_pane.pane_id;
-    const state = mkdtempSync(join(tmpdir(), "herdr-web-ui-agent-rename-bridge-"));
+    const state = mkdtempSync(join(tmpdir(), "ovis-agent-rename-bridge-"));
     // the other PC's bridge asks its browsers for a token of its own; the proxy holds only the bridge token it registered
     const bridge = createServer({ port: 0, hostname: "127.0.0.1", token: "test-browser-token", machines: false, registerBridge: true, stateDir: state, tailscaleOwner: null });
     const registered = JSON.parse(readFileSync(descriptorPath(), "utf8")) as BridgeDescriptor;
@@ -997,7 +997,7 @@ describe("agent rename", () => {
     const manager = { endpoint: (id: string) => id === "rename-remote" ? { url: endpoint, token: registered.token } : null, trackTerminal: () => () => {} } as unknown as MachineManager;
     try {
       expect(registered.token).not.toBe("test-browser-token");
-      await herdrRpc("pane.report_agent", { pane_id: paneId, source: "herdr-web-ui-test", agent: "claude", state: "idle" });
+      await herdrRpc("pane.report_agent", { pane_id: paneId, source: "ovis-test", agent: "claude", state: "idle" });
       // the browser token is deliberately absent: the proxy must authenticate with the bridge token
       expect((await fetch(`${endpoint}/api/agent/rename`, { method: "POST", body: "{}" })).status).toBe(401);
       const res = await handleMachineRequest(new Request("http://127.0.0.1/api/machines/rename-remote/agent/rename", {
@@ -1015,7 +1015,7 @@ describe("agent rename", () => {
   });
 
   it("answers the new-tab dialog's agent commands to another PC's registered bridge token", async () => {
-    const state = mkdtempSync(join(tmpdir(), "herdr-web-ui-agent-commands-bridge-"));
+    const state = mkdtempSync(join(tmpdir(), "ovis-agent-commands-bridge-"));
     const bridge = createServer({ port: 0, hostname: "127.0.0.1", token: "test-browser-token", machines: false, registerBridge: true, stateDir: state, tailscaleOwner: null });
     const registered = JSON.parse(readFileSync(descriptorPath(), "utf8")) as BridgeDescriptor;
     const endpoint = `http://127.0.0.1:${bridge.port}`;
@@ -1079,8 +1079,8 @@ describe("tab creation", () => {
   });
 
   it("creates a sibling tab with its own cwd and label without adding a workspace", async () => {
-    const owned = await workspaceCreate({ cwd: tmpdir(), label: "herdr-web-ui-test-tab" });
-    const cwd = mkdtempSync(join(tmpdir(), "herdr-web-ui-tab-cwd-"));
+    const owned = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-tab" });
+    const cwd = mkdtempSync(join(tmpdir(), "ovis-tab-cwd-"));
     try {
       const before = (await herdrRpc<{ snapshot: SessionSnapshot }>("session.snapshot", {})).snapshot;
       const res = await post({ workspace_id: owned.workspace.workspace_id, cwd, label: "second tab", agent: null });
@@ -1113,7 +1113,7 @@ describe("tab creation", () => {
   });
 
   it("supports the authenticated local-PC alias without allowing other tab routes", async () => {
-    const owned = await workspaceCreate({ cwd: tmpdir(), label: "herdr-web-ui-test-tab-local-alias" });
+    const owned = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-tab-local-alias" });
     try {
       const res = await fetch(`${base()}/api/machines/local/tab/create`, {
         method: "POST", headers: { "content-type": "application/json", "x-herdr-machine": "1" },
@@ -1128,8 +1128,8 @@ describe("tab creation", () => {
   });
 
   it("forwards remote tab creation using the registered bridge token", async () => {
-    const owned = await workspaceCreate({ cwd: tmpdir(), label: "herdr-web-ui-test-tab-bridge" });
-    const state = mkdtempSync(join(tmpdir(), "herdr-web-ui-tab-bridge-"));
+    const owned = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-tab-bridge" });
+    const state = mkdtempSync(join(tmpdir(), "ovis-tab-bridge-"));
     const bridge = createServer({ port: 0, hostname: "127.0.0.1", token: "test-browser-token", machines: false, registerBridge: true, stateDir: state, tailscaleOwner: null });
     const registered = JSON.parse(readFileSync(descriptorPath(), "utf8")) as BridgeDescriptor;
     const endpoint = `http://127.0.0.1:${bridge.port}`;
@@ -1166,7 +1166,7 @@ describe("tab creation", () => {
   it("shares unique agent names across concurrent tabs and preserves a tab when an explicit name collides", async () => {
     const first = await fetch(`${base()}/api/workspace/create`, {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ cwd: tmpdir(), label: "herdr-web-ui-test-tab-agents", agent: { kind: "muse" } }),
+      body: JSON.stringify({ cwd: tmpdir(), label: "ovis-test-tab-agents", agent: { kind: "muse" } }),
     });
     const owned = await first.json() as WorkspaceCreated;
     const nameOf = async (paneId: string) => (await herdrRpc<{ agent: { name: string } }>("agent.get", { target: paneId })).agent.name;
@@ -1193,7 +1193,7 @@ describe("tab creation", () => {
   }, 20_000);
 
   it("refuses a first message without an agent, an empty, oversized or control-laden one, before anything is made", async () => {
-    const owned = await workspaceCreate({ cwd: tmpdir(), label: "herdr-web-ui-test-tab-first-message" });
+    const owned = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-tab-first-message" });
     try {
       const before = (await sessionSnapshot()).tabs.length;
       for (const [body, reason] of [
@@ -1214,7 +1214,7 @@ describe("tab creation", () => {
   });
 
   it("refuses launch arguments the dialog never sends, before anything is made: a tab or line break, a model of two words, an effort the agent does not name", async () => {
-    const owned = await workspaceCreate({ cwd: tmpdir(), label: "herdr-web-ui-test-tab-launch-args" });
+    const owned = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-tab-launch-args" });
     try {
       const before = (await sessionSnapshot()).tabs.length;
       for (const [agent, reason] of [
@@ -1235,8 +1235,8 @@ describe("tab creation", () => {
   });
 
   it("returns the created tab when a shell agent is unavailable, and queues no first message for an agent that did not start", async () => {
-    const owned = await workspaceCreate({ cwd: tmpdir(), label: "herdr-web-ui-test-tab-shell" });
-    const bin = mkdtempSync(join(tmpdir(), "herdr-web-ui-tab-empty-path-"));
+    const owned = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-tab-shell" });
+    const bin = mkdtempSync(join(tmpdir(), "ovis-tab-empty-path-"));
     const path = process.env["PATH"];
     try {
       process.env["PATH"] = bin;
@@ -1254,7 +1254,7 @@ describe("tab creation", () => {
   });
 
   it("says when the agent started but its first message could not be queued, apart from an agent that did not start", async () => {
-    const owned = await workspaceCreate({ cwd: tmpdir(), label: "herdr-web-ui-test-tab-first-not-queued" });
+    const owned = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-tab-first-not-queued" });
     const made: string[] = [];
     // the queue's own refusals, past the route's checks: its text rule, and a full list
     const text = spyOn(PendingInputs.prototype, "enqueue").mockImplementation(() => { throw new HerdrError("invalid_submit_text", "refused by the queue"); });
@@ -1267,7 +1267,7 @@ describe("tab creation", () => {
     } finally { text.mockRestore(); }
     const enqueue = spyOn(PendingInputs.prototype, "enqueue").mockImplementation(() => { throw new PendingInputError("pending_limit", "the list is full"); });
     try {
-      const res = await fetch(`${base()}/api/workspace/create`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd: tmpdir(), label: "herdr-web-ui-test-ws-first-not-queued", agent: { kind: "muse" }, first_message: "Plan the config file" }) });
+      const res = await fetch(`${base()}/api/workspace/create`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cwd: tmpdir(), label: "ovis-test-ws-first-not-queued", agent: { kind: "muse" }, first_message: "Plan the config file" }) });
       expect(res.status).toBe(200);
       const created = await res.json() as WorkspaceCreated;
       made.push(created.workspace_id);
@@ -1283,7 +1283,7 @@ describe("tab creation", () => {
 describe("workspace and discovery endpoints", () => {
   let workspaceId: string | null = null;
   let paneId: string | null = null;
-  const label = `herdr-web-ui-test-${Math.random().toString(36).slice(2)}`;
+  const label = `ovis-test-${Math.random().toString(36).slice(2)}`;
   const fileName = `${label}-mention.txt`;
   const filePath = join(tmpdir(), fileName);
 
@@ -1319,7 +1319,7 @@ describe("workspace and discovery endpoints", () => {
   });
 
   it("offers omo and gjc, which herdr cannot start, exactly when they are on PATH", async () => {
-    const bin = mkdtempSync(join(tmpdir(), "herdr-web-ui-shell-agents-"));
+    const bin = mkdtempSync(join(tmpdir(), "ovis-shell-agents-"));
     const path = process.env["PATH"];
     const kinds = async () => ((await (await fetch(`${base()}/api/agents`)).json()) as { agents: AgentKind[] }).agents;
     try {
@@ -1338,7 +1338,7 @@ describe("workspace and discovery endpoints", () => {
   });
 
   it("makes one folder for the folder browser, and refuses names, folders and origins it must not", async () => {
-    const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-mkdir-"));
+    const root = mkdtempSync(join(tmpdir(), "ovis-mkdir-"));
     const make = (body: unknown, headers: Record<string, string> = {}) => fetch(`${base()}/api/workspace/directories`, {
       method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body),
     });
@@ -1373,7 +1373,7 @@ describe("workspace and discovery endpoints", () => {
     // GET /api/agent/commands?agent=&cwd=: paneCommands without a pane (the new workspace and tab
     // dialogs' skill list). A fixture folder with one Codex project skill; the folder is its own
     // repository boundary, so the scan climbs no further.
-    const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-agent-commands-"));
+    const root = mkdtempSync(join(tmpdir(), "ovis-agent-commands-"));
     try {
       mkdirSync(join(root, ".git"));
       mkdirSync(join(root, ".codex", "skills", "contract-skill"), { recursive: true });
@@ -1468,7 +1468,7 @@ describe("workspace and discovery endpoints", () => {
   }, 20_000);
 
   it("pushes session-changed when POST /api/workspace/close answers, not after the collector's debounce", async () => {
-    const closing = await workspaceCreate({ cwd: tmpdir(), label: "herdr-web-ui-test-close-push" });
+    const closing = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-close-push" });
     const socket = await RecordingSocket.connect(`ws://localhost:${server.port}/ws`);
     try {
       // the creation's own frame, debounced, is not the close's
@@ -1490,14 +1490,14 @@ describe("workspace and discovery endpoints", () => {
   }, 20_000);
 
   it("says a repository has no commits yet instead of passing git's refusal on", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "herdr-web-ui-worktree-empty-"));
+    const repo = mkdtempSync(join(tmpdir(), "ovis-worktree-empty-"));
     expect(Bun.spawnSync(["git", "init", "-q", "-b", "main"], { cwd: repo, stdout: "pipe", stderr: "pipe" }).exitCode).toBe(0);
-    const parent = await workspaceCreate({ cwd: repo, label: "herdr-web-ui-test-worktree-empty" });
+    const parent = await workspaceCreate({ cwd: repo, label: "ovis-test-worktree-empty" });
     const checkout = join(`${repo}-checkouts`, "feature");
     try {
       const create = await fetch(`${base()}/api/worktree/create`, {
         method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ workspace_id: parent.workspace.workspace_id, branch: "herdr-web-ui-test-unborn", path: checkout }),
+        body: JSON.stringify({ workspace_id: parent.workspace.workspace_id, branch: "ovis-test-unborn", path: checkout }),
       });
       expect(create.status).toBe(409);
       expect(((await create.json()) as ApiError).error.code).toBe("repository_without_commits");
@@ -1511,13 +1511,13 @@ describe("workspace and discovery endpoints", () => {
 
   it("creates a worktree of an owned repository as a grouped workspace, lists it, and opens it again", async () => {
     // a repository with one commit: a worktree needs a branch to start from
-    const repo = mkdtempSync(join(tmpdir(), "herdr-web-ui-worktree-"));
-    const git = (...args: string[]) => Bun.spawnSync(["git", "-c", "user.name=herdr-web-ui test", "-c", "user.email=test@example.invalid", ...args], { cwd: repo, stdout: "pipe", stderr: "pipe" });
+    const repo = mkdtempSync(join(tmpdir(), "ovis-worktree-"));
+    const git = (...args: string[]) => Bun.spawnSync(["git", "-c", "user.name=ovis test", "-c", "user.email=test@example.invalid", ...args], { cwd: repo, stdout: "pipe", stderr: "pipe" });
     expect(git("init", "-q", "-b", "main").exitCode).toBe(0);
     writeFileSync(join(repo, "README.md"), "worktree fixture\n");
     expect(git("add", "README.md").exitCode).toBe(0);
     expect(git("commit", "-q", "-m", "fixture").exitCode).toBe(0);
-    const parent = await workspaceCreate({ cwd: repo, label: "herdr-web-ui-test-worktree-parent" });
+    const parent = await workspaceCreate({ cwd: repo, label: "ovis-test-worktree-parent" });
     const owned = [parent.workspace.workspace_id];
     // the checkout lives under the test's own folders, never under the user's worktree directory
     const checkouts = `${repo}-checkouts`;
@@ -1527,19 +1527,19 @@ describe("workspace and discovery endpoints", () => {
       const missing = await post("/api/worktree/create", { workspace_id: parent.workspace.workspace_id });
       expect(missing.status).toBe(400);
       expect(((await missing.json()) as ApiError).error.code).toBe("missing_branch");
-      const badAgent = await post("/api/worktree/create", { workspace_id: parent.workspace.workspace_id, branch: "herdr-web-ui-test-feature", path: checkout, agent: { kind: "muse", args: "--help" } });
+      const badAgent = await post("/api/worktree/create", { workspace_id: parent.workspace.workspace_id, branch: "ovis-test-feature", path: checkout, agent: { kind: "muse", args: "--help" } });
       expect(badAgent.status).toBe(400);
       expect(((await badAgent.json()) as ApiError).error.code).toBe("invalid_agent");
       expect(existsSync(checkout)).toBeFalse();
 
-      const create = await post("/api/worktree/create", { workspace_id: parent.workspace.workspace_id, branch: "herdr-web-ui-test-feature", base: null, label: null, path: checkout });
+      const create = await post("/api/worktree/create", { workspace_id: parent.workspace.workspace_id, branch: "ovis-test-feature", base: null, label: null, path: checkout });
       expect(create.status).toBe(200);
       const opened = (await create.json()) as WorktreeOpened;
       owned.push(opened.workspace_id);
       expect(opened.already_open).toBeFalse();
       // no agent was asked for: the answer says nothing about one
       expect(opened.agent_started).toBeUndefined();
-      expect(opened.branch).toBe("herdr-web-ui-test-feature");
+      expect(opened.branch).toBe("ovis-test-feature");
       expect(realpathSync(opened.path)).toBe(realpathSync(checkout));
       const child = (await sessionSnapshot()).workspaces.find((workspace) => workspace.workspace_id === opened.workspace_id);
       expect(child?.worktree?.is_linked_worktree).toBeTrue();
@@ -1547,7 +1547,7 @@ describe("workspace and discovery endpoints", () => {
       const list = await fetch(`${base()}/api/worktree/list?workspace_id=${encodeURIComponent(parent.workspace.workspace_id)}`);
       expect(list.status).toBe(200);
       const listing = (await list.json()) as WorktreeListing;
-      expect(listing.worktrees.some((entry) => entry.branch === "herdr-web-ui-test-feature" && entry.open_workspace_id === opened.workspace_id)).toBeTrue();
+      expect(listing.worktrees.some((entry) => entry.branch === "ovis-test-feature" && entry.open_workspace_id === opened.workspace_id)).toBeTrue();
 
       const again = await post("/api/worktree/open", { workspace_id: parent.workspace.workspace_id, path: checkout });
       expect(again.status).toBe(200);
@@ -1572,7 +1572,7 @@ describe("workspace and discovery endpoints", () => {
 
       // a clean worktree closes with its repository's workspace when the group is meant; its checkout stays.
       // An agent asked for with the checkout starts in its pane, as one asked for with a workspace does.
-      const second = (await (await post("/api/worktree/create", { workspace_id: parent.workspace.workspace_id, branch: "herdr-web-ui-test-second", path: join(checkouts, "second"), agent: { kind: "muse" } })).json()) as WorktreeOpened;
+      const second = (await (await post("/api/worktree/create", { workspace_id: parent.workspace.workspace_id, branch: "ovis-test-second", path: join(checkouts, "second"), agent: { kind: "muse" } })).json()) as WorktreeOpened;
       owned.push(second.workspace_id);
       expect(second.error).toBeUndefined();
       expect(second.agent_started).toBeTrue();
@@ -1599,33 +1599,33 @@ describe("workspace and discovery endpoints", () => {
   }, 30_000);
 
   it("starts a worktree asked from a workspace on a linked checkout at the repository's own workspace", async () => {
-    const repo = mkdtempSync(join(tmpdir(), "herdr-web-ui-worktree-linked-"));
-    const git = (...args: string[]) => Bun.spawnSync(["git", "-c", "user.name=herdr-web-ui test", "-c", "user.email=test@example.invalid", ...args], { cwd: repo, stdout: "pipe", stderr: "pipe" });
+    const repo = mkdtempSync(join(tmpdir(), "ovis-worktree-linked-"));
+    const git = (...args: string[]) => Bun.spawnSync(["git", "-c", "user.name=ovis test", "-c", "user.email=test@example.invalid", ...args], { cwd: repo, stdout: "pipe", stderr: "pipe" });
     expect(git("init", "-q", "-b", "main").exitCode).toBe(0);
     writeFileSync(join(repo, "README.md"), "worktree fixture\n");
     expect(git("add", "README.md").exitCode).toBe(0);
     expect(git("commit", "-q", "-m", "fixture").exitCode).toBe(0);
     const checkouts = `${repo}-checkouts`;
     // a checkout git made, opened as a plain workspace: herdr does not mark it as a worktree
-    expect(git("worktree", "add", "-q", "-b", "herdr-web-ui-test-linked", join(checkouts, "linked")).exitCode).toBe(0);
-    const linked = await workspaceCreate({ cwd: join(checkouts, "linked"), label: "herdr-web-ui-test-worktree-linked" });
+    expect(git("worktree", "add", "-q", "-b", "ovis-test-linked", join(checkouts, "linked")).exitCode).toBe(0);
+    const linked = await workspaceCreate({ cwd: join(checkouts, "linked"), label: "ovis-test-worktree-linked" });
     const owned = [linked.workspace.workspace_id];
     const post = (path: string, body: unknown) => fetch(`${base()}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     try {
       expect((await sessionSnapshot()).workspaces.find((workspace) => workspace.workspace_id === linked.workspace.workspace_id)?.worktree?.is_linked_worktree).not.toBeTrue();
       // the repository's own workspace is not open: herdr's refusal is the answer
-      const alone = await post("/api/worktree/create", { workspace_id: linked.workspace.workspace_id, branch: "herdr-web-ui-test-alone", path: join(checkouts, "alone") });
+      const alone = await post("/api/worktree/create", { workspace_id: linked.workspace.workspace_id, branch: "ovis-test-alone", path: join(checkouts, "alone") });
       expect(alone.status).toBe(404);
       expect(((await alone.json()) as ApiError).error.code).toBe("linked_worktree_source");
       expect(existsSync(join(checkouts, "alone"))).toBeFalse();
 
-      const parent = await workspaceCreate({ cwd: repo, label: "herdr-web-ui-test-worktree-linked-parent" });
+      const parent = await workspaceCreate({ cwd: repo, label: "ovis-test-worktree-linked-parent" });
       owned.push(parent.workspace.workspace_id);
-      const create = await post("/api/worktree/create", { workspace_id: linked.workspace.workspace_id, branch: "herdr-web-ui-test-from-linked", path: join(checkouts, "from-linked") });
+      const create = await post("/api/worktree/create", { workspace_id: linked.workspace.workspace_id, branch: "ovis-test-from-linked", path: join(checkouts, "from-linked") });
       expect(create.status).toBe(200);
       const opened = (await create.json()) as WorktreeOpened;
       owned.push(opened.workspace_id);
-      expect(opened.branch).toBe("herdr-web-ui-test-from-linked");
+      expect(opened.branch).toBe("ovis-test-from-linked");
       expect(existsSync(join(checkouts, "from-linked"))).toBeTrue();
       expect((await sessionSnapshot()).workspaces.find((workspace) => workspace.workspace_id === opened.workspace_id)?.worktree?.is_linked_worktree).toBeTrue();
 
@@ -1745,7 +1745,7 @@ describe("POST /api/pane/find viewport results", () => {
   let workspaceId: string;
   let paneId: string;
   beforeAll(async () => {
-    const created = await workspaceCreate({ cwd: stateDir, label: "herdr-web-ui-test-find-response" });
+    const created = await workspaceCreate({ cwd: stateDir, label: "ovis-test-find-response" });
     workspaceId = created.workspace.workspace_id;
     paneId = created.root_pane.pane_id;
     const ready = herdrRpc("pane.wait_for_output", {
@@ -1901,7 +1901,7 @@ describe("POST /api/pane/close", () => {
   beforeAll(async () => {
     const created = await herdrRpc<{ workspace: { workspace_id: string }; root_pane: { pane_id: string } }>(
       "workspace.create",
-      { label: "herdr-web-ui-test-close", cwd: "/tmp", focus: false },
+      { label: "ovis-test-close", cwd: "/tmp", focus: false },
     );
     workspaceId = created.workspace.workspace_id;
     paneId = created.root_pane.pane_id;
@@ -1973,10 +1973,10 @@ describe("POST /api/pane/image", () => {
     });
 
   beforeAll(async () => {
-    qaCwd = mkdtempSync(join(tmpdir(), "herdr-web-ui-image-"));
+    qaCwd = mkdtempSync(join(tmpdir(), "ovis-image-"));
     const created = await herdrRpc<{ workspace: { workspace_id: string }; root_pane: { pane_id: string } }>(
       "workspace.create",
-      { label: "herdr-web-ui-test-image", cwd: qaCwd, focus: false },
+      { label: "ovis-test-image", cwd: qaCwd, focus: false },
     );
     qaWorkspaceId = created.workspace.workspace_id;
     qaPaneId = created.root_pane.pane_id;
@@ -1994,7 +1994,7 @@ describe("POST /api/pane/image", () => {
     expect(body.ok).toBe(true);
     // the prompt must reference a file the agent can read without leaving its project
     expect(body.path.startsWith(qaCwd!)).toBe(true);
-    expect(body.path.includes(".herdr-web-ui")).toBe(true);
+    expect(body.path.includes(".ovis")).toBe(true);
     expect(body.path.endsWith(".png")).toBe(true);
     const stored = statSync(body.path);
     expect(stored.size).toBeGreaterThan(0);
@@ -2010,7 +2010,7 @@ describe("POST /api/pane/image", () => {
 
   const bytes = (...parts: (string | number[])[]) => Buffer.concat(parts.map((part) => typeof part === "string" ? Buffer.from(part, "latin1") : Buffer.from(part)));
   const RASTER_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
-  const pasted = () => existsSync(join(qaCwd!, ".herdr-web-ui")) ? readdirSync(join(qaCwd!, ".herdr-web-ui")).sort() : [];
+  const pasted = () => existsSync(join(qaCwd!, ".ovis")) ? readdirSync(join(qaCwd!, ".ovis")).sort() : [];
 
   it("names each raster after its signature, whichever supported type it claims", async () => {
     for (const [extension, data] of [
@@ -2024,7 +2024,7 @@ describe("POST /api/pane/image", () => {
         const res = await post({ pane_id: qaPaneId, content_type, data_base64: data.toString("base64"), name: "shot.jpeg" });
         expect(res.status).toBe(200);
         const { path } = (await res.json()) as { path: string };
-        expect(dirname(path)).toBe(join(qaCwd!, ".herdr-web-ui"));
+        expect(dirname(path)).toBe(join(qaCwd!, ".ovis"));
         expect(basename(path)).toMatch(new RegExp(`^paste-\\d{8}-\\d{6}-[0-9a-f]{8}\\.${extension}$`));
         expect(readFileSync(path)).toEqual(data);
       }
@@ -2080,7 +2080,7 @@ describe("POST /api/pane/image", () => {
     const res = await post({ pane_id: qaPaneId, content_type: "image/svg+xml", data_base64: svg, name: "../omo icon.SVG" });
     expect(res.status).toBe(200);
     const { path } = (await res.json()) as { path: string };
-    expect(path.startsWith(join(qaCwd!, ".herdr-web-ui") + "/")).toBe(true);
+    expect(path.startsWith(join(qaCwd!, ".ovis") + "/")).toBe(true);
     expect(basename(path)).toMatch(/^omo_icon-\d{8}-\d{6}-[0-9a-f]{8}\.svg$/);
     expect(readFileSync(path, "utf8")).toBe('<svg xmlns="http://www.w3.org/2000/svg"/>');
     // no name, or one without a usable extension: still stored, as .bin
@@ -2167,7 +2167,7 @@ describe("WebSocket /ws", () => {
   beforeAll(async () => {
     const created = await herdrRpc<{ workspace: { workspace_id: string }; root_pane: { pane_id: string } }>(
       "workspace.create",
-      { label: "herdr-web-ui-test", cwd: "/tmp", focus: false },
+      { label: "ovis-test", cwd: "/tmp", focus: false },
     );
     qaWorkspaceId = created.workspace.workspace_id;
     qaPaneId = created.root_pane.pane_id;
@@ -2294,7 +2294,7 @@ describe("WebSocket roles and status push", () => {
   beforeAll(async () => {
     const created = await herdrRpc<{ workspace: { workspace_id: string }; root_pane: { pane_id: string } }>(
       "workspace.create",
-      { label: "herdr-web-ui-test-roles", cwd: "/tmp", focus: false },
+      { label: "ovis-test-roles", cwd: "/tmp", focus: false },
     );
     qaWorkspaceId = created.workspace.workspace_id;
     qaPaneId = created.root_pane.pane_id;
@@ -2446,7 +2446,7 @@ describe("WebSocket roles and status push", () => {
   }, 60_000);
 
   it("leaves the shared pty's size alone for an attach whose grid the chat lens covers", async () => {
-    const created = await workspaceCreate({ cwd: tmpdir(), label: "herdr-web-ui-test-keep-size" });
+    const created = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-keep-size" });
     const paneId = created.root_pane.pane_id;
     const chat = await RecordingSocket.connect(`ws://localhost:${server.port}/ws`);
     const otherChat = await RecordingSocket.connect(`ws://localhost:${server.port}/ws`);
@@ -2486,7 +2486,7 @@ describe("WebSocket roles and status push", () => {
   }, 60_000);
 
   it("applies a resize that arrives while a covered attach is still creating the pty", async () => {
-    const created = await workspaceCreate({ cwd: tmpdir(), label: "herdr-web-ui-test-keep-size-switch" });
+    const created = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-keep-size-switch" });
     const paneId = created.root_pane.pane_id;
     const phone = await RecordingSocket.connect(`ws://localhost:${server.port}/ws`);
     try {
@@ -2531,7 +2531,7 @@ describe("WebSocket roles and status push", () => {
       const want = size.replace("x", " ");
       let last = "";
       for (const deadline = Date.now() + 15_000; Date.now() < deadline;) {
-        const file = join(tmpdir(), `herdr-web-ui-release-size-${process.pid}-${++asks}`);
+        const file = join(tmpdir(), `ovis-release-size-${process.pid}-${++asks}`);
         socket.send({ type: "input", pane_id: paneId, text: `stty size > ${file}.part && mv ${file}.part ${file}\r` });
         for (const answered = Date.now() + 1000; Date.now() < answered && !existsSync(file);) await Bun.sleep(25);
         if (!existsSync(file)) continue;
@@ -2547,7 +2547,7 @@ describe("WebSocket roles and status push", () => {
     };
 
     it("returns the pty to the desktop's grid when the phone leaves the terminal lens", async () => {
-      const created = await workspaceCreate({ cwd: tmpdir(), label: "herdr-web-ui-test-release-size" });
+      const created = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-release-size" });
       const paneId = created.root_pane.pane_id;
       const desktop = await ws();
       const phone = await ws();
@@ -2574,7 +2574,7 @@ describe("WebSocket roles and status push", () => {
     }, 60_000);
 
     it("skips a hidden client's grid when another client releases, leaving the size if nobody shows a terminal", async () => {
-      const created = await workspaceCreate({ cwd: tmpdir(), label: "herdr-web-ui-test-release-size-hidden" });
+      const created = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-release-size-hidden" });
       const paneId = created.root_pane.pane_id;
       const desktop = await ws();
       const phone = await ws();
@@ -2633,7 +2633,7 @@ describe("WebSocket roles and status push", () => {
     }, 60_000);
 
     it("keeps a grid released during attach creation out of the fallback candidates", async () => {
-      const created = await workspaceCreate({ cwd: tmpdir(), label: "herdr-web-ui-test-release-size-creating" });
+      const created = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-release-size-creating" });
       const paneId = created.root_pane.pane_id;
       const hidden = await ws();
       const phone = await ws();
@@ -2662,7 +2662,7 @@ describe("WebSocket roles and status push", () => {
     }, 60_000);
 
     it("never overwrites a resize another client sends after the release", async () => {
-      const created = await workspaceCreate({ cwd: tmpdir(), label: "herdr-web-ui-test-release-size-race" });
+      const created = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-release-size-race" });
       const paneId = created.root_pane.pane_id;
       const desktop = await ws();
       const phone = await ws();
@@ -2692,7 +2692,7 @@ describe("WebSocket roles and status push", () => {
     }, 60_000);
 
     it("ignores a release from a client that never drove the grid, as an older server ignores the frame", async () => {
-      const created = await workspaceCreate({ cwd: tmpdir(), label: "herdr-web-ui-test-release-size-noop" });
+      const created = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-release-size-noop" });
       const paneId = created.root_pane.pane_id;
       const desktop = await ws();
       const chat = await ws();
@@ -2762,7 +2762,7 @@ describe("WebSocket roles and status push", () => {
       // a pane ending while unattached pushes pane-exited
       const created = await herdrRpc<{ workspace: { workspace_id: string }; root_pane: { pane_id: string } }>(
         "workspace.create",
-        { label: "herdr-web-ui-test-exit", cwd: "/tmp", focus: false },
+        { label: "ovis-test-exit", cwd: "/tmp", focus: false },
       );
       exitWorkspaceId = created.workspace.workspace_id;
       const exitPaneId = created.root_pane.pane_id;
@@ -2804,7 +2804,7 @@ describe("WebSocket observer-first attach", () => {
   beforeAll(async () => {
     const created = await herdrRpc<{ workspace: { workspace_id: string }; root_pane: { pane_id: string } }>(
       "workspace.create",
-      { label: "herdr-web-ui-test-observe", cwd: "/tmp", focus: false },
+      { label: "ovis-test-observe", cwd: "/tmp", focus: false },
     );
     observeWorkspaceId = created.workspace.workspace_id;
     observePaneId = created.root_pane.pane_id;
@@ -2855,7 +2855,7 @@ describe("WebSocket concurrent attach", () => {
   beforeAll(async () => {
     const created = await herdrRpc<{ workspace: { workspace_id: string }; root_pane: { pane_id: string } }>(
       "workspace.create",
-      { label: "herdr-web-ui-test-race", cwd: "/tmp", focus: false },
+      { label: "ovis-test-race", cwd: "/tmp", focus: false },
     );
     raceWorkspaceId = created.workspace.workspace_id;
     racePaneId = created.root_pane.pane_id;
@@ -2926,7 +2926,7 @@ describe("WebSocket client leaving mid-attach", () => {
   });
 
   it("never pins the pty for a client that disconnects before its attach is ready", async () => {
-    const { paneId, terminalId } = await createLeavePane("herdr-web-ui-test-leave-close");
+    const { paneId, terminalId } = await createLeavePane("ovis-test-leave-close");
     expect(attachProcessCount(terminalId)).toBe(0);
     const leaver = await RecordingSocket.connect(`ws://localhost:${server.port}/ws`);
     const stayer = await RecordingSocket.connect(`ws://localhost:${server.port}/ws`);
@@ -2945,7 +2945,7 @@ describe("WebSocket client leaving mid-attach", () => {
   }, 40_000);
 
   it("never pins the pty for a client that detaches before its attach is ready", async () => {
-    const { paneId, terminalId } = await createLeavePane("herdr-web-ui-test-leave-detach");
+    const { paneId, terminalId } = await createLeavePane("ovis-test-leave-detach");
     expect(attachProcessCount(terminalId)).toBe(0);
     const switcher = await RecordingSocket.connect(`ws://localhost:${server.port}/ws`);
     const stayer = await RecordingSocket.connect(`ws://localhost:${server.port}/ws`);
@@ -2997,7 +2997,7 @@ describe("web push", () => {
     fake = await startFakePushService();
     const created = await herdrRpc<{ workspace: { workspace_id: string }; root_pane: { pane_id: string } }>(
       "workspace.create",
-      { label: "herdr-web-ui-test-push", cwd: "/tmp", focus: false },
+      { label: "ovis-test-push", cwd: "/tmp", focus: false },
     );
     pushWorkspaceId = created.workspace.workspace_id;
     pushPaneId = created.root_pane.pane_id;
@@ -3089,9 +3089,9 @@ describe("web push", () => {
     let bridge: ReturnType<typeof createServer> | undefined;
     let page: RecordingSocket | undefined;
     try {
-      created = await workspaceCreate({ cwd: tmpdir(), label: "herdr-web-ui-test-push-presence" });
+      created = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-push-presence" });
       const paneId = created.root_pane.pane_id;
-      dir = mkdtempSync(join(tmpdir(), "herdr-web-ui-push-presence-"));
+      dir = mkdtempSync(join(tmpdir(), "ovis-push-presence-"));
       device = await startFakePushService();
       bridge = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: dir, machines: false, pushLoopbackHttp: true,
         alertTiming: { short: 0, long: 0, longTurn: 0 } });
@@ -3168,11 +3168,11 @@ describe("web push", () => {
     let bridge: ReturnType<typeof createServer> | undefined;
     let watcher: RecordingSocket | undefined;
     try {
-      created = await workspaceCreate({ cwd: tmpdir(), label: "herdr-web-ui-test-codex-finish" });
-      probe = await workspaceCreate({ cwd: tmpdir(), label: "herdr-web-ui-test-codex-probe" });
+      created = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-codex-finish" });
+      probe = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-codex-probe" });
       const paneId = created.root_pane.pane_id;
       const probeId = probe.root_pane.pane_id;
-      dir = mkdtempSync(join(tmpdir(), "herdr-web-ui-codex-finish-"));
+      dir = mkdtempSync(join(tmpdir(), "ovis-codex-finish-"));
       const device = await startFakePushService();
       cleanupDevice = device;
       await herdrRpc("pane.report_agent", { pane_id: paneId, source: "manual", agent: "codex", state: "unknown" });
@@ -3266,11 +3266,11 @@ describe("web push", () => {
         cwd: "/tmp",
         focus: false,
       });
-    const watched = await createPane("herdr-web-ui-test-push-restart");
-    const probe = await createPane("herdr-web-ui-test-push-probe");
+    const watched = await createPane("ovis-test-push-restart");
+    const probe = await createPane("ovis-test-push-probe");
     const watchedId = watched.root_pane.pane_id;
     const probeId = probe.root_pane.pane_id;
-    const restartDir = mkdtempSync(join(tmpdir(), "herdr-web-ui-restart-"));
+    const restartDir = mkdtempSync(join(tmpdir(), "ovis-restart-"));
     const device = await startFakePushService();
     let restarted: { port: number; stop: () => void } | null = null;
     let watcher: RecordingSocket | null = null;
@@ -3373,16 +3373,16 @@ describe("pairing and identity", () => {
 
   it("lets the owner's own device in with no login header, where serve is the only ingress and one login owns the tailnet", async () => {
     const state = mkdtempSync(join(tmpdir(), "herdr-sole-user-"));
-    const savedOwner = process.env["HERDR_WEB_TAILSCALE_OWNER"];
-    const savedServeOnly = process.env["HERDR_WEB_TAILSCALE_SERVE_ONLY"];
-    delete process.env["HERDR_WEB_TAILSCALE_OWNER"];
+    const savedOwner = process.env["OVIS_TAILSCALE_OWNER"];
+    const savedServeOnly = process.env["OVIS_TAILSCALE_SERVE_ONLY"];
+    delete process.env["OVIS_TAILSCALE_OWNER"];
     // what `tailscale status --json` says for the reported tailnet: one login, every node untagged
     const NODE = "denisss-macbook-pro-m1.tail5cc90b.ts.net";
     const status = JSON.stringify({ BackendState: "Running", Self: { DNSName: `${NODE}.`, UserID: 7, TailscaleIPs: ["100.101.102.103"] }, Peer: { phone: { DNSName: "phone.tail5cc90b.ts.net.", UserID: 7 } }, User: { "7": { LoginName: OWNER } } });
     const tailnet = new TailnetIdentitySource(async () => status);
-    process.env["HERDR_WEB_TAILSCALE_SERVE_ONLY"] = "1";
+    process.env["OVIS_TAILSCALE_SERVE_ONLY"] = "1";
     const sole = createServer({ port: 0, stateDir: state, tailnet });
-    if (savedServeOnly === undefined) delete process.env["HERDR_WEB_TAILSCALE_SERVE_ONLY"]; else process.env["HERDR_WEB_TAILSCALE_SERVE_ONLY"] = savedServeOnly;
+    if (savedServeOnly === undefined) delete process.env["OVIS_TAILSCALE_SERVE_ONLY"]; else process.env["OVIS_TAILSCALE_SERVE_ONLY"] = savedServeOnly;
     const off = createServer({ port: 0, stateDir: state, tailscaleServeOnly: false, tailnet });
     const named = createServer({ port: 0, stateDir: state, tailscaleOwner: OWNER, tailscaleServeOnly: true, tailnet });
     const other = createServer({ port: 0, stateDir: state, tailscaleOwner: "named@example.com", tailscaleServeOnly: true, tailnet });
@@ -3416,15 +3416,15 @@ describe("pairing and identity", () => {
       off.stop();
       named.stop();
       other.stop();
-      if (savedOwner === undefined) delete process.env["HERDR_WEB_TAILSCALE_OWNER"]; else process.env["HERDR_WEB_TAILSCALE_OWNER"] = savedOwner;
+      if (savedOwner === undefined) delete process.env["OVIS_TAILSCALE_OWNER"]; else process.env["OVIS_TAILSCALE_OWNER"] = savedOwner;
       rmSync(state, { recursive: true, force: true });
     }
   });
 
   it("refuses a serve request inside the cache's TTL once a node is tagged since the cache was read", async () => {
     const state = mkdtempSync(join(tmpdir(), "herdr-stale-identity-"));
-    const savedOwner = process.env["HERDR_WEB_TAILSCALE_OWNER"];
-    delete process.env["HERDR_WEB_TAILSCALE_OWNER"];
+    const savedOwner = process.env["OVIS_TAILSCALE_OWNER"];
+    delete process.env["OVIS_TAILSCALE_OWNER"];
     const NODE = "stale-pc.example.ts.net";
     const self = { DNSName: `${NODE}.`, TailscaleIPs: ["100.101.102.103"], UserID: 7 };
     const sole = JSON.stringify({ BackendState: "Running", Self: self, User: { "7": { LoginName: OWNER } } });
@@ -3438,15 +3438,15 @@ describe("pairing and identity", () => {
       expect(auth).toMatchObject({ authenticated: false, reason: "pairing_required" });
     } finally {
       serveOnly.stop();
-      if (savedOwner === undefined) delete process.env["HERDR_WEB_TAILSCALE_OWNER"]; else process.env["HERDR_WEB_TAILSCALE_OWNER"] = savedOwner;
+      if (savedOwner === undefined) delete process.env["OVIS_TAILSCALE_OWNER"]; else process.env["OVIS_TAILSCALE_OWNER"] = savedOwner;
       rmSync(state, { recursive: true, force: true });
     }
   });
 
-  it("takes the login named in HERDR_WEB_TAILSCALE_OWNER for the PC's own, as a tagged node needs", async () => {
+  it("takes the login named in OVIS_TAILSCALE_OWNER for the PC's own, as a tagged node needs", async () => {
     const state = mkdtempSync(join(tmpdir(), "herdr-named-owner-"));
-    const before = process.env["HERDR_WEB_TAILSCALE_OWNER"];
-    process.env["HERDR_WEB_TAILSCALE_OWNER"] = " named@example.com ";
+    const before = process.env["OVIS_TAILSCALE_OWNER"];
+    process.env["OVIS_TAILSCALE_OWNER"] = " named@example.com ";
     const named = createServer({ port: 0, stateDir: state });
     try {
       const at = async (headers: Record<string, string>) => ((await (await fetch(`http://127.0.0.1:${named.port}/api/health?scope=bridge`, { headers })).json()) as { auth: HealthAuth }).auth;
@@ -3455,7 +3455,7 @@ describe("pairing and identity", () => {
       expect(await at(proxied())).toMatchObject({ authenticated: false, reason: "pairing_required" });
     } finally {
       named.stop();
-      if (before === undefined) delete process.env["HERDR_WEB_TAILSCALE_OWNER"]; else process.env["HERDR_WEB_TAILSCALE_OWNER"] = before;
+      if (before === undefined) delete process.env["OVIS_TAILSCALE_OWNER"]; else process.env["OVIS_TAILSCALE_OWNER"] = before;
       rmSync(state, { recursive: true, force: true });
     }
   });
@@ -3476,7 +3476,7 @@ describe("pairing and identity", () => {
     const paired = await fetch(`${base()}/api/devices/pair`, { method: "POST", headers: { ...guard, ...proxied() }, body: JSON.stringify({ code, label: "  Test  phone " }) });
     expect(paired.status).toBe(204);
     const setCookie = paired.headers.get("set-cookie") ?? "";
-    expect(setCookie).toMatch(/^herdr_web_device=[0-9a-f]{64}; Path=\/; HttpOnly; SameSite=Strict; Max-Age=/);
+    expect(setCookie).toMatch(/^ovis_device=[0-9a-f]{64}; Path=\/; HttpOnly; SameSite=Strict; Max-Age=/);
     cookie = setCookie.split(";")[0]!;
     // the device is in, from anywhere; a stranger no longer is; this PC still is
     expect(await auth({ ...proxied(), cookie })).toMatchObject({ authenticated: true, via: "device" });
@@ -3494,7 +3494,7 @@ describe("pairing and identity", () => {
     const renamed = await fetch(`${base()}/api/devices/${deviceId}`, { method: "PATCH", headers: guard, body: JSON.stringify({ label: "Kitchen iPad" }) });
     expect(((await renamed.json()) as { label: string }).label).toBe("Kitchen iPad");
     const out = await fetch(`${base()}/api/auth`, { method: "DELETE", headers: { cookie } });
-    expect(out.headers.get("set-cookie") ?? "").toContain("herdr_web_device=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0");
+    expect(out.headers.get("set-cookie") ?? "").toContain("ovis_device=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0");
     expect((await fetch(`${base()}/api/devices/${deviceId}`, { method: "DELETE", headers: guard })).status).toBe(204);
     expect((await fetch(`${base()}/api/devices/${deviceId}`, { method: "DELETE", headers: guard })).status).toBe(404);
     // the revoked device is out, and so are strangers: revoking the last device never reopens the gate
@@ -3508,7 +3508,7 @@ describe("pairing and identity", () => {
     try {
       // spawned asynchronously: a synchronous spawn would block the very server the script asks
       const pairCli = async (port: number) => {
-        const child = Bun.spawn(["bun", "scripts/plugin.ts", "pair"], { cwd: join(import.meta.dir, ".."), env: { ...process.env, PORT: String(port), HOST: "127.0.0.1", HERDR_PLUGIN_CONFIG_DIR: configDir, HERDR_WEB_TOKEN: "" }, stdout: "pipe", stderr: "pipe" });
+        const child = Bun.spawn(["bun", "scripts/plugin.ts", "pair"], { cwd: join(import.meta.dir, ".."), env: { ...process.env, PORT: String(port), HOST: "127.0.0.1", HERDR_PLUGIN_CONFIG_DIR: configDir, OVIS_TOKEN: "" }, stdout: "pipe", stderr: "pipe" });
         const [out, err, exitCode] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited]);
         return { out, err, exitCode };
       };
@@ -3526,12 +3526,12 @@ describe("pairing and identity", () => {
       const tokenState = mkdtempSync(join(tmpdir(), "herdr-pair-cli-token-"));
       const secured = createServer({ port: 0, stateDir: tokenState, token: "cli-t0k3n", tailscaleOwner: null });
       try {
-        writeFileSync(join(configDir, ".env"), "HERDR_WEB_TOKEN=cli-t0k3n\n");
+        writeFileSync(join(configDir, ".env"), "OVIS_TOKEN=cli-t0k3n\n");
         const withToken = await pairCli(secured.port);
         expect(withToken.exitCode, withToken.err).toBe(0);
         expect(withToken.out).toMatch(/Pairing code: \d{3} \d{3}/);
         // `.env` wins over a stale token in the older `env` file
-        writeFileSync(join(configDir, "env"), "HERDR_WEB_TOKEN=stale\n");
+        writeFileSync(join(configDir, "env"), "OVIS_TOKEN=stale\n");
         const withLegacy = await pairCli(secured.port);
         expect(withLegacy.exitCode, withLegacy.err).toBe(0);
         expect(withLegacy.out).toMatch(/Pairing code: \d{3} \d{3}/);
@@ -3548,8 +3548,8 @@ describe("pairing and identity", () => {
       expect(await at({ authorization: "Bearer wrong" })).toEqual({ required: true, authenticated: false, reason: "token_required" });
       expect(await at({ authorization: "Bearer t0k3n" })).toMatchObject({ authenticated: true, via: "token", bearer: true });
       // a token held in the sign-in cookie is one signing out can clear
-      expect(await at({ cookie: "herdr_web_token=t0k3n" })).toEqual({ required: false, authenticated: true, via: "token", role: "drive" });
-      expect(await at({ cookie: "herdr_web_token=t0k3n", authorization: "Bearer wrong" })).toEqual({ required: false, authenticated: true, via: "token", role: "drive" });
+      expect(await at({ cookie: "ovis_token=t0k3n" })).toEqual({ required: false, authenticated: true, via: "token", role: "drive" });
+      expect(await at({ cookie: "ovis_token=t0k3n", authorization: "Bearer wrong" })).toEqual({ required: false, authenticated: true, via: "token", role: "drive" });
       // another proxy on this PC can pass a visitor's copy of the login header on: the token is asked for anyway
       expect(await at(proxied(OWNER))).toMatchObject({ authenticated: false, reason: "token_required" });
       expect(await at(proxied("someone@example.com"))).toMatchObject({ authenticated: false, reason: "token_required" });
@@ -3625,7 +3625,7 @@ describe("token auth", () => {
     type HealthBody = { auth: HealthAuth; lan_exposure?: LanExposure };
     const health = async (port: number, headers: Record<string, string> = {}): Promise<HealthBody> =>
       (await (await fetch(`http://127.0.0.1:${port}/api/health`, { headers })).json()) as HealthBody;
-    // no token and nothing paired, pinned so an inherited HERDR_WEB_TOKEN cannot gate the case
+    // no token and nothing paired, pinned so an inherited OVIS_TOKEN cannot gate the case
     const bound = (hostname: string) => {
       const stateDir = mkdtempSync(join(tmpdir(), "herdr-lan-"));
       const instance = createServer({ port: 0, hostname, token: "", stateDir });
@@ -3684,7 +3684,7 @@ describe("token auth", () => {
     });
     expect(res.status).toBe(204);
     const cookie = res.headers.get("set-cookie") ?? "";
-    expect(cookie).toContain(`herdr_web_token=${TOKEN}`);
+    expect(cookie).toContain(`ovis_token=${TOKEN}`);
     expect(cookie).toContain("HttpOnly");
     expect(cookie).toContain("SameSite=Strict");
     expect(cookie).toContain("Max-Age=31536000");
@@ -3692,7 +3692,7 @@ describe("token auth", () => {
 
   it("accepts the session cookie", async () => {
     const res = await fetch(`${securedBase()}/api/session`, {
-      headers: { cookie: `herdr_web_token=${TOKEN}` },
+      headers: { cookie: `ovis_token=${TOKEN}` },
     });
     expect(res.status).toBe(200);
   });
@@ -3730,7 +3730,7 @@ describe("token auth", () => {
   }, 10000);
 
   it("upgrades a websocket that carries the cookie", async () => {
-    const ws = connectWithCookie(wsUrl(), `herdr_web_token=${TOKEN}`);
+    const ws = connectWithCookie(wsUrl(), `ovis_token=${TOKEN}`);
     const first = await new Promise<{ type: string }>((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error("no message within 5000ms")), 5000);
       ws.addEventListener("error", () => {
@@ -3864,7 +3864,7 @@ describe("terminal lens of a bridge without the PTY sidecar", () => {
   const TOKEN = "sidecar-test-secret";
   /** what /api/health and /api/bridge tell of herdr, from a bridge whose runtime has the sidecar or lacks it */
   const told = async (sidecar: boolean) => {
-    const dir = mkdtempSync(join(tmpdir(), "herdr-web-ui-sidecar-"));
+    const dir = mkdtempSync(join(tmpdir(), "ovis-sidecar-"));
     const bridge = createServer({ port: 0, stateDir: dir, token: TOKEN, machines: false, sidecar });
     try {
       const get = async (path: string) => {
@@ -3892,10 +3892,10 @@ describe("terminal lens of a bridge without the PTY sidecar", () => {
 });
 
 it("refuses cross-origin changes while allowing same-origin and CLI requests", async () => {
-  const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-origin-"));
+  const root = mkdtempSync(join(tmpdir(), "ovis-origin-"));
   const instance = createServer({ port: 0, stateDir: root, token: "", tailscaleOwner: null, machines: false });
   const base = `http://127.0.0.1:${instance.port}`;
-  const created = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-origin" });
+  const created = await workspaceCreate({ cwd: root, label: "ovis-test-origin" });
   try {
     for (const path of ["pane/input", "pane/keys", "pane/close", "pane/focus", "layout/ratio", "workspace/create", "tab/create", "tab/rename", "tab/close", "tab/move", "push/subscribe"]) {
       const response = await fetch(`${base}/api/${path}`, { method: "POST", headers: { origin: "http://other.example", "content-type": "text/plain" }, body: JSON.stringify({ pane_id: created.root_pane.pane_id, text: "must not type", keys: ["Enter"] }) });
@@ -3910,7 +3910,7 @@ it("refuses cross-origin changes while allowing same-origin and CLI requests", a
 });
 
 describe("repository diff of a pane's folder", () => {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-web-ui-test-repo-diff-")));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-test-repo-diff-")));
   let workspaceId: string | null = null;
   afterAll(async () => {
     if (workspaceId) await workspaceClose(workspaceId).catch(() => undefined);
@@ -3929,7 +3929,7 @@ describe("repository diff of a pane's folder", () => {
     git("commit", "-q", "-m", "first");
     writeFileSync(join(root, "a.txt"), "two\n");
     // the pane sits below the repository's top, and in no repository of its own
-    const created = await workspaceCreate({ cwd: join(root, "sub"), label: "herdr-web-ui-test-repo-diff" });
+    const created = await workspaceCreate({ cwd: join(root, "sub"), label: "ovis-test-repo-diff" });
     workspaceId = created.workspace.workspace_id;
     const pane = `pane_id=${encodeURIComponent(created.root_pane.pane_id)}`;
     const expected: RepoDiffFileList["files"] = [{ path: "a.txt", old_path: null, status: "modified", additions: 1, deletions: 1, binary: false }];
@@ -3966,7 +3966,7 @@ describe("repository diff of a pane's folder", () => {
 
 describe("GET /api/sessions/history", () => {
   it("lists a workspace folder's Codex sessions from the server's store, newest first, and none a link puts outside it", async () => {
-    const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-session-history-contract-"));
+    const root = mkdtempSync(join(tmpdir(), "ovis-session-history-contract-"));
     const project = join(root, "project");
     mkdirSync(project);
     const cwd = realpathSync(project);
@@ -3986,8 +3986,8 @@ describe("GET /api/sessions/history", () => {
     const outside = join(root, `rollout-2026-10-03T09-00-00-${escaped}.jsonl`);
     writeFileSync(outside, `${JSON.stringify({ type: "session_meta", payload: { id: escaped, cwd, source: "cli" } })}\n`);
     if (process.platform !== "win32") symlinkSync(outside, join(codexHome, "sessions", "2026", "10", "02", basename(outside)));
-    const created = await workspaceCreate({ cwd, label: "herdr-web-ui-test-session-history" });
-    const appState = mkdtempSync(join(tmpdir(), "herdr-web-ui-session-history-state-"));
+    const created = await workspaceCreate({ cwd, label: "ovis-test-session-history" });
+    const appState = mkdtempSync(join(tmpdir(), "ovis-session-history-state-"));
     const app = createServer({ port: 0, stateDir: appState, codexHome });
     try {
       const res = await fetch(`http://localhost:${app.port}/api/sessions/history?workspace_id=${encodeURIComponent(created.workspace.workspace_id)}&agent=codex`);
@@ -4001,7 +4001,7 @@ describe("GET /api/sessions/history", () => {
       const unknown = await fetch(`http://localhost:${app.port}/api/sessions/history?workspace_id=${encodeURIComponent(created.workspace.workspace_id)}&agent=bash`);
       expect(unknown.status).toBe(400);
       // another PC asks with the bridge token this server registered, not a browser's: the proxy's way in
-      const bridgeState = mkdtempSync(join(tmpdir(), "herdr-web-ui-session-history-bridge-"));
+      const bridgeState = mkdtempSync(join(tmpdir(), "ovis-session-history-bridge-"));
       const bridge = createServer({ port: 0, hostname: "127.0.0.1", token: "test-browser-token", machines: false, registerBridge: true, stateDir: bridgeState, codexHome, tailscaleOwner: null });
       try {
         const registered = JSON.parse(readFileSync(descriptorPath(), "utf8")) as BridgeDescriptor;
@@ -4049,12 +4049,12 @@ describe("workspace order evidence", () => {
   }
 
   it("health, session, websocket and move answers share one order per server lifetime", async () => {
-    const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-order-"));
+    const root = mkdtempSync(join(tmpdir(), "ovis-order-"));
     const state = join(root, "state");
-    const first = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-order-first" });
-    const second = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-order-second" });
-    const managedBoot = process.env["HERDR_WEB_BOOT_ID"];
-    delete process.env["HERDR_WEB_BOOT_ID"];
+    const first = await workspaceCreate({ cwd: root, label: "ovis-test-order-first" });
+    const second = await workspaceCreate({ cwd: root, label: "ovis-test-order-second" });
+    const managedBoot = process.env["OVIS_BOOT_ID"];
+    delete process.env["OVIS_BOOT_ID"];
     let app = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: state });
     try {
       let origin = `http://127.0.0.1:${app.port}`;
@@ -4104,7 +4104,7 @@ describe("workspace order evidence", () => {
       expect(await move(second.workspace.workspace_id)).toEqual({ ok: true, order_epoch: restarted, moved_seq: 1 });
     } finally {
       app.stop();
-      if (managedBoot === undefined) delete process.env["HERDR_WEB_BOOT_ID"]; else process.env["HERDR_WEB_BOOT_ID"] = managedBoot;
+      if (managedBoot === undefined) delete process.env["OVIS_BOOT_ID"]; else process.env["OVIS_BOOT_ID"] = managedBoot;
       await workspaceClose(first.workspace.workspace_id).catch(() => {});
       await workspaceClose(second.workspace.workspace_id).catch(() => {});
       rmSync(root, { recursive: true, force: true });

@@ -8,7 +8,7 @@ import "./AgentPicker.css";
 /** The shell entry is a program name like the agents beside it, so it stays in English. */
 const SHELL_LABEL = "Shell";
 
-const LAST_AGENT_KEY = "herdr-web-ui:new-session-agent";
+const LAST_AGENT_KEY = "ovis:new-session-agent";
 
 /** The agent the last creation dialog started; "" is a plain shell. */
 export function rememberedAgent(): string {

@@ -133,6 +133,10 @@ jobs:
     env:
       CHECK_DIR: ${{ github.workspace }}/.ci
       UNIT_TEST_WORKERS: 4
+      # Fast takes no herdr slot, but its start still passes check.ts's admission port, which every
+      # runner on the self-hosted PC shares (scripts/self-hosted-runner/run.sh): a run that starts
+      # while another runner's run holds that port for a moment waits instead of failing.
+      CHECK_WAIT_SECONDS: 120
     steps:
       - uses: actions/checkout@v7
         with:

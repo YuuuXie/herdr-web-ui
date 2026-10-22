@@ -15,7 +15,7 @@ import * as agentLaunchModule from "./agent-launch.ts";
 
 type PendingUpdate = Extract<ServerMessage, { type: "pending-messages" }>;
 
-const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-pending-"));
+const root = mkdtempSync(join(tmpdir(), "ovis-pending-"));
 const active: Array<{ stop: () => void; sockets: Socket[]; workspace: string }> = [];
 let next = 0;
 const paste = (text: string) => `\u001b[200~${text}\u001b[201~`;
@@ -121,7 +121,7 @@ afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 async function setup(label: string, agent = "claude", screen = "› Message\n", options: Parameters<typeof createServer>[0] = {}, replaceable = false) {
   const id = ++next;
-  const created = await herdrRpc<{ workspace: { workspace_id: string }; root_pane: { pane_id: string } }>("workspace.create", { label: `herdr-web-ui-test-pending-${label}`, cwd: root, focus: false });
+  const created = await herdrRpc<{ workspace: { workspace_id: string }; root_pane: { pane_id: string } }>("workspace.create", { label: `ovis-test-pending-${label}`, cwd: root, focus: false });
   // registered before anything below can throw, so afterEach closes the workspace of a setup that failed
   const entry: (typeof active)[number] = { stop: () => {}, sockets: [], workspace: created.workspace.workspace_id }; active.push(entry);
   const pane = created.root_pane.pane_id;
@@ -1217,7 +1217,7 @@ describe("a create request's first message", () => {
    * recorder then starts in the pane under the name of the agent that comes up.
    */
   const launched = async (label: string, comesUp: string) => {
-    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: `herdr-web-ui-test-pending-${label}`, cwd: root, focus: false });
+    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: `ovis-test-pending-${label}`, cwd: root, focus: false });
     const entry: (typeof active)[number] = { stop: () => {}, sockets: [], workspace: created.workspace.workspace_id }; active.push(entry);
     const server = createServer({ port: 0, stateDir: join(root, `state-${label}`) });
     entry.stop = server.stop;
@@ -1270,7 +1270,7 @@ describe("a create request's first message", () => {
   }, 30_000);
 
   it("queued while the shell was still in front, is bound to the agent the launch brought up: a same-kind replacement before its page attaches gets it held, never typed", async () => {
-    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "herdr-web-ui-test-pending-first-launch-replaced", cwd: root, focus: false });
+    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "ovis-test-pending-first-launch-replaced", cwd: root, focus: false });
     const entry: (typeof active)[number] = { stop: () => {}, sockets: [], workspace: created.workspace.workspace_id }; active.push(entry);
     const server = createServer({ port: 0, stateDir: join(root, "state-first-launch-replaced") });
     entry.stop = server.stop;
@@ -1312,7 +1312,7 @@ describe("a create request's first message", () => {
   }, 30_000);
 
   it("queued for a launched agent that came up and then quit before it went, is held for Send now or Discard, never left waiting and never typed", async () => {
-    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "herdr-web-ui-test-pending-first-launch-quit", cwd: root, focus: false });
+    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "ovis-test-pending-first-launch-quit", cwd: root, focus: false });
     const entry: (typeof active)[number] = { stop: () => {}, sockets: [], workspace: created.workspace.workspace_id }; active.push(entry);
     const server = createServer({ port: 0, stateDir: join(root, "state-first-launch-quit") });
     entry.stop = server.stop;
@@ -1363,7 +1363,7 @@ describe("a create request's first message", () => {
   }, 30_000);
 
   it("held from the start, still learns its launched agent: once that agent came up and quit, Send now answers pending_target_changed, not that it is not up yet", async () => {
-    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "herdr-web-ui-test-pending-first-held-quit", cwd: root, focus: false });
+    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "ovis-test-pending-first-held-quit", cwd: root, focus: false });
     const entry: (typeof active)[number] = { stop: () => {}, sockets: [], workspace: created.workspace.workspace_id }; active.push(entry);
     const server = createServer({ port: 0, stateDir: join(root, "state-first-held-quit") });
     entry.stop = server.stop;
@@ -1403,7 +1403,7 @@ describe("a create request's first message", () => {
   }, 30_000);
 
   it("held from the start, says pending_target_changed instead of the page being gone once its launched agent quit, and Send now answers the same", async () => {
-    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "herdr-web-ui-test-pending-first-held-reason", cwd: root, focus: false });
+    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "ovis-test-pending-first-held-reason", cwd: root, focus: false });
     const entry: (typeof active)[number] = { stop: () => {}, sockets: [], workspace: created.workspace.workspace_id }; active.push(entry);
     const server = createServer({ port: 0, stateDir: join(root, "state-first-held-reason") });
     entry.stop = server.stop;
@@ -1446,7 +1446,7 @@ describe("a create request's first message", () => {
   }, 30_000);
 
   it("bound to a launch that runs behind a wrapper in front of the pane, is typed once into that agent, not held", async () => {
-    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "herdr-web-ui-test-pending-first-wrapped", cwd: root, focus: false });
+    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "ovis-test-pending-first-wrapped", cwd: root, focus: false });
     const entry: (typeof active)[number] = { stop: () => {}, sockets: [], workspace: created.workspace.workspace_id }; active.push(entry);
     const server = createServer({ port: 0, stateDir: join(root, "state-first-wrapped") });
     entry.stop = server.stop;
@@ -1518,7 +1518,7 @@ describe("a create request's first message", () => {
   }, 30_000);
 
   it("queued for a launch that died before any event saw it, is held when an agent of the same kind the user starts comes up, never typed into it", async () => {
-    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "herdr-web-ui-test-pending-first-launch-died", cwd: root, focus: false });
+    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "ovis-test-pending-first-launch-died", cwd: root, focus: false });
     const entry: (typeof active)[number] = { stop: () => {}, sockets: [], workspace: created.workspace.workspace_id }; active.push(entry);
     const server = createServer({ port: 0, stateDir: join(root, "state-first-launch-died") });
     entry.stop = server.stop;

@@ -116,7 +116,7 @@ function sameData(a: unknown, b: unknown): boolean {
 /** trailing debounce for push-triggered refetches: bursts of events become one fetch */
 const REFETCH_DEBOUNCE_MS = 500;
 
-const SELECTION_KEY = "herdr-web-ui:selection";
+const SELECTION_KEY = "ovis:selection";
 type StoredSelection = { machine_id?: string; pane_id?: string | null };
 
 /**
@@ -156,7 +156,7 @@ function storedView(lenses: PaneLenses, picks: ReadonlyMap<string, PaneView>, pa
   const picked = picks.get(key);
   if (picked !== undefined) return picked;
   try {
-    const stored = window.localStorage.getItem(`herdr-web-ui:view:${key}`);
+    const stored = window.localStorage.getItem(`ovis:view:${key}`);
     if (stored === "chat" || stored === "terminal") return stored;
   } catch {
     /* private mode */
@@ -209,7 +209,7 @@ function ConnectionChip({ connected, word, title }: { connected: boolean; word: 
 function Brand() {
   return (
     <h1 className="brand">
-      <img src="/icons/icon-192.png?v=ram1" alt="" width="22" height="22" className="brand-mark" />
+      <img src="/icons/icon-192.png?v=sheep1" alt="" width="22" height="22" className="brand-mark" />
       <span className="brand-name">
         Ovis
       </span>
@@ -1102,7 +1102,7 @@ export function App() {
     const key = paneStorageId(machineId, paneId);
     setViewPicks((current) => current.get(key) === next ? current : new Map(current).set(key, next));
     try {
-      window.localStorage.setItem(`herdr-web-ui:view:${key}`, next);
+      window.localStorage.setItem(`ovis:view:${key}`, next);
     } catch {
       /* private mode: the lens is still picked for this page */
     }

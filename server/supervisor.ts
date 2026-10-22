@@ -4,11 +4,12 @@
  * after an install passes its health check the supervisor exits with HANDOVER_EXIT and the
  * launcher starts the new release's supervisor. `root` is always the source checkout.
  */
+import "./adopt-legacy-env.ts";
 import { mkdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { readUpdateIpcRequest } from "../shared/update.ts";
-import { defaultStateDir, HANDOVER_EXIT, updateStateDir } from "./update-state.ts";
+import { defaultStateDir, HANDOVER_EXIT, moveLegacyStateDir, updateStateDir } from "./update-state.ts";
 import { herdrSocketPath } from "./herdr/client.ts";
 import { acquireOwnerDirectory } from "./owner-guard.ts";
 import { Updater, type Release } from "./updater.ts";
@@ -19,6 +20,7 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
   const host = process.env["HOST"] ?? "127.0.0.1";
   const probeHost = host === "0.0.0.0" ? "127.0.0.1" : host === "::" ? "[::1]" : host.includes(":") ? `[${host}]` : host;
   const origin = `http://${probeHost}:${port}`;
+  moveLegacyStateDir();
   const appStateDir = resolve(defaultStateDir());
   const socketPath = resolve(herdrSocketPath());
   const stateDir = updateStateDir(root, port);
@@ -54,9 +56,9 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
     const bootId = crypto.randomUUID();
     const candidate = Bun.spawn([process.execPath, "server/index.ts"], {
       cwd: release?.directory ?? root, windowsHide: true, stdin: "ignore", stdout: "inherit", stderr: "inherit",
-      env: { ...process.env, HERDR_WEB_MANAGED: "1", HERDR_WEB_BOOT_ID: bootId,
-        HERDR_WEB_STATE_DIR: appStateDir, HERDR_SOCKET: socketPath,
-        HERDR_WEB_REVISION: release?.revision ?? "" },
+      env: { ...process.env, OVIS_MANAGED: "1", OVIS_BOOT_ID: bootId,
+        OVIS_STATE_DIR: appStateDir, HERDR_SOCKET: socketPath,
+        OVIS_REVISION: release?.revision ?? "" },
       ipc(message) {
         if (message?.type === "update-status-request") publish();
         // an unbound `install` (an older bridge's) is refused: an install names the revision offered
@@ -90,9 +92,9 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
   const pluginRoot = process.env["HERDR_PLUGIN_ROOT"];
   // only a launcher-started supervisor can hand over: run directly, it keeps serving the update itself
   const launched = typeof process.send === "function";
-  const updater = new Updater({ root, stateDir, autoUpdate: process.env["HERDR_WEB_AUTO_UPDATE"] === "1", publish,
+  const updater = new Updater({ root, stateDir, autoUpdate: process.env["OVIS_AUTO_UPDATE"] === "1", publish,
     pluginCheckout: pluginRoot !== undefined && resolve(pluginRoot) === root,
-    notice: process.env["HERDR_WEB_SUPERVISOR_FALLBACK"]
+    notice: process.env["OVIS_SUPERVISOR_FALLBACK"]
       ? "The updated supervisor failed to start, so the previous one is running this version. The next update tries again."
       : undefined,
     async afterInstall() {
@@ -145,4 +147,4 @@ export async function runSupervisor(root = resolve(import.meta.dir, "..")) {
   }
 }
 
-if (import.meta.main) await runSupervisor(process.env["HERDR_WEB_SOURCE_ROOT"] || resolve(import.meta.dir, ".."));
+if (import.meta.main) await runSupervisor(process.env["OVIS_SOURCE_ROOT"] || resolve(import.meta.dir, ".."));

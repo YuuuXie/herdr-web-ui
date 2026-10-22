@@ -16,7 +16,7 @@ import { useEffect, useRef } from "react";
 import { SHEET_QUERY } from "./sheets.ts";
 import { useMediaQuery } from "./useMediaQuery.ts";
 
-const KEY = "herdr-web-ui:sheet";
+const KEY = "ovis:sheet";
 
 /** what Back does to each open sheet: false refuses it (the sheet is busy), and the sheet keeps its entry */
 const open = new Map<string, () => boolean | void>();

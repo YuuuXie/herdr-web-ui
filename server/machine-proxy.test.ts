@@ -129,7 +129,7 @@ it("opens a PC's file from a navigation another site started, and keeps every ot
 
 it("asks a PC for a folder's project icon once, with the bridge's own credential, and only from this app", async () => {
   const search = `?root=${encodeURIComponent("/home/u/my app")}`;
-  const response = await handleMachineRequest(new Request(`http://127.0.0.1/api/machines/pc1/fs/favicon${search}`, { headers: { cookie: "herdr_web_token=browser-secret" } }), manager);
+  const response = await handleMachineRequest(new Request(`http://127.0.0.1/api/machines/pc1/fs/favicon${search}`, { headers: { cookie: "ovis_token=browser-secret" } }), manager);
   expect(response.status).toBe(200);
   expect(response.headers.get("cache-control")).toBe("no-store");
   expect(await response.json()).toEqual({ icon: null });
@@ -154,7 +154,7 @@ it("forwards a repository diff read with its query and the bridge's own credenti
   const search = "?pane_id=w1%3Ap1&scope=commit&base=HEAD~1&path=dir%20with%20space%2Fa.txt";
   for (const route of ["files", "file"]) {
     const response = await handleMachineRequest(new Request(`http://127.0.0.1/api/machines/pc1/workspace/diff/${route}${search}`, {
-      headers: { cookie: "herdr_web_token=browser-secret; herdr_web_device=device-secret", authorization: "Bearer browser-secret", "x-forwarded-for": "203.0.113.9" },
+      headers: { cookie: "ovis_token=browser-secret; ovis_device=device-secret", authorization: "Bearer browser-secret", "x-forwarded-for": "203.0.113.9" },
     }), manager);
     expect(response.status).toBe(200);
     expect(response.headers.get("set-cookie")).toBeNull();

@@ -16,9 +16,9 @@ export interface Appearance {
   lightTheme: ThemeId;
 }
 
-export const SETTINGS_STORAGE_KEY = "herdr-web-ui:settings";
+export const SETTINGS_STORAGE_KEY = "ovis:settings";
 /** The theme choice kept apart from the main record, so a damaged main record does not lose it. */
-export const THEMES_STORAGE_KEY = "herdr-web-ui:themes";
+export const THEMES_STORAGE_KEY = "ovis:themes";
 
 export const DEFAULT_APPEARANCE: Appearance = { theme: "dark", darkTheme: DEFAULT_THEME, lightTheme: DEFAULT_THEME };
 

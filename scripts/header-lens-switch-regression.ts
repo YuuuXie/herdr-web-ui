@@ -18,10 +18,10 @@ const TOUCH_TARGET = 44;
 const CLEARANCE = 6;
 
 export async function checkHeaderLensSwitch(browser: Browser, origin: string, evidence?: string): Promise<void> {
-  const root = realpathSync(mkdtempSync(join(tmpdir(), "herdr-web-ui-lens-switch-")));
+  const root = realpathSync(mkdtempSync(join(tmpdir(), "ovis-lens-switch-")));
   let workspaceId: string | null = null;
   try {
-    const created = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-lens-switch" });
+    const created = await workspaceCreate({ cwd: root, label: "ovis-test-lens-switch" });
     workspaceId = created.workspace.workspace_id;
     for (const size of [
       { label: "folded 412x915", width: 412, height: 915, inset: 0 },
@@ -33,7 +33,7 @@ export async function checkHeaderLensSwitch(browser: Browser, origin: string, ev
       const context = await browser.newContext({ viewport: { width: size.width, height: size.height }, isMobile: true, hasTouch: true, deviceScaleFactor: 2, locale: "en-US" });
       try {
         await context.addInitScript((density) => {
-          if (localStorage.getItem("herdr-web-ui:settings") === null) localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en", ...(density ? { density } : {}) }));
+          if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", ...(density ? { density } : {}) }));
         }, size.density ?? null);
         const page = await context.newPage();
         if (size.inset > 0) {
@@ -82,7 +82,7 @@ if (import.meta.main) {
   const { chromium } = await import("playwright-core");
   const { createServer } = await import("../server/index.ts");
   const { UsageService } = await import("../server/usage.ts");
-  const state = mkdtempSync(join(tmpdir(), "herdr-web-ui-lens-switch-state-"));
+  const state = mkdtempSync(join(tmpdir(), "ovis-lens-switch-state-"));
   const evidence = process.env["UI_EVIDENCE_DIR"];
   if (evidence) mkdirSync(evidence, { recursive: true });
   const server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: state, usage: new UsageService(undefined, []) });

@@ -135,7 +135,7 @@ describe("preferences sync real send path", () => {
 
   async function open(raw: object = DEFAULT_SETTINGS): Promise<Client> {
     records.clear();
-    records.set("herdr-web-ui:settings", JSON.stringify(raw));
+    records.set("ovis:settings", JSON.stringify(raw));
     const unmounted = () => { throw new Error("not mounted"); };
     const client: Client = { settings: sanitizeSettings(raw), rendered: { id: "amber", mode: "dark" }, update: unmounted, receive: unmounted, saveError: null, paused: false, retrying: false, retry: unmounted, resubscribed: unmounted, disconnected: unmounted, closed: unmounted, rerender: unmounted };
     function Probe() {
@@ -237,7 +237,7 @@ describe("preferences sync real send path", () => {
     await act(async () => { store.set({ settings: { palette } }); });
     await windows(3);
     expect(client.settings.darkTheme).toBe(palette);
-    expect(JSON.parse(records.get("herdr-web-ui:themes") ?? "{}").darkTheme).toBe(palette);
+    expect(JSON.parse(records.get("ovis:themes") ?? "{}").darkTheme).toBe(palette);
     expect(revisions).toEqual([1, 2]);
   });
 
