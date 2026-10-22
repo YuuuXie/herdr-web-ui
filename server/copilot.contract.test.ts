@@ -24,7 +24,6 @@ let pane: string;
 
 beforeAll(async () => {
   for (const session of [id, other]) mkdirSync(join(home, "session-state", session), { recursive: true });
-  writeFileSync(file(id), fixture(id, "session A"));
   writeFileSync(executable, `import { openSync, mkdirSync, writeFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
 const home = process.env.COPILOT_HOME;
@@ -66,6 +65,13 @@ afterAll(async () => {
 it.skipIf(process.platform !== "linux")("binds only the reported UUID to the foreground process's home and rejects old cursors after a switch", async () => {
   const url = `http://127.0.0.1:${app.port}/api/pane/conversation?pane_id=${encodeURIComponent(pane)}`;
   const read = async () => (await fetch(url)).json() as Promise<{ source: string; turns: { parts: { text?: string }[] }[]; cursor?: string; history_id?: string }>;
+  const external = await read();
+  expect(external.source).toBe("copilot-transcript");
+  expect(external.turns).toEqual([]);
+  expect(external.history_id).toBe(`unwritten:${id}`);
+  expect((await read()).history_id).toBe(external.history_id);
+  expect((await fetch(`${url}&from=old-history`)).status).toBe(409);
+  writeFileSync(file(id), fixture(id, "session A"));
   expect((await read()).source).toBe("scrollback");
   const report = async (session: string, seq: number, source = "herdr:copilot", paneId = pane) => {
     await herdrRpc("pane.report_agent_session", { pane_id: paneId, agent: "copilot", source, seq: Date.now() * 1000 + seq, agent_session_id: session });
@@ -82,6 +88,7 @@ it.skipIf(process.platform !== "linux")("binds only the reported UUID to the for
   const first = await read();
   expect(first.source).toBe("copilot-transcript");
   expect(first.history_id).not.toBe(pending.history_id);
+  expect(first.history_id).not.toBe(external.history_id);
   expect(first.turns[0]?.parts[0]?.text).toBe("session A");
   appendFileSync(file(id), event("assistant.message", { content: "Checking.", phase: "commentary",
     toolRequests: [{ toolCallId: "call-1", name: "shell", arguments: { command: "pwd" } }], model: "fixture-model" }));
@@ -156,6 +163,7 @@ it.skipIf(process.platform !== "linux")("binds only the reported UUID to the for
   writeFileSync(file(other), fixture(id, "wrong header"));
   expect((await read()).source).toBe("scrollback");
   rmSync(file(other));
+  expect((await read()).source).toBe("scrollback");
   symlinkSync(file(id), file(other));
   expect((await read()).source).toBe("scrollback");
 });

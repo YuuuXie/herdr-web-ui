@@ -59,7 +59,7 @@ import { withinRetentionBudget } from "./retention-budget.ts";
 import { forgetAllPiIndexes, forgetPiIndex, piAbandonedTurns, piBranchRecords, piBranchSegments } from "./pi-tree.ts";
 import { trimOutput } from "./tool-output.ts";
 import { copilotOutput, copilotRootRecord, parseCopilotTranscript } from "./copilot.ts";
-import { copilotTranscriptFile, openCopilotFile } from "./copilot-store.ts";
+import { copilotTranscriptFile, copilotUnwrittenSession, openCopilotFile } from "./copilot-store.ts";
 import { parseConversationMetadata } from "./conversation-metadata.ts";
 import { forgetHermesTranscriptState, hermesConversationPage, hermesToolOutput, hermesTranscriptForPane } from "./hermes.ts";
 
@@ -1700,13 +1700,14 @@ async function ompTranscriptPath(paneId: string, cwd: string): Promise<string> {
   return inStore;
 }
 
-/** Herdr's SessionStart hook owns the identity; argv and directory recency never do. */
+/** History requires Herdr's hook; a process-held unwritten session can show an empty chat. */
 async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[]): Promise<string> {
   const report = pane.agent_session;
-  if (pane.agent !== "copilot" || report?.agent !== "copilot" || report.kind !== "id"
+  const claimedByPeer = (session: string) => panes.some((peer) => peer.pane_id !== pane.pane_id
+    && peer.agent_session?.agent === "copilot" && peer.agent_session.kind === "id" && peer.agent_session.value === session);
+  if (pane.agent !== "copilot" || (report != null && (report.agent !== "copilot" || report.kind !== "id"
     || report.source !== "herdr:copilot" || typeof report.value !== "string" || !SESSION_ID.test(report.value)
-    || panes.some((peer) => peer.pane_id !== pane.pane_id && peer.agent_session?.agent === "copilot"
-      && peer.agent_session.kind === "id" && peer.agent_session.value === report.value)) {
+    || claimedByPeer(report.value)))) {
     throw new ConversationUnavailable("no_session_id");
   }
   const info = await paneProcessInfo(pane.pane_id).catch(() => null);
@@ -1715,9 +1716,17 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
   if (process.platform !== "linux" || processes.length !== 1 || typeof foreground?.pid !== "number") {
     throw new ConversationUnavailable("no_session_path");
   }
-  const path = copilotTranscriptFile(report.value, processEnviron(foreground.pid), foreground.argv ?? [], foreground.pid);
-  if (path === null) throw new ConversationUnavailable("no_session_path");
-  return path;
+  const environment = processEnviron(foreground.pid);
+  const argv = foreground.argv ?? [];
+  if (report != null) {
+    const path = copilotTranscriptFile(report.value, environment, argv, foreground.pid);
+    if (path !== null) return path;
+  }
+  const pending = copilotUnwrittenSession(environment, argv, foreground.pid);
+  if (pending !== null && (report == null || report.value === pending.sessionId) && !claimedByPeer(pending.sessionId)) {
+    throw new ConversationNotStarted(pending.sessionId, "copilot-transcript", pending.path);
+  }
+  throw new ConversationUnavailable(report == null ? "no_session_id" : "no_session_path");
 }
 
 /** Where a pane's conversation is: a transcript file, or a session in OpenCode's database. */
@@ -2005,7 +2014,7 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
       throw error;
     }
   }
-  const identity = resolved.source === "agy-transcript" ? resolved.path
+  const identity = resolved.source === "agy-transcript" || resolved.source === "copilot-transcript" ? resolved.path
     : resolved.source === "claude-transcript" ? nodePath.basename(resolved.path, ".jsonl")
     : resolved.source === "pi-transcript" || resolved.source === "cmd-transcript" || resolved.source === "omp-transcript" ? realpathSync(resolved.path) : null;
   rememberPaneRead(paneId, resolved.path);

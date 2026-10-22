@@ -3,7 +3,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseCopilotTranscript } from "./copilot.ts";
-import { copilotTranscriptFile, heldSessions } from "./copilot-store.ts";
+import { copilotTranscriptFile, copilotUnwrittenSession, heldSessions } from "./copilot-store.ts";
 import { ConversationUnavailable, forgetTranscriptState, HistoryChanged, transcriptPage, transcriptToolOutput } from "./conversation.ts";
 import { parseConversationMetadata } from "./conversation-metadata.ts";
 
@@ -211,14 +211,27 @@ it.skipIf(process.platform !== "linux")("uses only the process home and a canoni
     expect(copilotTranscriptFile(session, null, ["copilot"], pid)).toBeNull();
     expect(copilotTranscriptFile("../bad", [`COPILOT_HOME=${custom}`], ["copilot"], pid)).toBeNull();
     expect(copilotTranscriptFile(session, [`COPILOT_HOME=relative`], ["copilot"], pid)).toBeNull();
+    expect(copilotUnwrittenSession([`COPILOT_HOME=${custom}`], ["copilot"], pid)).toBeNull();
     writeFileSync(chosen, start.replace(session, "12aa83d8-48bc-41f2-a498-7055c5c44a02"));
     expect(copilotTranscriptFile(session, [`COPILOT_HOME=${custom}`], ["copilot"], pid)).toBeNull();
+    expect(copilotUnwrittenSession([`COPILOT_HOME=${custom}`], ["copilot"], pid)).toBeNull();
+    rmSync(chosen);
+    expect(copilotUnwrittenSession([`COPILOT_HOME=${custom}`], ["copilot"], pid)).toEqual({ sessionId: session, path: chosen });
+    expect(copilotUnwrittenSession(null, ["copilot"], pid)).toBeNull();
+    expect(copilotUnwrittenSession([`COPILOT_HOME=relative`], ["copilot"], pid)).toBeNull();
+    for (const args of [["--resume", session], [`--resume=${session}`], ["--continue"], ["-r", session]]) {
+      expect(copilotUnwrittenSession([`COPILOT_HOME=${custom}`], ["copilot", ...args], pid)).toBeNull();
+    }
+    symlinkSync(join(root, "missing.jsonl"), chosen);
+    expect(copilotUnwrittenSession([`COPILOT_HOME=${custom}`], ["copilot"], pid)).toBeNull();
     rmSync(chosen);
     symlinkSync(legacyFile, chosen);
     expect(copilotTranscriptFile(session, [`COPILOT_HOME=${custom}`], ["copilot"], pid)).toBeNull();
+    expect(copilotUnwrittenSession([`COPILOT_HOME=${custom}`], ["copilot"], pid)).toBeNull();
     rmSync(chosen);
     mkdirSync(chosen);
     expect(copilotTranscriptFile(session, [`COPILOT_HOME=${custom}`], ["copilot"], pid)).toBeNull();
+    expect(copilotUnwrittenSession([`COPILOT_HOME=${custom}`], ["copilot"], pid)).toBeNull();
     rmSync(chosen, { recursive: true });
     expect(await Bun.spawn(["mkfifo", chosen], { stdout: "ignore", stderr: "inherit" }).exited).toBe(0);
     expect(copilotTranscriptFile(session, [`COPILOT_HOME=${custom}`], ["copilot"], pid)).toBeNull();
@@ -228,7 +241,13 @@ it.skipIf(process.platform !== "linux")("uses only the process home and a canoni
     mkdirSync(join(custom, "session-state", extra));
     await command("extra");
     expect(copilotTranscriptFile(session, [`COPILOT_HOME=${custom}`], ["copilot"], pid)).toBeNull();
+    rmSync(chosen);
+    expect(copilotUnwrittenSession([`COPILOT_HOME=${custom}`], ["copilot"], pid)).toBeNull();
     await command("close");
+    expect(copilotUnwrittenSession([`COPILOT_HOME=${custom}`], ["copilot"], pid)).toEqual({ sessionId: session, path: chosen });
+    writeFileSync(chosen, "");
+    expect(copilotUnwrittenSession([`COPILOT_HOME=${custom}`], ["copilot"], pid)).toBeNull();
+    writeFileSync(chosen, start);
     expect(copilotTranscriptFile(session, [`COPILOT_HOME=${custom}`], ["copilot"], pid)).toBe(chosen);
     expect(copilotTranscriptFile(session, [`HOME=${defaultHome}`], ["copilot"], pid)).toBe(defaultFile);
     expect(copilotTranscriptFile(session, [`HOME=${defaultHome}`, `COPILOT_HOME=${custom}`], ["copilot", "--config-dir", legacy], pid)).toBe(legacyFile);

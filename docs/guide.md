@@ -168,6 +168,12 @@ Every agent herdr runs shows up with its live status, terminal and alerts. The c
 | **Antigravity (agy)** | **Experimental; macOS untested.** Native ledger, selected by the running process’s held conversation lock. Linux native-tested; Windows uses terminal text. See [Agy behavior and limits](agy-chat.md). | — use Terminal |
 | **Anything else** | The terminal's text | — use Terminal |
 
+Before its first message, a new Linux Copilot process can show an empty chat even when started
+from Terminal. The bridge verifies that the pane's process holds exactly one session in its own
+Copilot home and that its transcript does not exist yet. Existing history still requires the
+SessionStart hook; unreadable files, explicit resume/continue launches and ambiguous identities
+keep the terminal fallback rather than appearing as an empty conversation.
+
 GJC chat requires GJC 0.18.9 or later for its broker-bound SDK session CLI, with `gjc`
 on the server PC's PATH and its SDK broker already running. An older GJC opens in Terminal.
 Git must also be on PATH for the SDK's workspace-scope discovery.
