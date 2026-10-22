@@ -7,12 +7,13 @@ const MAX_DESCRIPTORS = 4096;
 const LOG_WINDOW_BYTES = 16 * 1024 * 1024;
 const LOG_NAME = /^process-\d+-(\d+)\.log$/;
 const FOREGROUND_EVENT = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z \[INFO\] (Registering|Unregistering) foreground session: ([\da-f-]{36})$/;
-const foregroundCheckpoints = new Map<number, { dev: number; ino: number; path: string; size: number; session: string }>();
+interface ForegroundBinding { sessionId: string; generation: string }
+const foregroundCheckpoints = new Map<number, { dev: number; ino: number; path: string; size: number; binding: ForegroundBinding }>();
 
 /** The latest complete lifecycle event in the CLI's own open log, never the newest transcript. */
-function loggedForeground(pid: number, logDirectories: readonly string[]): string | null | undefined {
+function loggedForeground(pid: number, logDirectories: readonly string[]): ForegroundBinding | null | undefined {
   const directory = opendirSync(`/proc/${pid}/fd`);
-  let found: string | null = null;
+  let found: ForegroundBinding | null = null;
   let count = 0;
   try {
     for (let descriptor = directory.readSync(); descriptor; descriptor = directory.readSync()) {
@@ -39,23 +40,27 @@ function loggedForeground(pid: number, logDirectories: readonly string[]): strin
           if (read !== bytes.length || fstatSync(fd).size !== stat.size) return undefined;
           const text = bytes.subarray(0, read).toString("utf8");
           if (text && !text.endsWith("\n")) return undefined;
-          const complete = text.slice(start === 0 ? 0 : text.indexOf("\n") + 1, text.lastIndexOf("\n") + 1);
+          const skip = start === 0 || same ? 0 : text.indexOf("\n") + 1;
+          const complete = text.slice(skip, text.lastIndexOf("\n") + 1);
           if (start > 0 && !complete && !same) return undefined;
-          let selected: string | null = same ? cached.session : null;
+          let selected: ForegroundBinding | null = same ? cached.binding : null;
           let observed = false;
+          let position = start + Buffer.byteLength(text.slice(0, skip));
           for (const line of complete.split("\n")) {
             const match = FOREGROUND_EVENT.exec(line);
-            if (!match) continue;
-            observed = true;
-            if (!SESSION_ID.test(match[2]!)) return undefined;
-            if (match[1] === "Registering") selected = match[2]!;
-            else if (selected === match[2]) selected = null;
-            else return undefined;
+            if (match) {
+              observed = true;
+              if (!SESSION_ID.test(match[2]!)) return undefined;
+              if (match[1] === "Registering") selected = { sessionId: match[2]!, generation: `${pid}:${stat.dev}:${stat.ino}:${position}` };
+              else if (selected?.sessionId === match[2]) selected = null;
+              else return undefined;
+            }
+            position += Buffer.byteLength(line) + 1;
           }
           if (!observed && !same) return undefined;
           if (selected === null) return undefined;
           if (foregroundCheckpoints.size >= 256 && !foregroundCheckpoints.has(pid)) foregroundCheckpoints.delete(foregroundCheckpoints.keys().next().value!);
-          foregroundCheckpoints.set(pid, { dev: stat.dev, ino: stat.ino, path: target, size: stat.size, session: selected });
+          foregroundCheckpoints.set(pid, { dev: stat.dev, ino: stat.ino, path: target, size: stat.size, binding: selected });
           found = selected;
         } finally { closeSync(fd); }
       } catch { return undefined; }
@@ -131,7 +136,7 @@ export function heldSessions(pid: number, store: string): Set<string> | null {
   return null;
 }
 
-function processSessionFile(environment: readonly string[] | null, argv: readonly string[], pid: number): { sessionId: string; path: string; logged: boolean } | null {
+function processSessionFile(environment: readonly string[] | null, argv: readonly string[], pid: number): { sessionId: string; path: string; logged: boolean; generation?: string } | null {
   if (environment === null || !Number.isSafeInteger(pid) || pid < 1) return null;
   const values = (key: string) => environment.filter((item) => item.startsWith(`${key}=`)).map((item) => item.slice(key.length + 1));
   const home = values("HOME");
@@ -163,9 +168,9 @@ function processSessionFile(environment: readonly string[] | null, argv: readonl
     const foreground = loggedForeground(pid, logs);
     if (foreground === undefined) return null;
     if (foreground !== null) {
-      const directory = join(store, foreground);
+      const directory = join(store, foreground.sessionId);
       if (realpathSync(directory) !== directory) return null;
-      return { sessionId: foreground, path: join(directory, "events.jsonl"), logged: true };
+      return { ...foreground, path: join(directory, "events.jsonl"), logged: true };
     }
     const held = heldSessions(pid, store);
     if (held === null || held.size !== 1) return null;
@@ -192,6 +197,12 @@ export function copilotTranscriptFile(session: unknown, environment: readonly st
 export function copilotLoggedSession(environment: readonly string[] | null, argv: readonly string[], pid: number): string | null {
   const found = processSessionFile(environment, argv, pid);
   return found?.logged ? found.sessionId : null;
+}
+
+/** The last process-owned registration identifies this selection, including a switch back to the same session. */
+export function copilotLoggedBinding(environment: readonly string[] | null, argv: readonly string[], pid: number): ForegroundBinding | null {
+  const found = processSessionFile(environment, argv, pid);
+  return found?.logged ? { sessionId: found.sessionId, generation: found.generation! } : null;
 }
 
 /** A process-held session with no transcript yet, never permission to read unreported history. */

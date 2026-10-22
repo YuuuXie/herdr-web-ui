@@ -76,7 +76,7 @@ console.log("fixture ready");`);
   const body = await (await fetch(endpoint)).json() as { source: string };
   assert.equal(body.source, "copilot-transcript");
 
-  browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
+  browser = await chromium.launch({ executablePath: chromePath(), headless: true, chromiumSandbox: true });
   const page = await browser.newPage({ viewport: { width: 1100, height: 800 }, locale: "en-US" });
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));

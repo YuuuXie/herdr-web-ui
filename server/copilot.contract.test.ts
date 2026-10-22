@@ -50,6 +50,9 @@ process.stdin.on("data", (chunk) => {
       appendFileSync(log, new Date().toISOString() + " [INFO] Registering foreground session: " + next + "\\n");
       selected = next;
     }
+    else if (line === ":unregister" && lifecycle) {
+      appendFileSync(log, new Date().toISOString() + " [INFO] Unregistering foreground session: " + selected + "\\n");
+    }
     else if (line === ":quit") process.exit(0);
     else appendFileSync(join(home, "input.txt"), line + "\\n");
   }
@@ -78,7 +81,7 @@ afterAll(async () => {
 
 it.skipIf(process.platform !== "linux")("binds only the reported UUID to the foreground process's home and rejects old cursors after a switch", async () => {
   const url = `http://127.0.0.1:${app.port}/api/pane/conversation?pane_id=${encodeURIComponent(pane)}`;
-  const read = async () => (await fetch(url)).json() as Promise<{ source: string; turns: { parts: { text?: string }[] }[]; cursor?: string; history_id?: string }>;
+  const read = async () => (await fetch(url)).json() as Promise<{ source: string; turns: { parts: { kind?: string; text?: string; output_ref?: string }[] }[]; cursor?: string; history_id?: string }>;
   const external = await read();
   expect(external.source).toBe("copilot-transcript");
   expect(external.turns).toEqual([]);
@@ -106,12 +109,17 @@ it.skipIf(process.platform !== "linux")("binds only the reported UUID to the for
   expect(first.turns[0]?.parts[0]?.text).toBe("session A");
   appendFileSync(file(id), event("assistant.message", { content: "Checking.", phase: "commentary",
     toolRequests: [{ toolCallId: "call-1", name: "shell", arguments: { command: "pwd" } }], model: "fixture-model" }));
-  const toolUrl = `http://127.0.0.1:${app.port}/api/pane/conversation/tool-output?${new URLSearchParams({ pane_id: pane, ref: "call-1" })}`;
+  const toolUrl = (ref: string) => `http://127.0.0.1:${app.port}/api/pane/conversation/tool-output?${new URLSearchParams({ pane_id: pane, ref })}`;
   expect((await read()).turns.at(-1)?.parts.at(-1)).toMatchObject({ kind: "tool", output: "" });
   appendFileSync(file(id), event("tool.execution_start", { toolCallId: "call-1", toolName: "shell" })
     + event("tool.execution_complete", { toolCallId: "call-1", success: false, result: { content: "error ".repeat(900) } }));
-  expect((await read()).turns.at(-1)?.parts.at(-1)).toMatchObject({ kind: "tool", error: true, output_ref: "call-1" });
-  expect(await (await fetch(toolUrl)).text()).toBe("error ".repeat(900));
+  const completed = (await read()).turns.at(-1)?.parts.at(-1);
+  if (completed?.kind !== "tool" || !completed.output_ref) throw new Error("fixture tool output ref missing");
+  const completedRef = completed.output_ref;
+  expect(completed).toMatchObject({ kind: "tool", error: true });
+  expect(completedRef).toMatch(/^cp[0-9a-f]{16}\.call-1$/);
+  expect((await fetch(toolUrl("call-1"))).status).toBe(404);
+  expect(await (await fetch(toolUrl(completedRef))).text()).toBe("error ".repeat(900));
   appendFileSync(file(id), event("session.resume", { selectedModel: "fixture-model" }) + event("user.message", { content: "appended" }));
   expect((await read()).history_id).toBe(first.history_id);
   expect((await read()).turns.at(-1)?.parts[0]?.text).toBe("appended");
@@ -158,7 +166,7 @@ it.skipIf(process.platform !== "linux")("binds only the reported UUID to the for
   expect((await sessionSnapshot()).panes.find((p) => p.pane_id === pane)?.agent_session?.value).toBe(id);
   expect((await read()).source).toBe("scrollback");
   expect((await fetch(`${url}&from=${encodeURIComponent(first.cursor!)}`)).status).toBe(409);
-  expect((await fetch(toolUrl)).status).toBe(404);
+  expect((await fetch(toolUrl(completedRef))).status).toBe(404);
   await herdrRpc("pane.send_text", { pane_id: pane, text: ":quit\n" });
   for (const deadline = Date.now() + 10_000;;) {
     if ((await sessionSnapshot()).panes.find((p) => p.pane_id === pane)?.agent !== "copilot") break;
@@ -187,9 +195,9 @@ it.skipIf(process.platform !== "linux")("reads a resumed CLI without marker or r
   const forked = "12aa83d8-48bc-41f2-a498-7055c5c44a04";
   for (const id of [resumed, forked]) {
     mkdirSync(join(home, "session-state", id), { recursive: true });
-    writeFileSync(file(id), fixture(id, id) + event("assistant.message", {
+    writeFileSync(file(id), fixture(id, id) + Array.from({ length: 55 }, () => event("user.message", { content: id })).join("") + event("assistant.message", {
       toolRequests: [{ toolCallId: `call-${id}`, name: "shell", arguments: {} }],
-    }) + event("tool.execution_complete", { toolCallId: `call-${id}`, result: { content: `output-${id}` } }));
+    }) + event("tool.execution_complete", { toolCallId: `call-${id}`, result: { content: `output-${id} `.repeat(600) } }));
   }
   const created = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-copilot-lifecycle" });
   const current = created.root_pane.pane_id;
@@ -202,12 +210,20 @@ it.skipIf(process.platform !== "linux")("reads a resumed CLI without marker or r
     }
     const url = `http://127.0.0.1:${app.port}/api/pane/conversation?pane_id=${encodeURIComponent(current)}`;
     const read = async () => (await fetch(url)).json() as Promise<{
-      source: string; turns: { parts: { text?: string }[] }[]; cursor?: string; history_id?: string;
+      source: string; turns: { parts: { text?: string; output_ref?: string }[] }[]; cursor?: string; history_id?: string;
     }>;
     const initial = await read();
     expect(initial.source).toBe("copilot-transcript");
     expect(initial.turns[0]?.parts[0]?.text).toBe(resumed);
     expect(initial.history_id).not.toStartWith("unwritten:");
+    const oldCursor = initial.cursor!;
+    expect(oldCursor).toBeDefined();
+    const oldRef = initial.turns.flatMap((turn) => turn.parts).find((part) => part.output_ref)?.output_ref;
+    expect(oldRef).toBeDefined();
+    expect((await fetch(`${url}&from=${encodeURIComponent(oldCursor)}`)).status).toBe(200);
+    expect((await fetch(`${url}&before=${encodeURIComponent(oldCursor)}`)).status).toBe(200);
+    const outputUrl = (ref: string) => `http://127.0.0.1:${app.port}/api/pane/conversation/tool-output?${new URLSearchParams({ pane_id: current, ref })}`;
+    expect((await fetch(outputUrl(oldRef!))).status).toBe(200);
     const duplicate = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-copilot-log-peer" });
     try {
       const peer = duplicate.root_pane.pane_id;
@@ -239,10 +255,40 @@ it.skipIf(process.platform !== "linux")("reads a resumed CLI without marker or r
       if (Date.now() > deadline) throw new Error("switch-back was not selected");
       await Bun.sleep(50);
     }
+    const returned = await read();
+    expect(returned.history_id).not.toBe(initial.history_id);
+    expect((await fetch(`${url}&from=${encodeURIComponent(oldCursor)}`)).status).toBe(409);
+    expect((await fetch(`${url}&before=${encodeURIComponent(oldCursor)}`)).status).toBe(409);
+    expect((await fetch(outputUrl(oldRef!))).status).toBe(404);
+    const newRef = returned.turns.flatMap((turn) => turn.parts).find((part) => part.output_ref)?.output_ref;
+    expect(newRef).toBeDefined();
+    expect(newRef).not.toBe(oldRef);
+    expect((await fetch(outputUrl(newRef!))).status).toBe(200);
+    expect((await fetch(`${url}&before=${encodeURIComponent(returned.cursor!)}`)).status).toBe(200);
+    await herdrRpc("pane.send_text", { pane_id: current, text: `:switch ${forked}\n:switch ${resumed}\n` });
+    let unobserved = await read();
+    for (const deadline = Date.now() + 5000; unobserved.history_id === returned.history_id;) {
+      if (Date.now() > deadline) throw new Error("unobserved switch-back did not advance binding");
+      await Bun.sleep(50);
+      unobserved = await read();
+    }
+    expect(unobserved.turns[0]?.parts[0]?.text).toBe(resumed);
+    expect((await fetch(`${url}&before=${encodeURIComponent(returned.cursor!)}`)).status).toBe(409);
+    expect((await fetch(outputUrl(newRef!))).status).toBe(404);
+    await herdrRpc("pane.send_text", { pane_id: current, text: ":unregister\n" });
+    for (const deadline = Date.now() + 5000;;) {
+      if ((await read()).source === "scrollback") break;
+      if (Date.now() > deadline) throw new Error("unregistered foreground did not fail closed");
+      await Bun.sleep(50);
+    }
+    expect((await fetch(`${url}&from=${encodeURIComponent(unobserved.cursor!)}`)).status).toBe(409);
+    const latestRef = unobserved.turns.flatMap((turn) => turn.parts).find((part) => part.output_ref)?.output_ref;
+    expect(latestRef).toBeDefined();
+    expect((await fetch(outputUrl(latestRef!))).status).toBe(404);
   } finally {
     await workspaceClose(created.workspace.workspace_id);
   }
-});
+}, 15_000);
 
 it.skipIf(process.platform !== "linux")("never mistakes an explicitly resumed launch without current evidence for a fresh empty chat", async () => {
   const resumed = "12aa83d8-48bc-41f2-a498-7055c5c44a05";

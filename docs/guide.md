@@ -175,6 +175,11 @@ resume/continue without current foreground proof never gets a fresh-session plac
 user-input requests are ephemeral, not persisted to the transcript: recorded `ask_user` choices
 can be read in Chat, but live answers still belong to the CLI's Terminal; the bridge never sends
 guessed selection keys or treats a question as an approval.
+When the process-owned log records a foreground switch, Chat invalidates the previous
+pagination cursors and tool-output links, including after switching back to the same session;
+reload that session's current page for fresh links. If there is no readable lifecycle log,
+the marker-and-report fallback can only detect switches it observes, not an unobserved
+switch away and back.
 
 GJC chat requires GJC 0.18.9 or later for its broker-bound SDK session CLI, with `gjc`
 on the server PC's PATH and its SDK broker already running. An older GJC opens in Terminal.

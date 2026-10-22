@@ -59,7 +59,7 @@ import { withinRetentionBudget } from "./retention-budget.ts";
 import { forgetAllPiIndexes, forgetPiIndex, piAbandonedTurns, piBranchRecords, piBranchSegments } from "./pi-tree.ts";
 import { trimOutput } from "./tool-output.ts";
 import { copilotOutput, copilotRootRecord, parseCopilotTranscript } from "./copilot.ts";
-import { copilotExplicitResume, copilotLoggedSession, copilotTranscriptFile, copilotUnwrittenSession, openCopilotFile } from "./copilot-store.ts";
+import { copilotExplicitResume, copilotLoggedBinding, copilotLoggedSession, copilotTranscriptFile, copilotUnwrittenSession, openCopilotFile } from "./copilot-store.ts";
 import { parseConversationMetadata } from "./conversation-metadata.ts";
 import { forgetHermesTranscriptState, hermesConversationPage, hermesToolOutput, hermesTranscriptForPane } from "./hermes.ts";
 
@@ -566,6 +566,38 @@ type StreamSource = Exclude<RecognizedConversation["source"], "opencode-transcri
 
 /** A restart may parse the same files differently: its answers never match an earlier ETag. */
 const PROCESS_VERSION = randomUUID();
+const copilotBindings = new Map<string, { identity: string; prefix: string }>();
+
+function copilotPrefix(paneId: string, identity: string): string {
+  const previous = copilotBindings.get(paneId);
+  if (previous?.identity === identity) return previous.prefix;
+  const prefix = `cp${createHash("sha256").update(`${PROCESS_VERSION}\0${paneId}\0${identity}\0${randomUUID()}`).digest("hex").slice(0, 16)}.`;
+  remember(copilotBindings, paneId, { identity, prefix }, PANE_READS_MAX);
+  return prefix;
+}
+
+function copilotPage(page: ConversationPage, prefix: string): ConversationPage {
+  const unbind = (cursor?: string): string | undefined => {
+    if (cursor === undefined) return undefined;
+    if (!cursor.startsWith(prefix)) throw new HistoryChanged();
+    return cursor.slice(prefix.length);
+  };
+  return { before: unbind(page.before), since: unbind(page.since), from: unbind(page.from) };
+}
+
+function bindCopilotAnswer(answer: RecognizedConversation, prefix: string): RecognizedConversation {
+  return {
+    ...answer,
+    history_id: `${prefix}${answer.history_id}`,
+    cursor: answer.cursor === null ? null : `${prefix}${answer.cursor}`,
+    version: answerVersion(prefix, answer.version),
+    turns: answer.turns.map((turn) => ({
+      ...turn,
+      parts: turn.parts.map((part) => part.kind === "tool" && part.output_ref
+        ? { ...part, output_ref: `${prefix}${part.output_ref}` } : part),
+    })),
+  };
+}
 
 export function answerVersion(key: string, signature: string): string {
   return createHash("sha256").update(`${PROCESS_VERSION}\0${key}\0${signature}`).digest("base64url").slice(0, 22);
@@ -1282,6 +1314,7 @@ export function forgetTranscriptState(): void {
   transcriptRevisions.clear();
   clearScans.clear();
   paneReads.clear();
+  copilotBindings.clear();
   forgetAllCodexState();
   forgetAllPiIndexes();
   forgetGrokState();
@@ -1300,6 +1333,7 @@ export function forgetTranscriptState(): void {
 export function forgetPaneTranscriptState(paneId: string): void {
   const reads = paneReads.get(paneId);
   paneReads.delete(paneId);
+  copilotBindings.delete(paneId);
   launchedAgents.forget(paneId);
   forgetGjcPane(paneId);
   if (reads === undefined) return;
@@ -1570,7 +1604,7 @@ async function ompTranscriptPath(paneId: string, cwd: string): Promise<string> {
 }
 
 /** History requires Herdr's hook; a process-held unwritten session can show an empty chat. */
-async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[]): Promise<string> {
+async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[]): Promise<{ path: string; binding: string }> {
   const report = pane.agent_session;
   const claimedByPeer = async (session: string): Promise<boolean> => {
     for (const peer of panes) {
@@ -1600,20 +1634,22 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
   }
   const environment = processEnviron(foreground.pid);
   const argv = foreground.argv ?? [];
-  const logged = copilotLoggedSession(environment, argv, foreground.pid);
-  if (logged !== null && !(await claimedByPeer(logged))) {
-    const path = copilotTranscriptFile(logged, environment, argv, foreground.pid);
-    if (path !== null && nodePath.basename(nodePath.dirname(path)) === logged) return path;
+  const logged = copilotLoggedBinding(environment, argv, foreground.pid);
+  if (logged !== null && !(await claimedByPeer(logged.sessionId))) {
+    const path = copilotTranscriptFile(logged.sessionId, environment, argv, foreground.pid);
+    if (path !== null && nodePath.basename(nodePath.dirname(path)) === logged.sessionId)
+      return { path, binding: `${foreground.pid}:${logged.generation}` };
   }
   if (report != null) {
     if (await claimedByPeer(report.value)) throw new ConversationUnavailable("no_session_id");
     if (logged === null) {
       const path = copilotTranscriptFile(report.value, environment, argv, foreground.pid);
-      if (path !== null && nodePath.basename(nodePath.dirname(path)) === report.value) return path;
+      if (path !== null && nodePath.basename(nodePath.dirname(path)) === report.value)
+        return { path, binding: `${foreground.pid}:held:${path}` };
     }
   }
   const pending = copilotUnwrittenSession(environment, argv, foreground.pid);
-  if (pending !== null && (report == null || logged === pending.sessionId || report.value === pending.sessionId)
+  if (pending !== null && (report == null || logged?.sessionId === pending.sessionId || report.value === pending.sessionId)
     && !(await claimedByPeer(pending.sessionId))) {
     throw new ConversationNotStarted(pending.sessionId, "copilot-transcript", pending.path);
   }
@@ -1622,7 +1658,7 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
 
 /** Where a pane's conversation is: a transcript file, or a session in OpenCode's database. */
 type ResolvedTranscript =
-  | { source: StreamSource; path: string; codexHome?: string; agy?: AgyStore }
+  | { source: StreamSource; path: string; codexHome?: string; agy?: AgyStore; binding?: string }
   | { source: "opencode-transcript"; path: string; session: string }
   | { source: "hermes-transcript"; path: string; sessionId: string };
 
@@ -1662,7 +1698,7 @@ async function resolveTranscript(pane: HerdrPane, cwd: string, codexHome?: strin
   // session headers name the one they run in
   const sessionCwd = typeof pane.foreground_cwd === "string" && pane.foreground_cwd.length > 0 ? pane.foreground_cwd : cwd;
   try {
-    if (agent === "copilot") return { source: "copilot-transcript", path: await copilotTranscriptPath(pane, panes ?? [pane]) };
+    if (agent === "copilot") return { source: "copilot-transcript", ...await copilotTranscriptPath(pane, panes ?? [pane]) };
     if (agent === "grok") {
       const found = await resolveGrokStore(pane, grokHome);
       if (!found) throw new ConversationUnavailable("no_session_path");
@@ -1913,7 +1949,8 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
     : resolved.source === "claude-transcript" ? nodePath.basename(resolved.path, ".jsonl")
     : resolved.source === "pi-transcript" || resolved.source === "cmd-transcript" || resolved.source === "omp-transcript" ? realpathSync(resolved.path) : null;
   rememberPaneRead(paneId, resolved.path);
-  const answer = transcriptPage(resolved.source, resolved.path, page, resolved.codexHome ?? codexHome);
+  const prefix = resolved.source === "copilot-transcript" ? copilotPrefix(paneId, resolved.binding!) : null;
+  const answer = transcriptPage(resolved.source, resolved.path, prefix === null ? page : copilotPage(page, prefix), resolved.codexHome ?? codexHome);
   const status = snapshot.panes.find((pane) => pane.pane_id === paneId)?.agent_status;
   if (resolved.source === "grok-transcript" && answer.turns.length === 0 && page.before === undefined
     && (status === "working" || status === "blocked")) {
@@ -1933,6 +1970,12 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
   if (resolved.source === "grok-transcript") {
     try { return { ...answer, activity: grokProjection(resolved.path, statSync(resolved.path)).activity }; }
     catch { throw new ConversationUnavailable("transcript_missing"); }
+  }
+  if (prefix !== null) {
+    const pane = snapshot.panes.find((candidate) => candidate.pane_id === paneId)!;
+    const current = await copilotTranscriptPath(pane, snapshot.panes);
+    if (current.path !== resolved.path || current.binding !== resolved.binding) throw new HistoryChanged();
+    return bindCopilotAnswer(answer, prefix);
   }
   return answer;
 }
@@ -2178,7 +2221,7 @@ const TOOL_OUTPUT_MAX = 2_000_000;
 
 /** The whole output of a tool call whose page output was cut, by its id; null when there is none. */
 export async function toolOutput(paneId: string, ref: string, codexHome?: string, opencodeDb?: string, hermesHome?: string, grokHome?: string): Promise<string | null> {
-  if (!TOOL_REF.test(ref)) return null;
+  if (!TOOL_REF.test(ref) && !/^cp[0-9a-f]{16}\.[A-Za-z0-9_:.-]{1,128}$/.test(ref)) return null;
   const snapshot = await sessionSnapshot();
   const pane = snapshot.panes.find((candidate) => candidate.pane_id === paneId);
   if (pane === undefined || typeof pane.cwd !== "string" || pane.cwd.length === 0) return null;
@@ -2191,8 +2234,18 @@ export async function toolOutput(paneId: string, ref: string, codexHome?: string
   }
   rememberPaneRead(paneId, resolved.path);
   if (resolved.source === "hermes-transcript") return hermesToolOutput(resolved.sessionId, resolved.path, ref, TOOL_OUTPUT_MAX);
-  const output = transcriptToolOutput(resolved.source, resolved.path, ref, resolved.codexHome ?? codexHome);
+  let nativeRef = ref;
+  if (resolved.source === "copilot-transcript") {
+    const prefix = copilotPrefix(paneId, resolved.binding!);
+    if (!ref.startsWith(prefix)) return null;
+    nativeRef = ref.slice(prefix.length);
+  }
+  const output = transcriptToolOutput(resolved.source, resolved.path, nativeRef, resolved.codexHome ?? codexHome);
   if (resolved.agy && !sameAgyStore(resolved.agy, await resolveAgyStore(pane))) return null;
+  if (resolved.source === "copilot-transcript") {
+    const current = await copilotTranscriptPath(pane, snapshot.panes).catch(() => null);
+    if (current?.path !== resolved.path || current.binding !== resolved.binding) return null;
+  }
   return output;
 }
 
