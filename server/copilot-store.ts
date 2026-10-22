@@ -1,5 +1,6 @@
 import { constants, closeSync, fstatSync, lstatSync, openSync, opendirSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
 
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const HEADER_BYTES = 64 * 1024;
@@ -8,7 +9,23 @@ const LOG_WINDOW_BYTES = 16 * 1024 * 1024;
 const LOG_NAME = /^process-\d+-(\d+)\.log$/;
 const FOREGROUND_EVENT = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z \[INFO\] (Registering|Unregistering) foreground session: ([\da-f-]{36})$/;
 interface ForegroundBinding { sessionId: string; generation: string }
-const foregroundCheckpoints = new Map<number, { dev: number; ino: number; path: string; size: number; binding: ForegroundBinding }>();
+interface ForegroundCheckpoint {
+  dev: number; ino: number; path: string; size: number; mtimeMs: number; ctimeMs: number;
+  boundary: string; epoch: string; binding: ForegroundBinding;
+}
+const foregroundCheckpoints = new Map<number, ForegroundCheckpoint>();
+
+/** Check consumed content at both ends before treating the next read as an append. */
+function logBoundary(fd: number, size: number): string | null {
+  const length = Math.min(size, HEADER_BYTES);
+  const bytes = Buffer.alloc(length);
+  const hash = createHash("sha256");
+  for (const position of [0, Math.max(0, size - length)]) {
+    if (readSync(fd, bytes, 0, length, position) !== length) return null;
+    hash.update(bytes);
+  }
+  return hash.digest("hex");
+}
 
 /** The latest complete lifecycle event in the CLI's own open log, never the newest transcript. */
 function loggedForeground(pid: number, logDirectories: readonly string[]): ForegroundBinding | null | undefined {
@@ -32,12 +49,19 @@ function loggedForeground(pid: number, logDirectories: readonly string[]): Foreg
           const named = statSync(target);
           if (!stat.isFile() || stat.dev !== named.dev || stat.ino !== named.ino) return undefined;
           const cached = foregroundCheckpoints.get(pid);
-          const same = cached?.dev === stat.dev && cached.ino === stat.ino && cached.path === target && stat.size >= cached.size;
+          const same = cached?.dev === stat.dev && cached.ino === stat.ino && cached.path === target
+            && stat.size >= cached.size && stat.size - cached.size <= LOG_WINDOW_BYTES
+            && (stat.size !== cached.size || (stat.mtimeMs === cached.mtimeMs && stat.ctimeMs === cached.ctimeMs))
+            && logBoundary(fd, cached.size) === cached.boundary;
+          if (!same) foregroundCheckpoints.delete(pid);
+          const epoch = same ? cached.epoch : randomUUID();
           const start = same ? cached.size : Math.max(0, stat.size - LOG_WINDOW_BYTES);
-          if (stat.size - start > LOG_WINDOW_BYTES) return undefined;
           const bytes = Buffer.alloc(stat.size - start);
           const read = readSync(fd, bytes, 0, bytes.length, start);
-          if (read !== bytes.length || fstatSync(fd).size !== stat.size) return undefined;
+          const boundary = logBoundary(fd, stat.size);
+          const after = fstatSync(fd);
+          if (read !== bytes.length || boundary === null || after.size !== stat.size
+            || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs) return undefined;
           const text = bytes.subarray(0, read).toString("utf8");
           if (text && !text.endsWith("\n")) return undefined;
           const skip = start === 0 || same ? 0 : text.indexOf("\n") + 1;
@@ -51,16 +75,19 @@ function loggedForeground(pid: number, logDirectories: readonly string[]): Foreg
             if (match) {
               observed = true;
               if (!SESSION_ID.test(match[2]!)) return undefined;
-              if (match[1] === "Registering") selected = { sessionId: match[2]!, generation: `${pid}:${stat.dev}:${stat.ino}:${position}` };
+              if (match[1] === "Registering") selected = { sessionId: match[2]!, generation: `${pid}:${stat.dev}:${stat.ino}:${epoch}:${position}` };
               else if (selected?.sessionId === match[2]) selected = null;
-              else return undefined;
+              else if (selected !== null) return undefined;
             }
             position += Buffer.byteLength(line) + 1;
           }
           if (!observed && !same) return undefined;
           if (selected === null) return undefined;
           if (foregroundCheckpoints.size >= 256 && !foregroundCheckpoints.has(pid)) foregroundCheckpoints.delete(foregroundCheckpoints.keys().next().value!);
-          foregroundCheckpoints.set(pid, { dev: stat.dev, ino: stat.ino, path: target, size: stat.size, binding: selected });
+          foregroundCheckpoints.set(pid, {
+            dev: stat.dev, ino: stat.ino, path: target, size: stat.size,
+            mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, boundary, epoch, binding: selected,
+          });
           found = selected;
         } finally { closeSync(fd); }
       } catch { return undefined; }

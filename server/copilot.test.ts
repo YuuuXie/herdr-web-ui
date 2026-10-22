@@ -3,7 +3,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseCopilotTranscript } from "./copilot.ts";
-import { copilotLoggedSession, copilotTranscriptFile, copilotUnwrittenSession, heldSessions } from "./copilot-store.ts";
+import { copilotLoggedBinding, copilotLoggedSession, copilotTranscriptFile, copilotUnwrittenSession, heldSessions } from "./copilot-store.ts";
 import { ConversationUnavailable, forgetTranscriptState, HistoryChanged, transcriptPage, transcriptToolOutput } from "./conversation.ts";
 import { parseConversationMetadata } from "./conversation-metadata.ts";
 
@@ -312,6 +312,56 @@ it.skipIf(process.platform !== "linux")("uses only the process home and a canoni
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+for (const scenario of ["rewrite", "gap"] as const) {
+  it.skipIf(process.platform !== "linux")(`recovers foreground discovery after a log ${scenario}`, async () => {
+    const root = mkdtempSync(join(tmpdir(), "copilot-log-continuity-"));
+    const other = "12aa83d8-48bc-41f2-a498-7055c5c44a02";
+    for (const id of [session, other]) mkdirSync(join(root, "session-state", id), { recursive: true });
+    mkdirSync(join(root, "logs"));
+    const child = Bun.spawn(["node", "-e", `
+      const {openSync} = require("node:fs");
+      openSync(process.argv[1] + "/logs/process-100-" + process.pid + ".log", "w");
+      console.log("ready");
+      process.stdin.resume();
+    `, root], { stdin: "pipe", stdout: "pipe", stderr: "inherit" });
+    const reader = child.stdout.getReader();
+    try {
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain("ready");
+      const log = join(root, "logs", `process-100-${child.pid}.log`);
+      const register = (id: string) => `2026-10-22T00:00:00.000Z [INFO] Registering foreground session: ${id}\n`;
+      const options = [`COPILOT_HOME=${root}`];
+      const binding = () => copilotLoggedBinding(options, ["copilot"], child.pid);
+      appendFileSync(log, register(session));
+      const original = binding();
+      expect(original?.sessionId).toBe(session);
+      if (scenario === "rewrite") {
+        writeFileSync(log, register(other));
+        expect(binding()?.sessionId).toBe(other);
+        writeFileSync(log, register(session));
+        expect(binding()?.sessionId).toBe(session);
+        expect(binding()?.generation).not.toBe(original?.generation);
+        writeFileSync(log, register(other) + "unrelated\n");
+        expect(binding()?.sessionId).toBe(other);
+        const replaced = binding();
+        appendFileSync(log, "ordinary append\n");
+        expect(binding()?.generation).toBe(replaced?.generation);
+      } else {
+        appendFileSync(log, "unrelated\n".repeat(2 * 1024 * 1024));
+        expect(binding()).toBeNull();
+        appendFileSync(log, register(session).replace("Registering", "Unregistering") + register(other));
+        expect(binding()?.sessionId).toBe(other);
+        appendFileSync(log, "unrelated\n".repeat(2 * 1024 * 1024) + register(session));
+        expect(binding()?.sessionId).toBe(session);
+        expect(binding()?.generation).not.toBe(original?.generation);
+      }
+    } finally {
+      child.kill();
+      await child.exited;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
 
 it.skipIf(process.platform !== "linux")("follows process-owned foreground evidence through fork and switch-back with multiple holds", async () => {
   const root = mkdtempSync(join(tmpdir(), "copilot-foreground-"));

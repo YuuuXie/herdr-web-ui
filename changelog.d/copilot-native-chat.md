@@ -9,3 +9,5 @@
 - Copilot pagination and tool-output links from a prior foreground selection no longer
   become valid again after switching back; an unregister without a new registration
   also stops serving the old conversation.
+- Copilot foreground discovery revalidates log checkpoints after rewrites and recovers
+  from large polling gaps using bounded lifecycle-log reads.
