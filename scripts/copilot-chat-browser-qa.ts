@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { createServer } from "../server/index.ts";
 import { herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
+import { UsageService } from "../server/usage.ts";
 import { chromePath } from "./chrome-path.ts";
 
 if (process.platform !== "linux") {
@@ -67,7 +68,8 @@ console.log("fixture ready");`);
   }
   await herdrRpc("pane.report_agent_session", { pane_id: pane, agent: "copilot", source: "herdr:copilot",
     agent_session_id: id, seq: Date.now() * 1000 });
-  server = createServer({ hostname: "127.0.0.1", port: 0, token: "", stateDir: join(root, "state"), tailscaleOwner: null });
+  server = createServer({ hostname: "127.0.0.1", port: 0, token: "", stateDir: join(root, "state"),
+    herdrConfigPath: join(root, "config.toml"), usage: new UsageService(undefined, []), tailscaleOwner: null });
   const endpoint = `http://127.0.0.1:${server.port}/api/pane/conversation?pane_id=${encodeURIComponent(pane)}`;
   const body = await (await fetch(endpoint)).json() as { source: string };
   assert.equal(body.source, "copilot-transcript");
