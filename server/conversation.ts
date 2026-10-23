@@ -16,8 +16,8 @@
  *   under <its agent dir>/sessions/<cwd-slug>/ (~/.omo/agent unless the process
  *   moved it with OMO_CODING_AGENT_DIR). It writes omp's session shape, so
  *   parseOmpTranscript (transcript-records.ts) reads it.
- * - gjc: the public SDK broker binds its live pane process to the exact saved
- *   session transcript (gjc-sdk.ts, gjc-runtime.ts). It writes omp's session shape too.
+ * - gjc: its native extension reports the active session for its live process
+ *   (gjc-native.ts, gjc-runtime.ts). It writes omp's session shape too.
  * - pi: herdr's agent.get names the session jsonl outright under
  *   ~/.pi/agent/sessions/<cwd-slug>/ (pi.ts). Its records are the session shape
  *   parseOmpTranscript reads, but its file is an entry tree, not a log: /tree

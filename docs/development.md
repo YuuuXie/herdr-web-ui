@@ -128,6 +128,16 @@ Read the verification status and source identity, not just a zero exit code. Cha
 run invalidate its source verification; a later edit or restack requires new verification.
 An unavailable source fingerprint, or an unreadable artifact after a successful build, fails
 the check even when its commands returned zero.
+Whatever a step leaves running in its process group (with its output closed or not) is ended
+when the step ends, and the step's report says so.
+A teardown that did not finish also fails the check: a step's process group still there after
+SIGTERM, then SIGKILL and their grace (only "no such process" proves it gone; a process the run may not signal
+is still there), or a herdr session of the run whose stop failed. Every other stop is still
+tried. The run then keeps its isolated directory instead of removing it, prints its absolute
+path, lists it under `evidence.retained` in the report and adds the failures to `errors`. A
+run that passed exits 1 with status `failure`. An interrupted run keeps exit code 130 or 143
+and status `interrupted`, with the same errors and kept directory. Look through the kept
+directory, stop what is left, and remove the directory yourself.
 `check run --build` records the build made for the command. Without it, an existing `dist/`
 has unknown provenance and cannot establish that a browser tested current source. Report and
 log collection is for isolated fixtures: do not pass real credentials or live-user commands to
@@ -467,8 +477,12 @@ build in parallel against the dispatch SHA, and deployment requires both to succ
 Deployments are serialized. Immediately before deploying,
 the workflow checks that the validated SHA is still the latest `main` commit; it fails closed if it is
 stale or that check cannot be completed. This does not change the separate Release workflow.
-The standalone `main` CI supplies the validation for each main push, preserving its independent CI
-history while the Website workflow waits for its successful completion.
+The standalone `main` CI supplies that validation. Its push runs share one concurrency group: the
+running one finishes, and a newer push cancels the one still waiting, so a burst of merges runs
+main's checks at most twice and the newest run covers the merges in between. The Website workflow
+deploys only after a successful push run of main's newest commit; a cancelled run's Website run
+skips building. Re-running an older main run while a newer one waits cancels the newer one, and
+main's newest commit then waits for the next push or a manual Pages run.
 
 ### The browser demo
 
@@ -492,11 +506,13 @@ after changing the staged session. Files, images, push and remote PCs are not pa
    fragments; then add the `by @login` credits; a fragment merged later must be moved into the
    version by hand, since the release workflow refuses while one is left), and tells the release
    in [release-summaries.json](../release-summaries.json) the way a game's patch notes do: under
-   the version, for each language in `SUMMARY_LANGUAGES` (`shared/update.ts`: `en`, `ko`, `ja` and `zh`), the lists `new`, `improved` and `fixed` (a list with nothing to say is left out), each a few lines of
-   plain text, 90 characters at most, the same number of lines in every language. It is what
-   an install shows before and after the update, with the changelog section folded under it,
-   so a line names what changes for the people who use the app and leaves out PR numbers and
-   internals. The unit suite and the release workflow fail without every language.
+   the version, for each language in `SUMMARY_LANGUAGES` (`shared/update.ts`: `en`, `ko`, `ja` and `zh`), the lists `new`, `improved` and `fixed` (a list with nothing to say is left out), the same number of
+   lines in every language. From 0.5.0 the notes are short: at most five lines in a list, each one
+   plain sentence of at most 70 characters in English (about as short in the other languages),
+   naming the change most people will notice first. A change that does not make the cut stays in
+   the changelog section, so no line joins two changes to fit it in. It is what an install shows
+   before and after the update, with the changelog section folded under it, so a line names what
+   changes for the people who use the app and leaves out PR numbers and internals. The unit suite and the release workflow fail without every language.
    The GitHub release is written from the same files by `scripts/release-notes.ts`: the
    English lists under New features, Improvements and Bug fixes, then the version's whole
    changelog section folded under **Full changelog**.

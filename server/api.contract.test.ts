@@ -1,6 +1,6 @@
 import { describe, expect, it, beforeAll, afterAll, spyOn } from "bun:test";
 import { Database } from "bun:sqlite";
-import { appendFileSync, chmodSync, copyFileSync, mkdirSync, mkdtempSync, existsSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, closeSync, constants as fsConstants, copyFileSync, mkdirSync, mkdtempSync, existsSync, readFileSync, readdirSync, realpathSync, openSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { ConversationMonitor } from "./conversation-monitor.ts";
@@ -25,6 +25,7 @@ import { TailnetIdentitySource } from "./tailscale.ts";
 import { forgetTranscriptState } from "./conversation.ts";
 import type { RepoDiffFileList, RepoDiffFilePatch, SessionHistoryResponse } from "../shared/protocol.ts";
 import { PendingInputError, PendingInputs } from "./pending-input.ts";
+import { loginPathProbe, ShellAgentLocator, type LoginPathProbe } from "./shell-agent.ts";
 
 /**
  * Contract test for Ovis's HTTP + WS surface.
@@ -1336,6 +1337,104 @@ describe("workspace and discovery endpoints", () => {
       rmSync(bin, { recursive: true, force: true });
     }
   });
+
+  it.skipIf(process.platform === "win32")("offers a shell agent found only on its login shell's PATH, starts that same executable, and keeps hits and misses until the next run", async () => {
+    // a service PATH without gjc, and a test-owned login shell whose -l run puts it on PATH: no dotfile is read
+    const root = mkdtempSync(join(tmpdir(), "ovis-login-path-"));
+    const home = join(root, "home"), serviceBin = join(root, "service bin"), loginBin = join(root, "login bin");
+    for (const dir of [home, serviceBin, loginBin]) mkdirSync(dir);
+    const gjc = join(loginBin, "gjc");
+    const alive = join(root, "alive"), release = join(root, "release");
+    await Bun.$`mkfifo ${alive} ${release}`;
+    // the fixture agent says who it is on `alive`, then stays in front of the pane under its own path,
+    // reading `release` until the test closes it; it holds `alive` open, so that ends when it does
+    const writeGjc = () => writeFileSync(gjc, `#!/bin/bash\nexec 3>'${alive}'\necho "$$" >&3\nexec -a "$0" cat '${release}'\n`, { mode: 0o755 });
+    writeGjc();
+    const shell = join(root, "login-shell");
+    writeFileSync(shell, `#!/bin/sh\nif [ "$1" = "-l" ]; then PATH='${loginBin}:/usr/bin:/bin'; export PATH; shift; echo 'fixture motd'; fi\n[ "$1" = "-c" ] && exec /bin/sh -c "$2"\nexit 64\n`, { mode: 0o755 });
+    const real = loginPathProbe({ shell, env: { HOME: home, PATH: serviceBin } });
+    let runs = 0;
+    const probe: LoginPathProbe = (signal) => { runs += 1; return real(signal); };
+    // the answer's age is read from this clock: a minute passes only when the test says
+    let clock = 0;
+    const shellAgents = new ShellAgentLocator({ servicePath: () => serviceBin, probe, now: () => clock });
+    const state = mkdtempSync(join(tmpdir(), "ovis-login-path-state-"));
+    const app = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: state, shellAgents });
+    const url = `http://127.0.0.1:${app.port}`;
+    const kinds = async () => ((await (await fetch(`${url}/api/agents`)).json()) as { agents: AgentKind[] }).agents;
+    const owned = await workspaceCreate({ cwd: tmpdir(), label: "ovis-test-login-path" });
+    const within = <T,>(promise: Promise<T>, ms: number, what: string): Promise<T> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      return Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(what)), ms); })]).finally(() => clearTimeout(timer));
+    };
+    // subscribed before the launch: the fixture's pid line says it is up, the end of the stream that it is gone
+    const watcher = Bun.spawn(["cat", alive], { stdout: "pipe" });
+    const fixtureExited = watcher.exited;
+    const firstLine = (async () => {
+      const reader = watcher.stdout.getReader(), decoder = new TextDecoder();
+      let text = "";
+      while (!text.includes("\n")) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error("the fixture ended before it said it was up");
+        text += decoder.decode(value, { stream: true });
+      }
+      return text.split("\n")[0]!;
+    })();
+    // closing the only writer of `release` ends the fixture's read, and its exit ends `alive`
+    const releaseFixture = () => { try { closeSync(openSync(release, fsConstants.O_WRONLY | fsConstants.O_NONBLOCK)); } catch { /* no reader: it never started or is gone */ } };
+    let launchedPid: number | null = null;
+    try {
+      // no login shell runs until something asks
+      expect(runs).toBe(0);
+      // concurrent first reads share one run
+      const reads = await Promise.all(Array.from({ length: 6 }, kinds));
+      for (const agents of reads) {
+        expect(agents).toContainEqual({ kind: "gjc", label: "Gajae Code", installed: true });
+        expect(agents.map((agent) => agent.kind)).not.toContain("omo");
+        // the wire shape is unchanged: kind, label and installed, nothing of where it was found
+        for (const agent of agents) expect(Object.keys(agent).sort()).toEqual(["installed", "kind", "label"]);
+      }
+      expect(JSON.stringify(reads)).not.toContain(root);
+      expect(runs).toBe(1);
+
+      // the start types the absolute path the offer found, quoted: the fixture runs under it
+      const res = await fetch(`${url}/api/tab/create`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ workspace_id: owned.workspace.workspace_id, agent: { kind: "gjc" } }) });
+      expect(res.status).toBe(200);
+      const tab = await res.json() as WorkspaceCreated;
+      expect(tab).toMatchObject({ agent_started: true });
+      launchedPid = Number(await within(firstLine, 10_000, "the fixture never said it was up"));
+      const info = await herdrRpc<{ process_info: { foreground_processes: { pid: number; argv?: string[] }[] } }>("pane.process_info", { pane_id: tab.pane_id });
+      expect(info.process_info.foreground_processes).toContainEqual(expect.objectContaining({ pid: launchedPid, argv: [gjc, release] }));
+      // neither the reads nor the start ran a login shell of their own
+      expect(runs).toBe(1);
+
+      // a removed executable is offered no more, and nothing else takes its place before the next run
+      rmSync(gjc);
+      expect((await kinds()).map((agent) => agent.kind)).not.toContain("gjc");
+      clock += 60_000;
+      expect((await kinds()).map((agent) => agent.kind)).not.toContain("gjc");
+      // back again: the kept miss holds until a read after the answer is a minute old runs the next one
+      writeGjc();
+      expect((await kinds()).map((agent) => agent.kind)).not.toContain("gjc");
+      clock += 60_000;
+      expect(await kinds()).toContainEqual({ kind: "gjc", label: "Gajae Code", installed: true });
+      expect(runs).toBe(3);
+
+      // released, the fixture agent ends: nothing of it outlives the test
+      releaseFixture();
+      expect(await within(fixtureExited, 10_000, "the released fixture kept running")).toBe(0);
+    } finally {
+      releaseFixture();
+      const released = await within(fixtureExited, 5000, "fixture still running").then(() => true, () => false);
+      if (!released && launchedPid !== null) try { process.kill(launchedPid, "SIGKILL"); } catch { /* gone with its pane */ }
+      watcher.kill();
+      await fixtureExited;
+      app.stop();
+      await workspaceClose(owned.workspace.workspace_id);
+      rmSync(root, { recursive: true, force: true });
+      rmSync(state, { recursive: true, force: true });
+    }
+  }, 60_000);
 
   it("makes one folder for the folder browser, and refuses names, folders and origins it must not", async () => {
     const root = mkdtempSync(join(tmpdir(), "ovis-mkdir-"));

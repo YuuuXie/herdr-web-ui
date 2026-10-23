@@ -159,7 +159,7 @@ Every agent herdr runs shows up with its live status, terminal and alerts. The c
 | **Copilot CLI** | Linux native `events.jsonl` when the pane's foreground process has a verifiable open CLI log recording the current foreground UUID, or Herdr reports the UUID and that process holds its unique session marker. The process's own `COPILOT_HOME` (otherwise `HOME/.copilot`) supplies the transcript. This follows `/resume`, `/fork` and switch-back without selecting by recency, even when older sessions remain open; Copilot CLI 1.0.103 was observed emitting foreground lifecycle events. Text, tools, recorded model/effort, `ask_user` question choices and Autopilot completion summaries are shown. Run `herdr integration install copilot` in the effective Copilot home before starting a pane to enable the Herdr session report; Ovis never changes your CLI setup. If the process-owned log is missing, truncated, rotated without continuity, unreadable, or lacks a verifiable foreground registration, only an unambiguous marker **and** trusted Herdr report allow reading history. Otherwise Chat falls back to Terminal rather than showing another session; macOS/Windows use Terminal. Existing panes with neither proof cannot be recovered by a server restart. This reads existing panes, not a Copilot option in **New workspace**. | — recorded choices are read-only; answer interactive questions and approvals in Terminal |
 | **omp** | Native session file | ✓ approvals, questions, and the model picker of `/model` and `/switch` (picked for the session: the chat sends `/model` as `/switch`, since omp's own `/model` opens its role hub) |
 | **omo** | Native session file, found through the pane's process tree | ✓ the `/model` list (picked for the session); other menus — use Terminal |
-| **gjc** | Native session file identified by GJC's SDK broker and the pane's process | — use Terminal |
+| **gjc** | Native session file reported by the web UI's GJC extension, verified against the pane's process | — use Terminal |
 | **pi** | Native session file, resolved through herdr; after `/tree`, the branch in play | ✓ its dialogs: a question, a confirmation, an answer typed in |
 | **Command Code** (`cmd`) | Native session file under `~/.commandcode/projects/`, resolved through herdr; after `/tree`, the branch in play | ✓ its permission prompts: Yes / Yes, don't ask again / No |
 | **OpenCode** | Native session in OpenCode 2's own database, resolved through herdr: `~/.local/share/opencode/opencode.db` (`%USERPROFILE%\.local\share\opencode\opencode.db` on Windows), or where the server's `XDG_DATA_HOME` or `OPENCODE_DB` puts it | ✓ its questions on OpenCode 2.0 or later, answered through its background service (`~/.local/state/opencode/service.json`, or under the server's `XDG_STATE_HOME`) one question at a time, with Back to change an earlier one; other prompts, and OpenCode 1 — use Terminal |
@@ -181,13 +181,33 @@ reload that session's current page for fresh links. If there is no readable life
 the marker-and-report fallback can only detect switches it observes, not an unobserved
 switch away and back.
 
-GJC chat requires GJC 0.18.9 or later for its broker-bound SDK session CLI, with `gjc`
-on the server PC's PATH and its SDK broker already running. An older GJC opens in Terminal.
-Git must also be on PATH for the SDK's workspace-scope discovery.
-The bridge asks the broker which saved session belongs to the pane's GJC process;
-it does not start a broker or guess from the screen, session title or newest file.
-Missing, ambiguous or unreadable SDK identity uses Terminal instead. Terminal input,
-status tracking and prompt handling are unchanged.
+GJC chat and GJC done alerts use a native extension rather than SDK session queries. From
+this checkout on each PC that runs GJC, explicitly install the extension:
+
+```sh
+bun scripts/install-gjc-integration.ts
+```
+
+Restart existing GJC sessions to load it. The installer writes only the web UI's extension;
+it does not replace GJC settings or other extensions. To remove it, run the same command
+with `--remove` and restart GJC again. No running session is modified by the installer.
+A remote PC with only the runtime bundle has no checkout: run the installer with the bundle's
+own Bun from its folder, `cd ~/.local/share/herdr-web-ui/remote-vN && bin/bun
+scripts/install-gjc-integration.ts` (on Windows, `bin\bun.exe` in
+`%LOCALAPPDATA%\herdr-web-ui\remote-vN`), where `N` is the bundle version.
+
+The extension reports its current session ID and exact file path on session changes and
+refreshes a short-lived process binding. The bridge checks the process identity and native
+transcript header instead of invoking `gjc sdk` or Git. The default
+`~/.gjc/agent/sessions/` store is supported; custom stores are not inferred.
+Missing, expired, ambiguous or unreadable bindings use Terminal. Existing sessions without
+the extension also use Terminal; there is no SDK fallback. The extension API was probed
+with GJC 0.18.12. Terminal input and prompt handling are unchanged.
+
+Status tracking reads the same binding. Without it, a GJC pane keeps herdr's own status,
+which follows GJC's provider child: a finished turn can stay on working, so no done alert
+comes and no INPUT shows for an open question. Install the extension and restart GJC to
+get both chat and done alerts back.
 
 Devin sessions are never selected by directory or recency alone. A plain `devin` shows the
 terminal text, since herdr does not report its session without its Devin integration; a session
