@@ -1,7 +1,7 @@
 /** Owned native Copilot-shaped fixture -> Herdr -> HTTP -> built React chat. */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
-import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
@@ -34,9 +34,11 @@ try {
   writeFileSync(transcript, event("session.start", { sessionId: id, copilotVersion: "1.0.102-1" })
     + event("user.message", { content: "A native Copilot prompt", transformedContent: "not visible", parentAgentTaskId: "root-task-id" })
     + event("assistant.message", { content: "Looking up the answer.", phase: "commentary", model: "fixture-model",
-      toolRequests: [{ toolCallId: "fixture-call", name: "shell", arguments: { command: "pwd" }, toolTitle: "Check folder" }] })
+      toolRequests: [{ toolCallId: "fixture-call", name: "shell", arguments: { command: "pwd" }, toolTitle: "Check folder" },
+        { toolCallId: "ask-call", name: "ask_user", arguments: { question: "Proceed with this choice?", choices: ["Yes", "No"] }, toolTitle: "Ask user" }] })
     + event("tool.execution_start", { toolCallId: "fixture-call", toolName: "shell", arguments: { command: "pwd" } })
     + event("tool.execution_complete", { toolCallId: "fixture-call", success: true, result: { content: output } })
+    + event("tool.execution_complete", { toolCallId: "ask-call", success: true, result: { content: "Yes" } })
     + event("assistant.message", { content: "Native Copilot answer.", phase: "final_answer", model: "fixture-model" }));
   // A Node script named copilot is a genuine foreground process with a PID-held native
   // marker; its stdin remains the pane's PTY so the regular composer can reach it.
@@ -74,7 +76,11 @@ console.log("fixture ready");`);
   const body = await (await fetch(endpoint)).json() as { source: string };
   assert.equal(body.source, "copilot-transcript");
 
-  browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
+  // Ubuntu's installed Chrome has an AppArmor policy allowing its user-namespace sandbox;
+  // the downloaded Playwright binary does not have that policy on hosted runners.
+  const installedChrome = "/opt/google/chrome/chrome";
+  const executablePath = process.env.CI && existsSync(installedChrome) ? installedChrome : chromePath();
+  browser = await chromium.launch({ executablePath, headless: true, chromiumSandbox: true });
   const page = await browser.newPage({ viewport: { width: 1100, height: 800 }, locale: "en-US" });
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -88,15 +94,25 @@ console.log("fixture ready");`);
   await log.getByText("Native Copilot answer.", { exact: true }).waitFor();
   await log.getByText("A native Copilot prompt", { exact: true }).waitFor();
   assert.equal((await log.innerText()).includes("not visible"), false);
-  const head = log.locator(".work-block-head");
+  const head = log.locator(".work-block-head").first();
   if (await head.getAttribute("aria-expanded") !== "true") await head.click();
-  await log.locator(".work-row-head").click();
+  await log.locator(".work-row-head").first().click();
   await log.locator(".chat-tool-more").click();
   await log.getByText(/COPILOT_OUTPUT_END/).waitFor();
+  await log.locator(".work-row-head").nth(1).click();
+  await log.getByText("Proceed with this choice?").waitFor();
+  await log.locator(".chat-ask-options").getByText("Yes", { exact: true }).waitFor();
+  await log.locator(".chat-ask-options").getByText("No", { exact: true }).waitFor();
   appendFileSync(transcript, event("session.resume", { selectedModel: "fixture-model" })
     + event("user.message", { content: "Follow-up prompt" })
     + event("assistant.message", { content: "Follow-up answer.", phase: "final_answer", model: "fixture-model" }));
   await log.getByText("Follow-up answer.", { exact: true }).waitFor();
+  appendFileSync(transcript, event("user.message", { content: "Finish task" })
+    + event("assistant.message", { toolRequests: [{ toolCallId: "finish-call", name: "task_complete",
+      arguments: { summary: "Autopilot finished this task." } }] })
+    + event("tool.execution_complete", { toolCallId: "finish-call", success: true, result: { content: "done" } })
+    + event("session.task_complete", { summary: "Autopilot finished this task." }));
+  await log.getByText("Autopilot finished this task.", { exact: true }).waitFor();
   // Capture readable conversation, not a 6 KiB expanded tool detail.
   if (await head.getAttribute("aria-expanded") === "true") await head.click();
   if (process.env.UI_EVIDENCE_DIR) {

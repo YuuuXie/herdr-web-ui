@@ -145,7 +145,10 @@ the test runner. A report is evidence, not an authorization to merge or publish.
 
 A local pass is not CI's: the PC has its own Node (CI pins 22), its own cores and its own system
 libraries. The browser lane uses the lockfile's Chromium, which it downloads into Playwright's
-cache on first use. `HERDR_TEST_SHARDS=4` runs four integration files at a time, each with an
+cache on first use. The native Copilot browser fixture requires Chromium sandboxing: on hosted
+Ubuntu CI it uses the image's installed Chrome, whose AppArmor policy permits its user-namespace
+sandbox, rather than the downloaded binary. It keeps sandboxing enabled and fails if unavailable.
+`HERDR_TEST_SHARDS=4` runs four integration files at a time, each with an
 isolated herdr session. Local checks and hosted CI default to one; self-hosted CI uses four.
 
 The single commands still work on their own:
