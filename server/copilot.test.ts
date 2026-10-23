@@ -313,6 +313,58 @@ it.skipIf(process.platform !== "linux")("uses only the process home and a canoni
   }
 });
 
+it.skipIf(process.platform !== "linux")("keeps report-and-marker fallback for a complete CLI log without lifecycle events", async () => {
+  const root = mkdtempSync(join(tmpdir(), "copilot-log-no-lifecycle-"));
+  const directory = join(root, "session-state", session);
+  mkdirSync(directory, { recursive: true });
+  mkdirSync(join(root, "logs"));
+  const path = join(directory, "events.jsonl");
+  writeFileSync(path, start + prompt("existing conversation"));
+  const child = Bun.spawn(["node", "-e", `
+    const {openSync} = require("node:fs");
+    const root = process.argv[1];
+    openSync(root + "/session-state/${session}/inuse." + process.pid + ".hold", "w");
+    openSync(root + "/logs/process-100-" + process.pid + ".log", "w");
+    console.log("ready");
+    process.stdin.on("data", () => {
+      openSync(root + "/logs/process-200-" + process.pid + ".log", "w");
+      console.log("opened");
+    });
+  `, root], { stdin: "pipe", stdout: "pipe", stderr: "inherit" });
+  const reader = child.stdout.getReader();
+  try {
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain("ready");
+    const log = join(root, "logs", `process-100-${child.pid}.log`);
+    const environment = [`COPILOT_HOME=${root}`];
+    const argv = ["copilot", `--resume=${session}`];
+    for (const content of ["", "2026-10-23T00:00:00.000Z [INFO] CLI started\n"]) {
+      writeFileSync(log, content);
+      expect(copilotLoggedBinding(environment, argv, child.pid)).toBeNull();
+      expect(copilotTranscriptFile(session, environment, argv, child.pid)).toBe(path);
+      expect(copilotTranscriptFile(null, environment, argv, child.pid)).toBeNull();
+      expect(copilotTranscriptFile(session.slice(0, -2) + "02", environment, argv, child.pid)).toBeNull();
+    }
+    writeFileSync(log, `2026-10-23T00:00:00.000Z [INFO] Unregistering foreground session: ${session}\n`);
+    expect(copilotTranscriptFile(session, environment, argv, child.pid)).toBeNull();
+    writeFileSync(log, "x".repeat(16 * 1024 * 1024) + "\n");
+    expect(copilotTranscriptFile(session, environment, argv, child.pid)).toBeNull();
+    writeFileSync(log, "2026-10-23T00:00:00.000Z [INFO] CLI started");
+    expect(copilotTranscriptFile(session, environment, argv, child.pid)).toBeNull();
+    writeFileSync(log, `2026-10-23T00:00:00.000Z [INFO] Registering foreground session: ${session}\n`);
+    expect(copilotLoggedBinding(environment, argv, child.pid)?.sessionId).toBe(session);
+    writeFileSync(log, "2026-10-23T00:00:00.000Z [INFO] CLI restarted\n");
+    expect(copilotTranscriptFile(session, environment, argv, child.pid)).toBeNull();
+    expect(copilotTranscriptFile(session, environment, argv, child.pid)).toBeNull();
+    child.stdin.write("extra\n");
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain("opened");
+    expect(copilotTranscriptFile(session, environment, argv, child.pid)).toBeNull();
+  } finally {
+    child.kill();
+    await child.exited;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 for (const scenario of ["rewrite", "gap"] as const) {
   it.skipIf(process.platform !== "linux")(`recovers foreground discovery after a log ${scenario}`, async () => {
     const root = mkdtempSync(join(tmpdir(), "copilot-log-continuity-"));

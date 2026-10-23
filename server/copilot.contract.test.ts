@@ -32,9 +32,9 @@ const hold = (id) => { const dir = join(home, "session-state", id); mkdirSync(di
 const lifecycle = process.argv.includes("--lifecycle");
 const log = join(home, "logs", \`process-100-\${process.pid}.log\`);
 let selected = process.argv[2];
+mkdirSync(join(home, "logs"), { recursive: true });
+openSync(log, "w");
 if (lifecycle) {
-  mkdirSync(join(home, "logs"), { recursive: true });
-  openSync(log, "w");
   appendFileSync(log, new Date().toISOString() + " [INFO] Registering foreground session: " + selected + "\\n");
 } else if (!process.argv.includes("--no-proof")) hold(selected);
 process.stdin.setEncoding("utf8");
