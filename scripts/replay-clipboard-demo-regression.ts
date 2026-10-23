@@ -241,7 +241,7 @@ async function newContext(browser: Browser, url: string, options: { phone?: bool
   const base = options.phone ? devices["iPhone 14"] : { viewport: { width: 1440, height: 900 } };
   const context = await browser.newContext({ ...base, locale: options.language === "ko" ? "ko-KR" : "en-US" });
   await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: new URL(url).origin });
-  await context.addInitScript((value) => { if (localStorage.getItem("herdr-web-ui:settings") === null) localStorage.setItem("herdr-web-ui:settings", value); }, settings({ theme: options.theme ?? "dark", language: options.language ?? "en", ...options.extra }));
+  await context.addInitScript((value) => { if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", value); }, settings({ theme: options.theme ?? "dark", language: options.language ?? "en", ...options.extra }));
   return context;
 }
 
@@ -296,14 +296,14 @@ try {
       assert.deepEqual(omitted, ["history"], "an unmarked frame is live output (the documented limit for older bridges)");
       report["reconnect-replay"]!.push({ name: "older bridge omits replay: treated as live (documented limit)", copies: omitted });
       // permission off: no copy at all, live or replayed; on again, the next live copy works
-      await page.evaluate(() => localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ ...JSON.parse(localStorage.getItem("herdr-web-ui:settings")!), paneClipboard: false })));
+      await page.evaluate(() => localStorage.setItem("ovis:settings", JSON.stringify({ ...JSON.parse(localStorage.getItem("ovis:settings")!), paneClipboard: false })));
       await page.reload();
       await page.waitForFunction(() => window.replayFixture?.sent.some((frame) => frame.type === "attach"));
       await page.waitForFunction(() => typeof (document.querySelector(".pane-frame.is-current .pane-terminal") as unknown as { outputProbe?: unknown } | null)?.outputProbe === "function");
       await frames(page, [R(RESTORED), L(LIVE_COPY)]);
       const off = await fixture(page, (state) => [...state.copies]);
       assert.deepEqual(off, [], "permission off: no clipboard call");
-      await page.evaluate(() => localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ ...JSON.parse(localStorage.getItem("herdr-web-ui:settings")!), paneClipboard: true })));
+      await page.evaluate(() => localStorage.setItem("ovis:settings", JSON.stringify({ ...JSON.parse(localStorage.getItem("ovis:settings")!), paneClipboard: true })));
       await page.reload();
       await page.waitForFunction(() => window.replayFixture?.sent.some((frame) => frame.type === "attach"));
       await page.waitForFunction(() => typeof (document.querySelector(".pane-frame.is-current .pane-terminal") as unknown as { outputProbe?: unknown } | null)?.outputProbe === "function");
@@ -643,7 +643,7 @@ try {
           await frames(page, [L(`${ESC}]52;c;${LIVE}${BEL}`)]);
           await page.locator(".terminal-banner", { hasText: "clipboard write blocked by the browser" }).waitFor();
           await shot(page, name("denied"));
-          await page.evaluate(() => localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ ...JSON.parse(localStorage.getItem("herdr-web-ui:settings")!), paneClipboard: false })));
+          await page.evaluate(() => localStorage.setItem("ovis:settings", JSON.stringify({ ...JSON.parse(localStorage.getItem("ovis:settings")!), paneClipboard: false })));
           await page.reload();
           await page.waitForFunction(() => window.replayFixture?.sent.some((frame) => frame.type === "attach"));
           await page.waitForFunction(() => typeof (document.querySelector(".pane-frame.is-current .pane-terminal") as unknown as { outputProbe?: unknown } | null)?.outputProbe === "function");

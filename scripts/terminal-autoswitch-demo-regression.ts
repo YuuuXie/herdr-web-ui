@@ -126,7 +126,7 @@ const attachments = async (page: Page) => (await frames(page)).filter((frame) =>
 const typed = async (page: Page) => (await frames(page)).filter((frame) => frame.type === "input" && frame.pane_id === owner).map((frame) => frame.text ?? "");
 /** where the lens is kept: this browser's storage, the address and the header's pressed button */
 const lens = (page: Page) => page.evaluate((pane) => ({
-  stored: localStorage.getItem(`herdr-web-ui:view:${pane}`),
+  stored: localStorage.getItem(`ovis:view:${pane}`),
   address: new URL(location.href).searchParams.get("view"),
   chatPressed: document.querySelector('.view-switch button[title^="Chat transcript"]')?.getAttribute("aria-pressed") ?? null,
 }), owner);
@@ -145,8 +145,8 @@ try {
     const context = await browser.newContext({ viewport: { width, height: 844 }, isMobile: touch, hasTouch: touch, locale: "en-US" });
     try {
       await context.addInitScript(({ theme, pane }) => {
-        localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en", theme, darkTheme: "amber", lightTheme: "amber", autoSendQueued: true }));
-        localStorage.setItem(`herdr-web-ui:view:${pane}`, "chat");
+        localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme, darkTheme: "amber", lightTheme: "amber", autoSendQueued: true }));
+        localStorage.setItem(`ovis:view:${pane}`, "chat");
       }, { theme, pane: owner });
       const page = await context.newPage();
       const errors: string[] = [];
@@ -212,6 +212,8 @@ try {
         if (touch) {
           await page.waitForFunction((pane) => document.querySelector<HTMLButtonElement>(`.terminal-stack[data-pane-owner="${pane}"] .key-bar .key[data-key="Escape"]`)?.disabled === false, owner);
           await stack(page).locator('.key-bar .key[data-key="Escape"]').click();
+          // a key-bar tap sends its key without taking the focus: the keyboard stays down
+          assert.equal(await gridFocused(page), false, "a key-bar tap in the peek leaves a phone's keyboard down");
         } else await page.keyboard.press("Escape");
         await page.waitForFunction(([pane, before]) => (window as unknown as PeekWindow).sentFrames
           .filter((frame) => frame.type === "input" && frame.pane_id === pane && frame.text === "\x1b").length > before, [owner, escapes] as const);
@@ -343,7 +345,7 @@ try {
           await close();
           await page.locator(".row-sheet-cancel").waitFor({ state: "detached" });
           await page.waitForFunction((pops) => (window as unknown as PeekWindow).pops > pops, pops);
-          await page.waitForFunction(() => typeof (history.state as Record<string, unknown> | null)?.["herdr-web-ui:sheet"] === "string");
+          await page.waitForFunction(() => typeof (history.state as Record<string, unknown> | null)?.["ovis:sheet"] === "string");
           assert.equal(await peek(page).count(), 1, `${way} leaves the peek under the menu`);
         };
         await overPeek("the menu's Cancel", () => page.locator(".row-sheet-cancel").click());
@@ -542,8 +544,8 @@ try {
     const context = await browser.newContext({ viewport: { width, height: 844 }, isMobile: touch, hasTouch: touch, locale: "en-US" });
     try {
       await context.addInitScript((views) => {
-        localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en", theme: "light", darkTheme: "amber", lightTheme: "amber", autoSendQueued: true }));
-        for (const pane of views) localStorage.setItem(`herdr-web-ui:view:${pane}`, "chat");
+        localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "light", darkTheme: "amber", lightTheme: "amber", autoSendQueued: true }));
+        for (const pane of views) localStorage.setItem(`ovis:view:${pane}`, "chat");
       }, [owner, panes.omp]);
       const page = await context.newPage();
       const errors: string[] = [];
@@ -598,7 +600,7 @@ try {
       await of(panes.omp).peek.waitFor({ state: "detached" });
       await of(panes.omp).chat.locator(".composer").waitFor();
       assert.equal(await page.locator(".composer-notice", { hasText: "is still open in the terminal" }).count(), 0, "a screen that closed leaves no still-open notice");
-      assert.equal(await page.evaluate((pane) => localStorage.getItem(`herdr-web-ui:view:${pane}`), panes.omp), "chat");
+      assert.equal(await page.evaluate((pane) => localStorage.getItem(`ovis:view:${pane}`), panes.omp), "chat");
       console.log(`PASS ${tag}: omp's /settings comes back to Chat by itself once its editor's row is drawn again`);
 
       // omp's /copy is not on omp's list (the head promises nothing) and only prints above the row,
@@ -672,9 +674,9 @@ try {
   const context = await browser.newContext({ viewport: { width: 1280, height: 844 }, locale: "en-US" });
   try {
     await context.addInitScript(({ pane, other }) => {
-      localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en", theme: "light", darkTheme: "amber", lightTheme: "amber", autoSendQueued: true }));
-      localStorage.setItem(`herdr-web-ui:view:${pane}`, "chat");
-      sessionStorage.setItem("herdr-web-ui:split", JSON.stringify({ other: { machineId: "local", paneId: other }, bSide: "right", active: "a" }));
+      localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "light", darkTheme: "amber", lightTheme: "amber", autoSendQueued: true }));
+      localStorage.setItem(`ovis:view:${pane}`, "chat");
+      sessionStorage.setItem("ovis:split", JSON.stringify({ other: { machineId: "local", paneId: other }, bSide: "right", active: "a" }));
     }, { pane: owner, other: panes.api });
     const page = await context.newPage();
     const errors: string[] = [];
@@ -694,7 +696,7 @@ try {
     await half.getByRole("button", { name: "Show the chat", exact: true }).click();
     await peek(page).waitFor({ state: "detached" });
     await chat(page).locator(".composer").waitFor();
-    assert.equal(await page.evaluate((pane) => localStorage.getItem(`herdr-web-ui:view:${pane}`), owner), "chat", "the half's button ends the peek without saving the terminal lens");
+    assert.equal(await page.evaluate((pane) => localStorage.getItem(`ovis:view:${pane}`), owner), "chat", "the half's button ends the peek without saving the terminal lens");
     await half.getByRole("button", { name: "Show the terminal", exact: true }).waitFor();
     assert.deepEqual(errors, []);
     console.log("PASS split: a half's lens button says the chat during a peek and ends it");

@@ -4,14 +4,14 @@ The previous app had network-first PWA navigation and immutable frontend assets,
 
 ## Reference and choices
 
-Inspected `devswha/chatmux` at commit `3b1f3b49216157399e3fb9666a49c942908c3e32` in `/home/devswha/workspace/chatmux`. Its [version check hook](https://github.com/devswha/chatmux/blob/3b1f3b49216157399e3fb9666a49c942908c3e32/src/hooks/useVersionCheck.ts) periodically checks for updates; its [self-update service](https://github.com/devswha/chatmux/blob/3b1f3b49216157399e3fb9666a49c942908c3e32/server/self-update.ts) handles source/release installation. Chatmux is AGPL-3.0; herdr-web-ui is MIT. This implementation adopts behavior and contains no copied chatmux code.
+Inspected `devswha/chatmux` at commit `3b1f3b49216157399e3fb9666a49c942908c3e32` in `/home/devswha/workspace/chatmux`. Its [version check hook](https://github.com/devswha/chatmux/blob/3b1f3b49216157399e3fb9666a49c942908c3e32/src/hooks/useVersionCheck.ts) periodically checks for updates; its [self-update service](https://github.com/devswha/chatmux/blob/3b1f3b49216157399e3fb9666a49c942908c3e32/server/self-update.ts) handles source/release installation. Chatmux is AGPL-3.0; Ovis is MIT. This implementation adopts behavior and contains no copied chatmux code.
 
 | Priority | Adopted behavior | Implementation |
 | --- | --- | --- |
 | 1 | Automatic discovery, explicit install | Supervisor checks after 10 seconds/every 5 minutes for the highest plain `vX.Y.Z` tag (bundle `remote-v*` tags and pre-releases are ignored; annotated tags are peeled to their commit); Settings provides check/install controls |
 | 2 | Protect locally modified or diverged source | Clean `main` checkout required (herdr's shallow, detached plugin checkout is accepted when running as that plugin); exact target SHA and ancestry verified; source worktree never rewritten |
 | 3 | Verify deployment and recover | Build isolated checkout, restart bridge, match a fresh boot ID through health, restore prior build on failure |
-| 4 | Optional unattended installation | `HERDR_WEB_AUTO_UPDATE=1`; persist failed SHA to prevent repeating a bad automatic deployment |
+| 4 | Optional unattended installation | `OVIS_AUTO_UPDATE=1`; persist failed SHA to prevent repeating a bad automatic deployment |
 
 Chatmux's systemd-specific launcher and release archive pipeline were not adopted: this repository distributes Git source through Bun and herdr plugins, including macOS. The supervisor uses [Bun's supported IPC](https://bun.sh/docs/runtime/child-process#inter-process-communication-ipc). No runtime dependencies were added.
 

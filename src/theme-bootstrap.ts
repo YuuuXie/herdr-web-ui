@@ -5,6 +5,8 @@
  * first frame instead of the stylesheet's default until React applies the settings.
  * Same-origin and external, never inline: the app's policy allows `script-src 'self'` only.
  */
+// first: this script runs before main.tsx, so it moves the settings saved under the old key itself
+import "./lib/legacyStorage.ts";
 import { applyThemeEntry, savedThemeEntry } from "./lib/themeBoot.ts";
 
 const root = document.documentElement;

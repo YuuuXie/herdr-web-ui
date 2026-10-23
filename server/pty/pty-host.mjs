@@ -34,6 +34,7 @@ const rows = Number.parseInt(rowsRaw ?? "", 10);
 
 // The bridge's bearer token never reaches the attach, however this host was launched.
 const env = { ...process.env, TERM: "xterm-256color" };
+delete env.OVIS_TOKEN;
 delete env.HERDR_WEB_TOKEN;
 
 const term = pty.spawn(command, args, {

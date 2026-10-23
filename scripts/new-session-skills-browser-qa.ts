@@ -124,8 +124,8 @@ try {
   } });
   const url = `http://127.0.0.1:${server.port}/herdr-web-ui/demo/app/?pane=${encodeURIComponent(panes.api)}`;
   // the composer's button is off by default (the composer stays minimal): every context but the first turns it on as stored
-  const settings = (theme: string): void => { localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en", theme, composerNewTabButton: true })); };
-  const defaults = (theme: string): void => { localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en", theme })); };
+  const settings = (theme: string): void => { localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme, composerNewTabButton: true })); };
+  const defaults = (theme: string): void => { localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme })); };
   const phone = (browser: Browser, theme: "dark" | "light") => browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true, deviceScaleFactor: 3, locale: "en-US", colorScheme: theme });
   const desktop = (browser: Browser, theme: "dark" | "light") => browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US", colorScheme: theme });
   const log: string[] = [];

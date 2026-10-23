@@ -1,16 +1,18 @@
 // The bundle is launched only through SSH. Keep it alive after the tunnel closes;
 // herdr owns the terminal processes and no disconnect should terminate their work.
+import "./adopt-legacy-env.ts";
 import { createServer } from "./index.ts";
 import { bridgeIdentity, descriptorLive, descriptorPath, registerBridge } from "./bridge.ts";
 import { acquireOwnerDirectory } from "./owner-guard.ts";
 import { parseProcessLine, refusedSocket, staleMarker } from "./herdr-marker.ts";
 import { psQuote } from "./powershell.ts";
+import { ShellAgentLocator } from "./shell-agent.ts";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 
-process.env["HERDR_WEB_REMOTE"] = "1";
+process.env["OVIS_REMOTE"] = "1";
 const windows = process.platform === "win32";
 // the transcript readers find agent stores under $HOME, which Windows does not set
 if (windows && !process.env["HOME"]) process.env["HOME"] = homedir();
@@ -70,7 +72,7 @@ try {
     const socket = process.env["HERDR_SOCKET"]!;
     if (existsSync(socket) && !(windows ? staleWindowsMarker(socket) : await refusedSocket(socket))) throw error;
     // a Windows bundle carries no herdr: its installer is herdr's own, and setup ran it
-    const herdr = process.env["HERDR_WEB_HERDR_BIN"] || join(bundle, "bin/herdr");
+    const herdr = process.env["OVIS_HERDR_BIN"] || join(bundle, "bin/herdr");
     if (windows && !existsSync(herdr)) throw new Error(`herdr is not installed at ${herdr}; install it with herdr.dev/install.cmd`);
     const args = session ? ["--session", session, "server"] : ["server"];
     // one log per session on Windows: cmd holds the file a running daemon's output goes to
@@ -85,7 +87,8 @@ try {
   const info = await bridgeIdentity();
   if (info.herdr.protocol < 22) throw new Error("herdr 0.9+ is required; update it explicitly before connecting");
   const token = randomBytes(32).toString("hex");
-  const server = createServer({ port: 0, hostname: "127.0.0.1", token, machines: false, stateDir: descriptor + ".state" });
+  // started over SSH with a bare PATH: omo and gjc are often only on the login shell's
+  const server = createServer({ port: 0, hostname: "127.0.0.1", token, machines: false, stateDir: descriptor + ".state", shellAgents: new ShellAgentLocator() });
   const registration = registerBridge(server.port, token);
   if (!registration.registered) {
     // the app finds a bridge only through its descriptor: an unregistered one serves nobody, and

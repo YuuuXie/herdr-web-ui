@@ -1,5 +1,5 @@
-# Native Windows install: irm https://herdrweb.dev/install.ps1 | iex
-param([string]$Ref = $env:HERDR_WEB_UI_REF)
+# Native Windows install: irm https://ovis.sh/install.ps1 | iex
+param([string]$Ref = $(if ($env:OVIS_REF) { $env:OVIS_REF } else { $env:HERDR_WEB_UI_REF }))
 
 & {
 $ErrorActionPreference = 'Stop'
@@ -60,15 +60,56 @@ if (-not (Get-Command bun -ErrorAction SilentlyContinue)) { throw 'Bun did not i
 $bunVersion = Run-Tool bun @('--version')
 if ([version]($bunVersion -replace '-.*$', '') -lt [version]'1.4.0') { throw "Needs Bun 1.4 or newer; this is $bunVersion." }
 
-$pluginId = 'devswha.herdr-web-ui'
-function Find-Plugin {
+$pluginId = 'devswha.ovis'
+# the id before the rename: an install under it moves to $pluginId, keeping its config
+$legacyId = 'devswha.herdr-web-ui'
+function Find-Plugin([string]$Id = $pluginId) {
     (Run-Tool herdr @('plugin', 'list', '--json') | ConvertFrom-Json).result.plugins |
-        Where-Object { $_.plugin_id -eq $pluginId } | Select-Object -First 1
+        Where-Object { $_.plugin_id -eq $Id } | Select-Object -First 1
+}
+# the highest vX.Y.Z tag, as the updater picks it
+function Get-LatestRef {
+    $latest = Run-Tool git @('ls-remote', '--tags', '--refs', 'https://github.com/devswha/ovis.git', 'v*') |
+        ForEach-Object { if ($_ -match 'refs/tags/(v\d+\.\d+\.\d+)$') { $Matches[1] } } |
+        Sort-Object { [version]$_.Substring(1) } | Select-Object -Last 1
+    if (-not $latest) { throw 'Could not find the latest app release on GitHub. Check your connection and run this again.' }
+    $latest
+}
+# The ref to install is settled before anything moves: a release from before the rename still names
+# the plugin by its old id, and installing it cannot move an install to the new one
+$move = $true
+if (-not (Find-Plugin)) {
+    if (-not $Ref) { $Ref = Get-LatestRef }
+    # the id the manifest at $Ref names
+    $refId = try {
+        $manifest = (Invoke-WebRequest -UseBasicParsing -TimeoutSec 10 "https://raw.githubusercontent.com/devswha/ovis/$Ref/herdr-plugin.toml").Content
+        if ($manifest -match '(?m)^id\s*=\s*"([^"]+)"') { $Matches[1] }
+    } catch { $null }
+    # raw.githubusercontent.com can be blocked where github.com is not: a release tag's version tells it too
+    if (-not $refId -and $Ref -match '^v(\d+\.\d+\.\d+)$') {
+        $refId = if ([version]$Matches[1] -ge [version]'0.4.14') { $pluginId } else { $legacyId }
+    }
+    # That release (0.4.13 and older) installs, runs and updates under the old id: the move waits for
+    # a release that names the new one. With the id unknown (a branch whose manifest cannot be read),
+    # an install under the old id is left running, since the ref may not be able to move it.
+    if ($refId -eq $legacyId) { $pluginId = $legacyId } elseif (-not $refId) { $move = $false }
+}
+$legacy = if ($pluginId -ne $legacyId -and $move) { Find-Plugin $legacyId } else { $null }
+if (-not $move -and (Find-Plugin $legacyId)) {
+    Write-Host "Ovis: could not read the plugin id at $Ref, so the install under $legacyId is left as it is; run this again to move it"
+}
+if ($legacy) {
+    Write-Host "Ovis: moving the installed plugin to its Ovis id; its settings and token come along"
+    # stopped first: under both ids, each would start a server on herdr's next start
+    & bun (Join-Path $legacy.plugin_root 'scripts\plugin.ts') stop | Out-Null
+    # removed with its server up, the old checkout would keep serving, and the new id's start would
+    # find the port answering and leave it
+    if ($LASTEXITCODE -ne 0) { throw "Could not stop the server of the old id, so nothing was moved. Stop it (herdr plugin action invoke $legacyId.stop, or restart herdr), then run this again." }
 }
 function Test-WindowsPlugin($Plugin) {
     $Plugin.plugin_root -and (Test-Path -LiteralPath (Join-Path $Plugin.plugin_root 'scripts\plugin.ps1'))
 }
-$plugin = Find-Plugin
+$plugin = Find-Plugin $pluginId
 $newInstall = $false
 if ($plugin -and -not (Test-WindowsPlugin $plugin)) {
     # A copy from a release older than Windows support never starts here, so no in-app update reaches it.
@@ -77,20 +118,35 @@ if ($plugin -and -not (Test-WindowsPlugin $plugin)) {
     $plugin = $null
 }
 if (-not $plugin) {
-    if (-not $Ref) {
-        $Ref = Run-Tool git @('ls-remote', '--tags', '--refs', 'https://github.com/devswha/herdr-web-ui.git', 'v*') |
-            ForEach-Object { if ($_ -match 'refs/tags/(v\d+\.\d+\.\d+)$') { $Matches[1] } } |
-            Sort-Object { [version]$_.Substring(1) } | Select-Object -Last 1
-    }
-    if (-not $Ref) { throw 'Could not find the latest app release on GitHub. Check your connection and run this again.' }
+    if (-not $Ref) { $Ref = Get-LatestRef }
     Write-Host "Ovis: installing the plugin at $Ref"
-    Run-Tool herdr @('plugin', 'install', 'devswha/herdr-web-ui', '--ref', $Ref, '--yes')
+    Run-Tool herdr @('plugin', 'install', 'devswha/ovis', '--ref', $Ref, '--yes')
     $newInstall = $true
-    $plugin = Find-Plugin
+    $plugin = Find-Plugin $pluginId
+    # the id unknown before the install: the ref may have named the old one
+    if (-not $plugin -and -not $move) {
+        $pluginId = $legacyId
+        $plugin = Find-Plugin $pluginId
+    }
     if (-not $plugin.plugin_root) { throw 'herdr does not list the plugin after installing it. See: herdr plugin list' }
     # herdr installs a release without Windows build steps as a success that cannot start.
     if (-not (Test-WindowsPlugin $plugin)) { throw "Ovis $Ref does not support Windows yet. Run this again after the next release." }
 } else { Write-Host 'Ovis: already installed; Settings > Updates keeps it current' }
+if ($legacy) {
+    # herdr keeps a plugin's config by its id: the old id's env files (the token among them) go to the new id's dir unless it has its own
+    $oldConfig = Run-Tool herdr @('plugin', 'config-dir', $legacyId)
+    $newConfig = Run-Tool herdr @('plugin', 'config-dir', $pluginId)
+    if (-not (Test-Path -LiteralPath (Join-Path $newConfig 'env')) -and -not (Test-Path -LiteralPath (Join-Path $newConfig '.env'))) {
+        foreach ($name in 'env', '.env') {
+            $from = Join-Path $oldConfig $name
+            if (Test-Path -LiteralPath $from) {
+                New-Item -ItemType Directory -Force -Path $newConfig | Out-Null
+                Copy-Item -LiteralPath $from -Destination (Join-Path $newConfig $name)
+            }
+        }
+    }
+    Run-Tool herdr @('plugin', 'uninstall', $legacyId) | Out-Null
+}
 
 $server = Run-Tool herdr @('status', 'server', '--json') | ConvertFrom-Json
 if ($server.running) {
@@ -116,7 +172,7 @@ if ($server.running) {
     $origin = [regex]::Match(($status | Where-Object { $_ -match '^running ' } | Select-Object -First 1), '^running (\S+)').Groups[1].Value
     $opened = $false
     if ($newInstall -and $origin -match '^https?://(127\.0\.0\.1|localhost)(:\d+)?(?:/|$)' -and
-        -not $env:CI -and -not $env:HERDR_WEB_NO_OPEN -and -not $env:SSH_CONNECTION -and
+        -not $env:CI -and -not $env:OVIS_NO_OPEN -and -not $env:HERDR_WEB_NO_OPEN -and -not $env:SSH_CONNECTION -and
         [Environment]::UserInteractive) {
         try {
             Start-Process $origin
@@ -377,15 +433,15 @@ function Read-Answer {
 # GitHub says the account has not (404), only at a terminal, and stars only on "y".
 if ($newInstall) {
     try {
-        $starred = Invoke-GhApi 'user/starred/devswha/herdr-web-ui'
+        $starred = Invoke-GhApi 'user/starred/devswha/ovis'
         if (-not $starred -or $starred.status -ne '204') {
             Write-Host ''
-            Write-Host 'Ovis: if it helps you, a GitHub star helps other herdr users find it: https://github.com/devswha/herdr-web-ui'
+            Write-Host 'Ovis: if it helps you, a GitHub star helps other herdr users find it: https://github.com/devswha/ovis'
             if ($starred -and $starred.status -eq '404' -and (Test-Terminal)) {
                 Write-Host -NoNewline 'Ovis: star it now with the GitHub account gh is signed in to? [y/N] '
                 $answer = Read-Answer
                 if ("$answer".Trim() -match '^(y|yes)$') {
-                    $given = Invoke-GhApi '--method PUT user/starred/devswha/herdr-web-ui'
+                    $given = Invoke-GhApi '--method PUT user/starred/devswha/ovis'
                     if ($given -and $given.code -eq 0) { Write-Host 'Ovis: starred. Thank you!' }
                     else { Write-Host 'Ovis: gh could not star it; the page above can' }
                 }

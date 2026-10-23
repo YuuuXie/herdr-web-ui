@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { afterAll, beforeAll, describe, expect, it, spyOn } from "bun:test";
 import { Database } from "bun:sqlite";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -8,13 +8,13 @@ import { createServer } from "./index.ts";
 import { forgetTranscriptState } from "./conversation.ts";
 import { herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 import type { CommandOutcome, ConversationPart, ConversationResponse, SlashCommand } from "../shared/protocol.ts";
-import { mergeCatalogSources } from "./catalog-sources.ts";
+import { CATALOG_SOURCE_BUDGET_MS, mergeCatalogSources } from "./catalog-sources.ts";
 import { paneContext } from "./pane-context.ts";
 import { closeOpenCodeNative, openCodeNativeState } from "./opencode-native.ts";
-import { forgetOpenCodeService, openCodeServiceOptions } from "./opencode-service.ts";
+import { forgetOpenCodeService, openCodeServiceOptions, OPENCODE_HTTP_TIMEOUT_MS } from "./opencode-service.ts";
 
 // Real herdr metadata + HTTP + an OpenCode store of the test's own, handed to the server (opencodeDb).
-const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-opencode-contract-"));
+const root = mkdtempSync(join(tmpdir(), "ovis-opencode-contract-"));
 const database = join(root, "opencode.db");
 const fakeOpencode = join(root, "bin", "opencode");
 const SESSION = "ses_contractTest01";
@@ -50,7 +50,7 @@ const reportSession = (session: string, targetPaneId = paneId) =>
   herdrRpc("pane.report_agent_session", { pane_id: targetPaneId, source: "herdr:opencode", agent: "opencode", agent_session_id: session, session_start_source: "select" });
 
 const startOpencode = async (session: string): Promise<string> => {
-  const created = await workspaceCreate({ cwd: root, label: `herdr-web-ui-test-opencode-${session}` });
+  const created = await workspaceCreate({ cwd: root, label: `ovis-test-opencode-${session}` });
   workspaces.push(created.workspace.workspace_id);
   const targetPaneId = created.root_pane.pane_id;
   await herdrRpc("pane.send_text", { pane_id: targetPaneId, text: `${fakeOpencode}\n` });
@@ -240,11 +240,13 @@ describe("OpenCode v2 native service", () => {
   /** runs once, inside the next session lookup, before the fake answers it */
   let duringLookup: (() => Promise<void>) | undefined;
   /** every chunk the stand-in reads from its terminal, reported by the stand-in itself */
-  let onTyped: ((chunk: string) => void) | undefined;
+  let onTyped: ((chunk: string, start: number) => void) | undefined;
+  const typedWaiters = new Set<() => void>();
   /** while set, session lookups get no answer (the bridge's own request timeout ends them) */
   let withholdLookups = false;
   /** while set, every request but /api/info gets no answer: a service that hangs */
   let hangAll = false;
+  let onHungRequest: (() => void) | undefined;
   /** other sessions the fake service holds besides NATIVE_SESSION */
   const extraSessions = new Set<string>();
   const withheld = new Set<() => void>();
@@ -285,12 +287,13 @@ describe("OpenCode v2 native service", () => {
     writeFileSync(join(nativeRoot, "screen.txt"), recorded("first-selected"));
     writeFileSync(join(nativeRoot, "accepted.txt"), recorded("accepted"));
     writeFileSync(standIn, `#!${process.execPath}
-const { appendFileSync, readFileSync } = require("node:fs");
+const { appendFileSync, readFileSync, statSync } = require("node:fs");
 let typed = "";
 process.stdin.setRawMode(true);
 process.stdin.on("data", (chunk) => {
   appendFileSync(${JSON.stringify(typedLog)}, chunk);
-  fetch(readFileSync(${JSON.stringify(join(nativeRoot, "fake.url"))}, "utf8") + "/test/typed", { method: "POST", body: chunk }).catch(() => {});
+  const start = statSync(${JSON.stringify(typedLog)}).size - chunk.length;
+  fetch(readFileSync(${JSON.stringify(join(nativeRoot, "fake.url"))}, "utf8") + "/test/typed", { method: "POST", headers: { "x-typed-start": String(start) }, body: chunk }).catch(() => {});
   const before = typed;
   typed += chunk.toString("latin1");
   if (!before.endsWith("@effect") && typed.endsWith("@effect")) process.stdout.write("\\u001b[2J\\u001b[H" + readFileSync(${JSON.stringify(join(nativeRoot, "screen.txt"))}, "utf8"));
@@ -303,11 +306,18 @@ process.stdin.on("data", (chunk) => {
       fetch(request) {
         const url = new URL(request.url);
         if (url.pathname === "/api/info") return Response.json(info);
-        if (url.pathname === "/test/typed") return request.text().then((chunk) => { onTyped?.(chunk); return new Response(null, { status: 204 }); });
+        if (url.pathname === "/test/typed") return request.text().then((chunk) => {
+          onTyped?.(chunk, Number(request.headers.get("x-typed-start")));
+          for (const wake of typedWaiters) wake();
+          return new Response(null, { status: 204 });
+        });
         lastRequestAt = performance.now();
         if (url.pathname === "/api/event" && eventMode === "slow") return new Promise<Response>((resolve) => withheld.add(() => resolve(new Response(null, { status: 503 }))));
         if (url.pathname === "/api/event" && eventMode !== "ok") return new Response(null, { status: eventMode === "absent" ? 404 : 503 });
-        if (hangAll && url.pathname !== "/api/info") return new Promise<Response>((resolve) => withheld.add(() => resolve(new Response(null, { status: 503 }))));
+        if (hangAll && url.pathname !== "/api/info") {
+          onHungRequest?.();
+          return new Promise<Response>((resolve) => withheld.add(() => resolve(new Response(null, { status: 503 }))));
+        }
         const held = decodeURIComponent(url.pathname.split("/").at(-1) ?? "");
         if (url.pathname.startsWith("/api/session/") && extraSessions.has(held)) return Response.json({ data: { id: held } });
         if (url.pathname === `/api/session/${NATIVE_SESSION}` && withholdLookups) {
@@ -335,7 +345,7 @@ process.stdin.on("data", (chunk) => {
     writeFileSync(join(nativeRoot, "fake.url"), fake.url.origin);
     writeFileSync(join(nativeRoot, "service.json"), JSON.stringify({ url: fake.url.origin, pid: process.pid, password: "native-secret", version: "2.0.32" }));
     openCodeServiceOptions.stateDir = nativeRoot;
-    const created = await workspaceCreate({ cwd: nativeRoot, label: "herdr-web-ui-test-opencode-native" });
+    const created = await workspaceCreate({ cwd: nativeRoot, label: "ovis-test-opencode-native" });
     workspaces.push(created.workspace.workspace_id);
     nativePane = created.root_pane.pane_id;
     await herdrRpc("pane.send_text", { pane_id: nativePane, text: `exec ${standIn}\n` });
@@ -456,13 +466,15 @@ process.stdin.on("data", (chunk) => {
         await Bun.sleep(50);
       }
       await browserCatalog();
+      const completed = typedSince(before);
       ws.send(JSON.stringify({ type: "submit", id: 2, pane_id: nativePane, text: "@effect apply it", payload: "@effect apply it", delivery: "queue" }));
       expect(await frame((message) => message.type === "submit-result" && message.id === 2)).toMatchObject({ ok: true, pending: { state: "queued" } });
       expect(typed().length).toBe(before);
       await herdrRpc("pane.report_agent", { pane_id: nativePane, source: "herdr:opencode", agent: "opencode", agent_session_id: NATIVE_SESSION, state: "idle" });
       const delivered = await frame((message) => message.type === "pending-messages" && Array.isArray(message.removed) && message.removed.length > 0);
       expect(JSON.stringify(delivered.removed)).not.toContain("error");
-      expect(typed().slice(before)).toBe("@effect\t\u001b[200~apply it\u001b[201~\r");
+      // The receipt acknowledges the PTY write, not the stand-in reading its Enter.
+      expect(await completed).toBe("@effect\t\u001b[200~apply it\u001b[201~\r");
     } finally { ws.close(); }
   });
 /** A socket recording every frame; `frame` resolves on the first one (already seen or next) matching. */
@@ -581,13 +593,21 @@ process.stdin.on("data", (chunk) => {
 
   const outcomesAt = async (port: number, pane: string): Promise<CommandOutcome[]> =>
     ((await (await fetch(`http://127.0.0.1:${port}/api/pane/prompt?pane_id=${encodeURIComponent(pane)}`)).json()) as { outcomes?: CommandOutcome[] }).outcomes ?? [];
-  const typedSince = async (before: number): Promise<string> => {
-    for (const deadline = Date.now() + 5_000; !typed().slice(before).endsWith("\r");) {
-      if (Date.now() > deadline) throw new Error(`typed: ${JSON.stringify(typed().slice(before))}`);
-      await Bun.sleep(50);
-    }
-    return typed().slice(before);
-  };
+  const typedSince = (before: number): Promise<string> => new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      typedWaiters.delete(check);
+      reject(new Error(`typed: ${JSON.stringify(typed().slice(before))}`));
+    }, 5_000);
+    const check = () => {
+      const text = typed().slice(before);
+      if (!text.endsWith("\r")) return;
+      clearTimeout(timeout);
+      typedWaiters.delete(check);
+      resolve(text);
+    };
+    typedWaiters.add(check);
+    check();
+  });
 
   it("attaches @effect and records the send after the pane's OpenCode session changed, with no catalog request since", async () => {
     const { ws, frame } = await socket();
@@ -610,7 +630,7 @@ process.stdin.on("data", (chunk) => {
   });
 
   it("attaches @effect and records the send on a fresh server that never served a catalog", async () => {
-    const created = await workspaceCreate({ cwd: nativeRoot, label: "herdr-web-ui-test-opencode-native-fresh" });
+    const created = await workspaceCreate({ cwd: nativeRoot, label: "ovis-test-opencode-native-fresh" });
     workspaces.push(created.workspace.workspace_id);
     const freshPane = created.root_pane.pane_id;
     await herdrRpc("pane.send_text", { pane_id: freshPane, text: `exec ${standIn}\n` });
@@ -645,22 +665,45 @@ process.stdin.on("data", (chunk) => {
   it("types within the attach budget and records terminal-required with the note when the service hangs", async () => {
     const { ws, frame } = await socket();
     const before = typed().length;
-    const first = Promise.withResolvers<number>();
-    let sentAt = 0;
+    const first = Promise.withResolvers<boolean>();
+    const hung = Promise.withResolvers<void>();
+    const budget = Promise.withResolvers<() => void>();
+    let expired = false;
+    const realSetTimeout = globalThis.setTimeout;
+    const realTimeout = AbortSignal.timeout;
+    const deadline = Promise.withResolvers<never>();
+    const deadlineTimer = realSetTimeout(() => {
+      deadline.reject(new Error("OpenCode attach budget or hung request was not observed"));
+    }, 10_000);
+    const ready = Promise.race([Promise.all([budget.promise, hung.promise]), deadline.promise]);
+    // Hold only the aggregate attach timer; all delivery and test deadlines remain real.
+    const timers = spyOn(globalThis, "setTimeout").mockImplementation(Object.assign((...[callback, delay, ...args]: Parameters<typeof setTimeout>) => {
+      if (delay !== CATALOG_SOURCE_BUDGET_MS) return realSetTimeout(callback, delay, ...args);
+      const handle = realSetTimeout(callback, delay, ...args);
+      clearTimeout(handle);
+      budget.resolve(() => { expired = true; callback(...args); });
+      return handle;
+    }, realSetTimeout));
+    // The individual HTTP timeout must not rescue a missing aggregate budget.
+    const httpTimeout = spyOn(AbortSignal, "timeout").mockImplementation((ms) =>
+      ms === OPENCODE_HTTP_TIMEOUT_MS ? new AbortController().signal : realTimeout(ms));
     try {
       closeOpenCodeNative();
       forgetOpenCodeService();
       extraSessions.add("ses_contractHang01");
       await reportSession("ses_contractHang01", nativePane);
       hangAll = true;
-      onTyped = () => first.resolve(performance.now() - sentAt);
-      sentAt = performance.now();
+      onHungRequest = () => hung.resolve();
+      // Reports can arrive out of order; only this send's first byte counts.
+      onTyped = (_chunk, start) => { if (start === before) first.resolve(expired); };
       ws.send(JSON.stringify({ type: "submit", id: 9, pane_id: nativePane, text: "@effect while hung", payload: "@effect while hung" }));
+      const [expire] = await ready;
+      expect(typed().length).toBe(before);
+      expire();
+      timers.mockRestore();
+      httpTimeout.mockRestore();
       expect(await frame((message) => message.type === "submit-result" && message.id === 9)).toMatchObject({ ok: true });
-      const gap = await first.promise;
-      console.log(`hung service: first key ${Math.round(gap)} ms after the send`);
-      // the 1.5 s attach budget, plus delivery on a loaded host
-      expect(gap).toBeLessThan(2_000);
+      expect(await Promise.race([first.promise, deadline.promise])).toBe(true);
       const sent = await typedSince(before);
       expect(sent.startsWith("@effect\t")).toBe(false);
       expect(sent).toContain("@effect while hung");
@@ -668,7 +711,11 @@ process.stdin.on("data", (chunk) => {
       expect(outcome?.state).toBe("terminal-required");
       expect(outcome?.note).toContain("@effect");
     } finally {
+      clearTimeout(deadlineTimer);
+      timers.mockRestore();
+      httpTimeout.mockRestore();
       hangAll = false;
+      onHungRequest = undefined;
       onTyped = undefined;
       for (const release of withheld) release();
       withheld.clear();
@@ -683,7 +730,7 @@ process.stdin.on("data", (chunk) => {
     // the default location (what a server without its own state would read) names a service that counts every request
     let defaultAsked = 0;
     const decoy = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => { defaultAsked++; return Response.json({ version: "2.0.32", pid: process.pid }); } });
-    const xdg = mkdtempSync(join(tmpdir(), "herdr-web-ui-opencode-default-state-"));
+    const xdg = mkdtempSync(join(tmpdir(), "ovis-opencode-default-state-"));
     mkdirSync(join(xdg, "opencode"));
     writeFileSync(join(xdg, "opencode", "service.json"), JSON.stringify({ url: decoy.url.origin, pid: process.pid, password: "decoy", version: "2.0.32" }));
     const previousXdg = process.env["XDG_STATE_HOME"];
@@ -808,18 +855,25 @@ process.stdin.on("data", (chunk) => {
           forgetOpenCodeService();
           eventMode = mode;
           const typedFirst = Promise.withResolvers<number>();
-          onTyped = () => typedFirst.resolve(performance.now() - lastRequestAt);
           const text = path === "prompt" ? `/review ${mode}` : `@effect ${path} ${mode}`;
           const request = ++id;
           if (path === "queued") {
             await reportState("working");
             await untilStatus("working");
           }
+          const before = typed().length;
+          // Reports can arrive out of order; identify this send's first byte, regardless of chunking.
+          onTyped = (_chunk, start) => { if (start === before) typedFirst.resolve(performance.now() - lastRequestAt); };
+          const completed = typedSince(before);
           ws.send(JSON.stringify({ type: "submit", id: request, pane_id: nativePane, text, payload: text, ...(path === "queued" ? { delivery: "queue" } : {}) }));
           const answer = await frame((message) => message.type === "submit-result" && message.id === request);
           expect(answer).toMatchObject({ ok: true });
           if (path === "queued") await reportState("idle");
           gaps[`${path}/${mode}`] = Math.round(await typedFirst.promise);
+          // Keep this delivery's observer and service alive until its whole send has reached the TUI.
+          await completed;
+          if (path === "queued") await frame((message) => message.type === "pending-messages"
+            && Array.isArray(message.removed) && message.removed.some((item) => item.id === (answer.pending as { id: string }).id));
           onTyped = undefined;
           for (const release of withheld) release();
           withheld.clear();
@@ -869,7 +923,7 @@ process.stdin.on("data", (chunk) => {
       return Promise.race([promise, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what} did not happen (native ${JSON.stringify(openCodeNativeState())})`)), 15_000); })]).finally(() => clearTimeout(timer));
     };
     const startPane = async (session: string): Promise<{ paneId: string; workspaceId: string }> => {
-      const created = await workspaceCreate({ cwd: lifecycleRoot, label: `herdr-web-ui-test-opencode-${session}` });
+      const created = await workspaceCreate({ cwd: lifecycleRoot, label: `ovis-test-opencode-${session}` });
       const paneId = created.root_pane.pane_id;
       await herdrRpc("pane.send_text", { pane_id: paneId, text: `${sleeper}\n` });
       for (const deadline = Date.now() + 10_000; (await sessionSnapshot()).panes.find((pane) => pane.pane_id === paneId)?.agent !== "opencode";) {

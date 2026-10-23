@@ -3,7 +3,7 @@
  * `fetch("/api/…")`, `new EventSource("/api/machines/events")` and `new WebSocket("…/ws")` from
  * fixtures (site/demo/fixtures/, captured by scripts/demo-fixtures.ts from the staged fictional
  * session) instead of the network. The app's own code is unchanged: it believes it talks to a
- * herdr web ui server on a PC called "workstation".
+ * Ovis server on a PC called "workstation".
  *
  * What works: the sidebar (two repositories, each with two agent worktrees) and its live statuses,
  * every chat, the Codex approval card (answering it sets Codex to work and ends the turn), the
@@ -15,7 +15,7 @@
  * What does not: files, images, push and remote PCs, which need a real machine.
  */
 import type { AgentIntegration, AgentStatus, CommandForm, CommandOutcome, ConversationTurn, IntegrationsResponse, Machine, MachineEvent, PaneDirection, PaneFindMatch, PaneFindRequest, PanePlan, PaneResized, PaneSplit, PaneSwapped, PaneZoomed, PendingMessage, PlanStep, PluginActionResult, PluginActions, PluginActionsResponse, PortalStatus, ServerMessage, SessionSnapshot, SlashCommand, TabMoved, UsageReport, WorkspaceCreated, WorkspaceInfo, WorktreeEntry, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../../shared/protocol.ts";
-import type { RepoDiffFile, RepoDiffFileList, RepoDiffFilePatch, RepoDiffRepository, RepoDiffScope, SessionHistoryAgent, SessionHistoryResponse } from "../../shared/protocol.ts";
+import type { RepoDiffFile, RepoDiffFileList, RepoDiffFilePatch, RepoDiffRepository, RepoDiffScope, SessionHistoryAgent, SessionHistoryResponse, SessionResumeResponse } from "../../shared/protocol.ts";
 import { VOICE_DEFAULTS, type VoiceStatus } from "../../shared/voice.ts";
 import { isAgentName } from "../../shared/agent-name.ts";
 import { skillSyntax } from "../../shared/skill-syntax.ts";
@@ -836,6 +836,14 @@ async function layoutBodyOf(method: string, init: RequestInit | undefined, input
   return body as Record<string, unknown>;
 }
 
+/** The store key the demo's Claude lists give: one fictional store. */
+const DEMO_CLAUDE_STORE = "de000000000000000000c1ad";
+/**
+ * The workspace whose Claude list answers as a bridge from before store-bound Resume would: rows with
+ * no source, and no POST /api/sessions/resume (404), so the list shows Resume as unavailable.
+ */
+const olderBridgeWorkspace = (workspaceId: string): boolean => snapshot().workspaces.find((workspace) => workspace.workspace_id === workspaceId)?.label === SPECS.find((spec) => spec.key === "flaky")?.label;
+
 const DEMO_FILES = ["src/routes/payments.ts", "src/lib/idempotency.ts", "src/metrics.ts", "src/pages/Reports.tsx", "src/money.ts", "src/money.test.ts", "package.json", "README.md"];
 
 /**
@@ -932,12 +940,12 @@ const PLUGINS: PluginActions[] = [
 const NO_PORTAL: PortalStatus = { supported: false, version: null, min_version: "v2.6.1", usable: false, phase: "idle", relay: null, url: null, blocked: null, error: null, output: null };
 /**
  * The demo opens no public address, so its Portal section stays hidden. A QA script may stage a
- * fictional status (a recovering Portal, say) as JSON in sessionStorage["herdr-web-ui:demo-portal"]
+ * fictional status (a recovering Portal, say) as JSON in sessionStorage["ovis:demo-portal"]
  * before the app loads; starting and stopping stay refused either way.
  */
 function demoPortal(): PortalStatus {
   try {
-    const staged = window.sessionStorage.getItem("herdr-web-ui:demo-portal");
+    const staged = window.sessionStorage.getItem("ovis:demo-portal");
     if (staged !== null) return { ...NO_PORTAL, supported: true, ...(JSON.parse(staged) as Partial<PortalStatus>) };
   } catch { /* storage blocked or not JSON: the section stays hidden */ }
   return NO_PORTAL;
@@ -1013,9 +1021,33 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     if (!(SESSION_HISTORY_AGENTS as string[]).includes(agent)) return error("invalid_agent", "agent must name an agent whose sessions are listed", 400);
     const workspace = snapshot().workspaces.find((candidate) => candidate.workspace_id === workspaceId);
     if (!workspace) return error("workspace_not_found", "no such workspace", 404);
+    const paneId = query.get("pane_id");
+    if (paneId !== null && !snapshot().panes.some((pane) => pane.pane_id === paneId && pane.workspace_id === workspaceId)) return error("pane_not_in_workspace", "pane_id must name a pane of the workspace", 400);
     const cwd = workspace.worktree?.checkout_path || snapshot().panes.find((pane) => pane.workspace_id === workspaceId)?.cwd || "";
-    const answer: SessionHistoryResponse = { workspace_id: workspaceId, agent: agent as SessionHistoryAgent, cwd, sessions: sessionHistoryRows(agent as SessionHistoryAgent) };
+    // a Claude list asked for from a pane is that pane's store's: each Resume carries it (one fictional store here)
+    const sessions = sessionHistoryRows(agent as SessionHistoryAgent).map((row) => agent === "claude" && paneId !== null && row.resume && !olderBridgeWorkspace(workspaceId) ? { ...row, resume: { ...row.resume, source: { pane_id: paneId, store_key: DEMO_CLAUDE_STORE } } } : row);
+    const answer: SessionHistoryResponse = { workspace_id: workspaceId, agent: agent as SessionHistoryAgent, cwd, sessions };
     return json(answer, 200, { "cache-control": "no-store" });
+  }
+  if (path === "/api/sessions/resume") {
+    if (method !== "POST") return error("method_not_allowed", "use POST", 400);
+    const body = await bodyOf(init, input);
+    if (body["agent"] !== "claude") return error("invalid_agent", "only a Claude session is resumed here", 400);
+    if (body["store_key"] !== DEMO_CLAUDE_STORE) return error("invalid_store_key", "store_key must be the key the list gave", 400);
+    const workspaceId = String(body["workspace_id"] ?? "");
+    const sessionId = String(body["session_id"] ?? "");
+    if (olderBridgeWorkspace(workspaceId)) return error("not_found", `unknown endpoint ${path}`, 404);
+    if (!snapshot().workspaces.some((workspace) => workspace.workspace_id === workspaceId)) return error("workspace_not_found", "no such workspace", 404);
+    const source = snapshot().panes.find((pane) => pane.pane_id === body["pane_id"]);
+    if (!source) return error("stale_source", "the pane the list came from is gone: list the sessions again", 409);
+    if (source.workspace_id !== workspaceId) return error("pane_not_in_workspace", "pane_id must name a pane of the workspace", 400);
+    if (!sessionHistoryRows("claude").some((row) => row.id === sessionId)) return error("session_not_found", "no such session in this folder's store", 404);
+    // the demo's one store: a pane of the workspace that reports the session shows it there
+    const showing = snapshot().panes.find((pane) => pane.workspace_id === workspaceId && pane.agent_session?.agent === "claude" && pane.agent_session.value === sessionId);
+    if (showing) return json({ action: "opened", workspace_id: workspaceId, pane_id: showing.pane_id } satisfies SessionResumeResponse);
+    const created = await route(new URL("/api/tab/create", url), "POST", { method: "POST", body: JSON.stringify({ workspace_id: workspaceId, agent: { kind: "claude", args: ["--resume", sessionId] } }) }, input);
+    if (!created.ok) return created;
+    return json({ action: "created", ...(await created.json() as { workspace_id: string; pane_id: string; agent_started: boolean }) } satisfies SessionResumeResponse);
   }
 
   if (path === "/api/worktree/list" || path === "/api/worktree/create" || path === "/api/worktree/open" || path === "/api/worktree/remove") {
@@ -2163,7 +2195,7 @@ setTimeout(() => {
 // panes open in the chat here unless this browser already chose (the same key the app writes).
 for (const pane of snapshot().panes) {
   if (!pane.agent) continue;
-  const key = `herdr-web-ui:view:${pane.pane_id}`;
+  const key = `ovis:view:${pane.pane_id}`;
   try { if (window.localStorage.getItem(key) === null) window.localStorage.setItem(key, "chat"); } catch { /* storage blocked: the app falls back to its default */ }
 }
 

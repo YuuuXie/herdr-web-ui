@@ -281,7 +281,7 @@ try {
     await context.grantPermissions(["clipboard-read", "clipboard-write"]);
     await context.addInitScript((theme) => {
       // once: a reload keeps what the page saved since (the diff layout)
-      if (localStorage.getItem("herdr-web-ui:settings") === null) localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en", theme }));
+      if (localStorage.getItem("ovis:settings") === null) localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme }));
       const record = window as unknown as { longTasks: number[] };
       record.longTasks = [];
       new PerformanceObserver((list) => { for (const entry of list.getEntries()) record.longTasks.push(entry.duration); }).observe({ type: "longtask" });
@@ -405,7 +405,7 @@ try {
       await page.waitForFunction(() => document.querySelector(".repo-diff diffs-container")?.shadowRoot?.querySelector("pre")?.getAttribute("data-diff-type") === "split");
       const splitRows = await mounted(page);
       assert.ok(splitRows.rows > 0 && splitRows.rows < 600 && splitRows.inView > 0, `${label}: bounded split rows: ${JSON.stringify(splitRows)}`);
-      assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("herdr-web-ui:settings")!).diffStyle), "split", `${label}: the layout is a saved setting`);
+      assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem("ovis:settings")!).diffStyle), "split", `${label}: the layout is a saved setting`);
       await shot(page, `split-${width}-${theme}`);
       await page.reload();
       await page.getByRole("dialog", { name: "Changes to big.ts", exact: true }).waitFor();
@@ -560,7 +560,7 @@ try {
   // a remote PC's repository reads through its bridge, the file too
   {
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-    await context.addInitScript(() => localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en", theme: "dark" })));
+    await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark" })));
     const page = await context.newPage();
     page.setDefaultTimeout(15_000);
     await page.goto(origin);
@@ -593,7 +593,7 @@ try {
       return await body.exists() ? new Response(body) : new Response("not found", { status: 404 });
     } });
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
-    await context.addInitScript(() => localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en", theme: "dark" })));
+    await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "dark" })));
     const page = await context.newPage();
     page.setDefaultTimeout(20_000);
     const missing: string[] = [];

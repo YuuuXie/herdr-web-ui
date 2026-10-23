@@ -8,7 +8,7 @@ import { fail, files, lineOf, read, repo, stripComments } from "./source-scan.ts
 // Repo-wide rules from AGENTS.md that used to be prose only. Each failure says what to change;
 // client rules are in src/conventions.test.ts, server rules in server/conventions.test.ts.
 
-const SOURCES = [...files("{src,server,shared,scripts,site,telemetry}/**/*.{ts,tsx,mjs,js}"), "vite.config.ts"];
+const SOURCES = [...files("{src,server,shared,scripts,site,telemetry,integrations}/**/*.{ts,tsx,mjs,js}"), "vite.config.ts"];
 
 /** Module specifiers of static imports and re-exports, side-effect imports and `import("…")` with a literal. */
 const SPECIFIER = /(?:^|[\s;])(?:import|export)\s[^;]*?\sfrom\s*["']([^"']+)["']|(?:^|[\s;])import\s*["']([^"']+)["']|\bimport\(\s*["']([^"']+)["']\s*\)/gm;
@@ -169,5 +169,35 @@ describe("demo transport", () => {
       "Handle these ClientMessage frames (shared/protocol.ts) in the demo socket's switch in site/demo/transport.ts, answering the way the server would. A frame that needs no answer goes into DEMO_IGNORES in scripts/conventions.test.ts with its reason.");
     fail(Object.keys(DEMO_IGNORES).filter((frame) => cases.has(frame) || !frames.includes(frame)),
       "Remove these entries from DEMO_IGNORES in scripts/conventions.test.ts: the demo handles them now, or the protocol no longer has them.");
+  });
+});
+
+describe("names from before Ovis", () => {
+  // Settings are OVIS_*, the sign-in cookies ovis_token and ovis_device, browser storage keys ovis:*,
+  // pasted files <cwd>/.ovis.
+  // The old names stay only where an install from before the rename still hands them in.
+  const CARRY_OVER: Record<string, string> = {
+    "server/legacy-env.ts": "maps each old setting to its new name",
+    "server/legacy-env.test.ts": "tests that mapping",
+    "src/lib/legacyStorage.ts": "moves old browser storage keys",
+    "src/lib/legacyStorage.test.ts": "tests that move",
+    "server/auth.ts": "still accepts and clears the old cookies",
+    "server/auth.test.ts": "tests the old cookies",
+    "server/pty/pty-host.mjs": "keeps the token from the attach under either name",
+    "server/pty/session.ts": "keeps the token from the sidecar under either name",
+    "server/remote-host.ts": "a remote bundle published before the rename reads the old name",
+    "install.sh": "reads the old settings of an earlier install",
+    "install.ps1": "reads the old settings of an earlier install",
+    "docs/guide.md": "tells users the old names still work",
+    "shared/telemetry.ts": "pinned to the deployed telemetry Worker, so not even a comment changes",
+  };
+  // released notes keep the names they shipped with; telemetry/ is the deployed Worker's source
+  const HISTORY = [":!CHANGELOG.md", ":!release-summaries.json", ":!changelog.d", ":!telemetry"];
+
+  it("appear only where an older install hands them in", () => {
+    const grep = spawnSync("git", ["grep", "--untracked", "-I", "-l", "-E", "HERDR_WEB_[A-Z0-9_]+|herdr_web_(token|device)|herdr-web-ui[:]|[/\"'`][.]herdr-web-ui([^a-z.-]|$)", "--", ".", ...HISTORY], { cwd: repo, encoding: "utf8" });
+    if (grep.status === null || grep.status > 1) return;
+    const offenders = grep.stdout.split("\n").filter((file) => file !== "" && !(file in CARRY_OVER));
+    fail(offenders, "Use the Ovis names: OVIS_* for settings, ovis_token and ovis_device for cookies, ovis:* for browser storage keys, .ovis for pasted files. The old names are read only by the files in CARRY_OVER (scripts/conventions.test.ts), which carry an older install over.");
   });
 });

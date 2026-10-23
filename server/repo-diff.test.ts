@@ -400,7 +400,7 @@ describe("GET /api/workspace/diff/*", () => {
     const watchToken = store.pair(store.startPairing().code, "Watch", "watch")!.token;
     // a first pairing is a device only once its cookie came back: that return is what saves it
     expect(store.match(watchToken)).not.toBeNull();
-    watchCookie = `herdr_web_device=${watchToken}`;
+    watchCookie = `ovis_device=${watchToken}`;
     server = createServer({ port: 0, stateDir, token: "test-repo-diff", tailscaleOwner: null, machines: false });
     base = `http://127.0.0.1:${server.port}`;
   });

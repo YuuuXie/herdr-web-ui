@@ -16,7 +16,7 @@ import { AccessGate } from "./components/AccessGate.tsx";
 import { AgentMark } from "./components/AgentMark.tsx";
 import { NewSessionDialog, type NewTabTarget } from "./components/NewSessionDialog.tsx";
 import { SessionHistory } from "./components/SessionHistory.tsx";
-import { sessionHistoryAgent, sessionHistoryListAgent } from "./lib/sessionHistory.ts";
+import { sessionHistoryAgent, sessionHistoryListAgent, sessionHistorySourcePane } from "./lib/sessionHistory.ts";
 import { useRecentResumes } from "./lib/useRecentResumes.ts";
 import { forgetSessionHistoryProbesOfPcsAway } from "./lib/useSessionHistoryOffered.ts";
 import { passingFolder, recentDirectories } from "./lib/recent-directories.ts";
@@ -24,7 +24,8 @@ import { usePreferencesSync } from "./lib/preferencesSync.ts";
 import { keepEventStream } from "./lib/eventStream.ts";
 import { TabStrip } from "./components/TabStrip.tsx";
 import { SettingsDialog } from "./components/SettingsDialog.tsx";
-import { loadedOnSettingsEntry, onSettingsHistory, recordSettings, settingsEntry } from "./lib/settingsHistory.ts";
+import { loadedOnSettingsEntry, settingsEntry } from "./lib/settingsHistory.ts";
+import { useSettingsDialog } from "./lib/useSettingsDialog.ts";
 import { sheetSteppedOff, usePhoneSheetBack } from "./lib/sheetHistory.ts";
 import { peekFor, type PeekRequest, type TerminalPeek } from "./lib/terminalPeek.ts";
 import { fileFromLink, isNavigation, linkSearch, linksSomewhere, NAV_KEY, readLink, resolveLink, slugOf, type AppLink, type CreateDraft, type LinkNote } from "./lib/deepLink.ts";
@@ -116,7 +117,7 @@ function sameData(a: unknown, b: unknown): boolean {
 /** trailing debounce for push-triggered refetches: bursts of events become one fetch */
 const REFETCH_DEBOUNCE_MS = 500;
 
-const SELECTION_KEY = "herdr-web-ui:selection";
+const SELECTION_KEY = "ovis:selection";
 type StoredSelection = { machine_id?: string; pane_id?: string | null };
 
 /**
@@ -156,7 +157,7 @@ function storedView(lenses: PaneLenses, picks: ReadonlyMap<string, PaneView>, pa
   const picked = picks.get(key);
   if (picked !== undefined) return picked;
   try {
-    const stored = window.localStorage.getItem(`herdr-web-ui:view:${key}`);
+    const stored = window.localStorage.getItem(`ovis:view:${key}`);
     if (stored === "chat" || stored === "terminal") return stored;
   } catch {
     /* private mode */
@@ -209,7 +210,7 @@ function ConnectionChip({ connected, word, title }: { connected: boolean; word: 
 function Brand() {
   return (
     <h1 className="brand">
-      <img src="/icons/icon-192.png?v=ram1" alt="" width="22" height="22" className="brand-mark" />
+      <img src="/icons/icon-192.png?v=sheep1" alt="" width="22" height="22" className="brand-mark" />
       <span className="brand-name">
         Ovis
       </span>
@@ -512,29 +513,7 @@ export function App() {
     if (filePanelAvailable && openPresentation(path, settings.fileOpen) === "panel") setFilesOpen(false);
     openFile({ path, paneId: selectedPaneId, machineId: selectedMachineId });
   }, [openFile, selectedPaneId, selectedMachineId, filePanelAvailable, settings.fileOpen]);
-  // a link to Settings opens it on its page, for that first opening alone
-  const [settingsOpen, setSettingsOpen] = useState(() => initialLink?.settings != null);
-  const [settingsLinkPage, setSettingsLinkPage] = useState<string | null>(() => initialLink?.settings ?? null);
-  // the group on that page a link named: in the address while that page is shown
-  const [settingsLinkSection, setSettingsLinkSection] = useState<string | null>(() => initialLink?.section ?? null);
-  // the page Settings shows, for the address
-  const [settingsPage, setSettingsPage] = useState<string | null>(null);
-  // set by a button that points at one section of Settings, for that opening alone
-  const [settingsSection, setSettingsSection] = useState<"updates" | null>(null);
-  const closeSettings = useCallback(() => { setSettingsOpen(false); setSettingsSection(null); setSettingsLinkPage(null); setSettingsLinkSection(null); setSettingsPage(null); }, []);
-  const settingsLinkPageRef = useRef(settingsLinkPage); settingsLinkPageRef.current = settingsLinkPage;
-  const onSettingsPage = useCallback((page: string | null) => {
-    setSettingsPage(page);
-    if (page !== settingsLinkPageRef.current) setSettingsLinkSection(null);
-  }, []);
-  // Settings is in the history (lib/settingsHistory.ts): Back out of its last entry closes it,
-  // Forward onto one opens it again, and closing it any other way takes its entries off
-  useEffect(() => onSettingsHistory((entry, own) => {
-    if (own) return;
-    if (entry === null) closeSettings();
-    else setSettingsOpen(true);
-  }), [closeSettings]);
-  useEffect(() => { if (!settingsOpen) recordSettings([]); }, [settingsOpen]);
+  const { settingsOpen, setSettingsOpen, settingsLinkPage, setSettingsLinkPage, settingsLinkSection, settingsPage, settingsSection, setSettingsSection, closeSettings, onSettingsPage } = useSettingsDialog(initialLink);
   const [newSessionOpen, setNewSessionOpen] = useState(false);
   // the New workspace dialog in the address (lib/deepLink.ts): the fields a link filled for this
   // opening, and what the fields say now
@@ -545,7 +524,7 @@ export function App() {
   // the dialog makes a tab in this workspace instead of a workspace, while set
   const [newTab, setNewTab] = useState<NewTabTarget | null>(null);
   // the earlier sessions of a workspace's folder (components/SessionHistory.tsx), while open
-  const [sessionHistory, setSessionHistory] = useState<{ machineId: string; workspaceId: string; agent: SessionHistoryAgent } | null>(null);
+  const [sessionHistory, setSessionHistory] = useState<{ machineId: string; workspaceId: string; agent: SessionHistoryAgent; paneId: string | null; askingPaneId: string | null; selectedPaneId: string | null } | null>(null);
   const [connected, setConnected] = useState(false);
   /** the active terminal's socket has been connected on this page before (PaneTerminal reports it): not
    *  connected, the chip says reconnecting; before this page's first connection to the PC, connecting */
@@ -1102,7 +1081,7 @@ export function App() {
     const key = paneStorageId(machineId, paneId);
     setViewPicks((current) => current.get(key) === next ? current : new Map(current).set(key, next));
     try {
-      window.localStorage.setItem(`herdr-web-ui:view:${key}`, next);
+      window.localStorage.setItem(`ovis:view:${key}`, next);
     } catch {
       /* private mode: the lens is still picked for this page */
     }
@@ -1482,8 +1461,14 @@ export function App() {
         // a pane's own agent, or nothing; for a workspace, the agent named, else the pane in front's, else any of it
         const agent = sessionHistoryListAgent(target, found.agent, found.panes.map((pane) => pane.agent));
         if (agent === null) return;
+        // Claude's list prefers a pane running Claude, so a selected shell never hides its store.
+        const selected = selectionRef.current.machineId === found.machineId ? selectionRef.current.paneId : null;
+        const tabs = machinesRef.current.find((m) => m.id === found.machineId)?.snapshot?.tabs ?? [];
+        const tabNumber = (tabId: string) => tabs.find((tab) => tab.tab_id === tabId)?.number ?? Number.MAX_SAFE_INTEGER;
+        const askingPaneId = target?.paneId ?? null;
+        const paneId = sessionHistorySourcePane(agent, [...found.panes].sort((one, other) => tabNumber(one.tab_id) - tabNumber(other.tab_id)), { workspaceId: found.workspace.workspace_id, askingPaneId, selectedPaneId: selected });
         setDrawerOpen(false);
-        setSessionHistory({ machineId: found.machineId, workspaceId: found.workspace.workspace_id, agent });
+        setSessionHistory({ machineId: found.machineId, workspaceId: found.workspace.workspace_id, agent, paneId, askingPaneId, selectedPaneId: selected });
       },
       openPalette,
       agentStarted: (machineId, paneId) => lenses.startedAgent(paneStorageId(machineId, paneId), window.matchMedia?.("(pointer: coarse)").matches === true),
@@ -1593,7 +1578,8 @@ export function App() {
     if (sessionHistory === null) return null;
     const roster = machines.find((m) => m.id === sessionHistory.machineId)?.snapshot;
     const workspace = roster?.workspaces.find((candidate) => candidate.workspace_id === sessionHistory.workspaceId);
-    return roster && workspace ? { workspace, panes: roster.panes } : null;
+    const tabNumber = (tabId: string) => roster?.tabs.find((tab) => tab.tab_id === tabId)?.number ?? Number.MAX_SAFE_INTEGER;
+    return roster && workspace ? { workspace, panes: [...roster.panes].sort((one, other) => tabNumber(one.tab_id) - tabNumber(other.tab_id)) } : null;
   }, [machines, sessionHistory]);
   useEffect(() => { if (sessionHistory !== null && sessionHistoryWorkspace === null) setSessionHistory(null); }, [sessionHistory, sessionHistoryWorkspace]);
 
@@ -1909,7 +1895,7 @@ export function App() {
                         onPeek={active && item && item.pane_id === selectedPaneId && attach ? (request: PeekRequest) => setTerminalPeek({ ...request, slot, machineId, paneId: item.pane_id }) : undefined}
                         onEndPeek={endPeek}
                         // /resume lists the pane's own agent's sessions, and only for an agent whose store is read
-                        onOpenHistory={item && sessionHistoryAgent(item.agent) !== null ? () => actions.openSessionHistory({ machineId, workspaceId: item.workspace_id, agent: item.agent, scope: "pane" }) : undefined}
+                        onOpenHistory={item && sessionHistoryAgent(item.agent) !== null ? () => actions.openSessionHistory({ machineId, workspaceId: item.workspace_id, agent: item.agent, scope: "pane", paneId: item.pane_id }) : undefined}
                         // the composer's new-agent button: the New tab dialog on this pane's workspace, as the tab menu opens it
                         onOpenNewSession={item ? () => actions.openNewTab({ machineId, workspaceId: item.workspace_id }) : undefined}
                         // the other half never takes the keyboard: a press in it makes it active first
@@ -1971,13 +1957,16 @@ export function App() {
         workspace={sessionHistoryWorkspace.workspace}
         panes={sessionHistoryWorkspace.panes}
         agent={sessionHistory.agent}
+        sourcePaneId={sessionHistory.paneId}
+        askingPaneId={sessionHistory.askingPaneId}
+        selectedPaneId={sessionHistory.selectedPaneId}
         recent={recentResumes}
         onClose={closeSessionHistory}
         onSelectPane={(paneId) => { closeSessionHistory(); selectTarget(sessionHistory.machineId, paneId); }}
         onResumed={(opened, session) => {
           closeSessionHistory();
           if (opened.agent_started) {
-            rememberResume({ machineId: sessionHistory.machineId, workspaceId: sessionHistory.workspaceId, agent: session.agent, id: session.id, paneId: opened.pane_id });
+            rememberResume({ machineId: sessionHistory.machineId, workspaceId: sessionHistory.workspaceId, agent: session.agent, id: session.id, store: session.store, paneId: opened.pane_id });
             actions.agentStarted(sessionHistory.machineId, opened.pane_id);
           }
           selectTarget(sessionHistory.machineId, opened.pane_id);

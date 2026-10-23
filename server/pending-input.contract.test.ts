@@ -15,7 +15,7 @@ import * as agentLaunchModule from "./agent-launch.ts";
 
 type PendingUpdate = Extract<ServerMessage, { type: "pending-messages" }>;
 
-const root = mkdtempSync(join(tmpdir(), "herdr-web-ui-pending-"));
+const root = mkdtempSync(join(tmpdir(), "ovis-pending-"));
 const active: Array<{ stop: () => void; sockets: Socket[]; workspace: string }> = [];
 let next = 0;
 const paste = (text: string) => `\u001b[200~${text}\u001b[201~`;
@@ -112,7 +112,7 @@ beforeAll(() => {
   // The recorder polls its screen file: fs.watch can drop the change that follows writeFileSync's
   // truncation, leaving the cleared screen it read in between up for good.
   writeFileSync(join(root, "record.cjs"), `const fs=require("node:fs");const out=process.argv[2];process.stdin.setRawMode(true);process.stdin.resume();process.stdout.write("\\x1b[?2004h"+(process.argv[3]||"").replace(/\\\\x1b/g,"\\x1b"),()=>fs.writeFileSync(out,""));process.stdin.on("data",c=>fs.appendFileSync(out,JSON.stringify(c.toString("utf8"))+"\\n"));let shown="";setInterval(()=>{const next=fs.readFileSync(process.argv[4],"utf8");if(next!==shown){shown=next;process.stdout.write("\\x1b[2J\\x1b[H"+next);}},20);`);
-  for (const name of ["claude", "codex", "plain"]) { copyFileSync(process.execPath, join(root, name)); chmodSync(join(root, name), 0o755); }
+  for (const name of ["claude", "codex", "omp", "plain"]) { copyFileSync(process.execPath, join(root, name)); chmodSync(join(root, name), 0o755); }
 });
 afterEach(async () => {
   for (const item of active.splice(0)) { for (const socket of item.sockets) socket.close(); item.stop(); await herdrRpc("workspace.close", { workspace_id: item.workspace }).catch(() => undefined); }
@@ -121,7 +121,7 @@ afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 async function setup(label: string, agent = "claude", screen = "› Message\n", options: Parameters<typeof createServer>[0] = {}, replaceable = false) {
   const id = ++next;
-  const created = await herdrRpc<{ workspace: { workspace_id: string }; root_pane: { pane_id: string } }>("workspace.create", { label: `herdr-web-ui-test-pending-${label}`, cwd: root, focus: false });
+  const created = await herdrRpc<{ workspace: { workspace_id: string }; root_pane: { pane_id: string } }>("workspace.create", { label: `ovis-test-pending-${label}`, cwd: root, focus: false });
   // registered before anything below can throw, so afterEach closes the workspace of a setup that failed
   const entry: (typeof active)[number] = { stop: () => {}, sockets: [], workspace: created.workspace.workspace_id }; active.push(entry);
   const pane = created.root_pane.pane_id;
@@ -174,6 +174,29 @@ async function setup(label: string, agent = "claude", screen = "› Message\n", 
 }
 
 describe("connection-owned pending input", () => {
+  it.each([
+    { agent: "omp", text: "/model", expected: "/switch" },
+    { agent: "codex", text: "/model", expected: "/model" },
+    { agent: "omp", text: "/model x", expected: "/model x" },
+  ])("delivers queued $text as $expected to $agent", async ({ agent, text, expected }) => {
+    // Given a command queued while the agent is working.
+    const f = await setup("queued-model", agent, "");
+    const message = await f.queue(1476, text);
+    const delivered = f.socket.event((frame) => frame.removed?.some((entry) => entry.id === message.id && entry.outcome === "sent") === true);
+    const recorded = new Promise<void>((resolve, reject) => {
+      const watcher = watch(root, () => {
+        if (!f.bytes().endsWith("\r")) return;
+        clearTimeout(timeout); watcher.close(); resolve();
+      });
+      const timeout = setTimeout(() => { watcher.close(); reject(new Error("queued command was not recorded")); }, 8_000);
+    });
+    // When the agent finishes its turn.
+    await f.state("idle");
+    await Promise.all([delivered, recorded]);
+    // Then the terminal receives the same command the immediate path would send.
+    expect(f.bytes()).toBe(`${paste(expected)}\r`);
+  });
+
   it("holds a queued message when a hookless agent process is replaced in the same terminal (regression #540)", async () => {
     const f = await setup("process-replaced", "claude", "SESSION1", {}, true);
     const before = await herdrClient.paneGet(f.pane);
@@ -1217,7 +1240,7 @@ describe("a create request's first message", () => {
    * recorder then starts in the pane under the name of the agent that comes up.
    */
   const launched = async (label: string, comesUp: string) => {
-    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: `herdr-web-ui-test-pending-${label}`, cwd: root, focus: false });
+    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: `ovis-test-pending-${label}`, cwd: root, focus: false });
     const entry: (typeof active)[number] = { stop: () => {}, sockets: [], workspace: created.workspace.workspace_id }; active.push(entry);
     const server = createServer({ port: 0, stateDir: join(root, `state-${label}`) });
     entry.stop = server.stop;
@@ -1270,7 +1293,7 @@ describe("a create request's first message", () => {
   }, 30_000);
 
   it("queued while the shell was still in front, is bound to the agent the launch brought up: a same-kind replacement before its page attaches gets it held, never typed", async () => {
-    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "herdr-web-ui-test-pending-first-launch-replaced", cwd: root, focus: false });
+    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "ovis-test-pending-first-launch-replaced", cwd: root, focus: false });
     const entry: (typeof active)[number] = { stop: () => {}, sockets: [], workspace: created.workspace.workspace_id }; active.push(entry);
     const server = createServer({ port: 0, stateDir: join(root, "state-first-launch-replaced") });
     entry.stop = server.stop;
@@ -1312,7 +1335,7 @@ describe("a create request's first message", () => {
   }, 30_000);
 
   it("queued for a launched agent that came up and then quit before it went, is held for Send now or Discard, never left waiting and never typed", async () => {
-    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "herdr-web-ui-test-pending-first-launch-quit", cwd: root, focus: false });
+    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "ovis-test-pending-first-launch-quit", cwd: root, focus: false });
     const entry: (typeof active)[number] = { stop: () => {}, sockets: [], workspace: created.workspace.workspace_id }; active.push(entry);
     const server = createServer({ port: 0, stateDir: join(root, "state-first-launch-quit") });
     entry.stop = server.stop;
@@ -1363,7 +1386,7 @@ describe("a create request's first message", () => {
   }, 30_000);
 
   it("held from the start, still learns its launched agent: once that agent came up and quit, Send now answers pending_target_changed, not that it is not up yet", async () => {
-    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "herdr-web-ui-test-pending-first-held-quit", cwd: root, focus: false });
+    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "ovis-test-pending-first-held-quit", cwd: root, focus: false });
     const entry: (typeof active)[number] = { stop: () => {}, sockets: [], workspace: created.workspace.workspace_id }; active.push(entry);
     const server = createServer({ port: 0, stateDir: join(root, "state-first-held-quit") });
     entry.stop = server.stop;
@@ -1403,7 +1426,7 @@ describe("a create request's first message", () => {
   }, 30_000);
 
   it("held from the start, says pending_target_changed instead of the page being gone once its launched agent quit, and Send now answers the same", async () => {
-    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "herdr-web-ui-test-pending-first-held-reason", cwd: root, focus: false });
+    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "ovis-test-pending-first-held-reason", cwd: root, focus: false });
     const entry: (typeof active)[number] = { stop: () => {}, sockets: [], workspace: created.workspace.workspace_id }; active.push(entry);
     const server = createServer({ port: 0, stateDir: join(root, "state-first-held-reason") });
     entry.stop = server.stop;
@@ -1446,7 +1469,7 @@ describe("a create request's first message", () => {
   }, 30_000);
 
   it("bound to a launch that runs behind a wrapper in front of the pane, is typed once into that agent, not held", async () => {
-    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "herdr-web-ui-test-pending-first-wrapped", cwd: root, focus: false });
+    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "ovis-test-pending-first-wrapped", cwd: root, focus: false });
     const entry: (typeof active)[number] = { stop: () => {}, sockets: [], workspace: created.workspace.workspace_id }; active.push(entry);
     const server = createServer({ port: 0, stateDir: join(root, "state-first-wrapped") });
     entry.stop = server.stop;
@@ -1518,7 +1541,7 @@ describe("a create request's first message", () => {
   }, 30_000);
 
   it("queued for a launch that died before any event saw it, is held when an agent of the same kind the user starts comes up, never typed into it", async () => {
-    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "herdr-web-ui-test-pending-first-launch-died", cwd: root, focus: false });
+    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "ovis-test-pending-first-launch-died", cwd: root, focus: false });
     const entry: (typeof active)[number] = { stop: () => {}, sockets: [], workspace: created.workspace.workspace_id }; active.push(entry);
     const server = createServer({ port: 0, stateDir: join(root, "state-first-launch-died") });
     entry.stop = server.stop;

@@ -209,7 +209,9 @@ export class MachineManager {
       const saved: unknown = JSON.parse(readFileSync(this.settingsPath, "utf8"));
       if (saved && typeof saved === "object" && typeof (saved as MachineSettings).auto_update_bridges === "boolean") this.preferences.auto_update_bridges = (saved as MachineSettings).auto_update_bridges;
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") console.error(`Cannot read ${this.settingsPath}; remote PC settings start empty`);
+      const cause = error instanceof SyntaxError ? "not valid JSON"
+        : error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : "read failed";
+      if (cause !== "ENOENT") console.error(`Cannot read ${this.settingsPath}; remote PC settings start empty`, cause);
     }
     if (existsSync(this.statePath)) {
       const saved: unknown = JSON.parse(readFileSync(this.statePath, "utf8"));
@@ -663,7 +665,7 @@ export class MachineManager {
           const directory = mkdtempSync(join(this.sshDir, "keygen-"));
           const temporary = join(directory, "key");
           try {
-            const keygen = Bun.spawn(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", `herdr-web-ui:${runtime.machine.id}`, "-f", temporary], { stdout: "ignore", stderr: "pipe" });
+            const keygen = Bun.spawn(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", `ovis:${runtime.machine.id}`, "-f", temporary], { stdout: "ignore", stderr: "pipe" });
             if (await keygen.exited !== 0) throw new Error("Could not generate the dedicated SSH key");
             if (job.abort.signal.aborted || runtime.generation !== generation || this.stopped) throw new Error("Setup cancelled");
             renameSync(temporary + ".pub", path + ".pub");

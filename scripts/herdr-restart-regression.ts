@@ -6,10 +6,11 @@ import { join } from "node:path";
 import { chromium, type Browser, type WebSocket as BrowserSocket } from "playwright-core";
 import type { ServerMessage } from "../shared/protocol.ts";
 import { chromePath } from "./chrome-path.ts";
+import { SOCKET_PATH_MAX } from "./check.ts";
 
 // This script stops its herdr, so it must not share even the browser lane's test session.
 const root = mkdtempSync(join(tmpdir(), "herdr-restart-"));
-const session = "herdr-web-ui-test-restart";
+const session = "ovis-test-restart";
 const config = join(root, "config");
 const state = join(root, "state");
 mkdirSync(config);
@@ -18,8 +19,13 @@ const env = {
   ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(HERDR|OMO|SENPI|PI)_/.test(name))),
   XDG_CONFIG_HOME: config, XDG_STATE_HOME: state, SHELL: "/bin/bash",
 };
-const binary = process.env.HERDR_WEB_HERDR_BIN || "herdr";
+const binary = process.env.OVIS_HERDR_BIN || "herdr";
 const socketPath = join(config, "herdr", "sessions", session, "herdr.sock");
+const socketBytes = Buffer.byteLength(socketPath);
+if (socketBytes > SOCKET_PATH_MAX) {
+  rmSync(root, { recursive: true, force: true });
+  throw new Error(`${socketPath} is too long for a unix socket (${socketBytes} > ${SOCKET_PATH_MAX} bytes); set TMPDIR to a shorter path`);
+}
 process.env.HERDR_SOCKET = socketPath;
 const { createServer } = await import("../server/index.ts");
 const { workspaceCreate, sessionSnapshot, paneRead } = await import("../server/herdr/client.ts");
@@ -80,8 +86,8 @@ try {
   browser = await chromium.launch({ executablePath: chromePath(), headless: true });
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   await page.addInitScript(({ pane }) => {
-    localStorage.setItem("herdr-web-ui:settings", JSON.stringify({ language: "en" }));
-    localStorage.setItem(`herdr-web-ui:view:${pane}`, "terminal");
+    localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" }));
+    localStorage.setItem(`ovis:view:${pane}`, "terminal");
   }, { pane });
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));

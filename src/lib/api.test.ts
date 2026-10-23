@@ -42,7 +42,7 @@ it("refuses a file over the attachment limit before any of it is sent, and sends
   const requests: string[] = [];
   globalThis.fetch = (async (url: string) => {
     requests.push(url);
-    return Response.json({ ok: true, path: "/work/.herdr-web-ui/site.zip" });
+    return Response.json({ ok: true, path: "/work/.ovis/site.zip" });
   }) as typeof fetch;
 
   const over = new File([new Uint8Array(MAX_ATTACHMENT_BYTES + 1)], "site.zip", { type: "application/zip" });
@@ -52,7 +52,7 @@ it("refuses a file over the attachment limit before any of it is sent, and sends
   expect(requests).toEqual([]);
 
   const atLimit = new File([new Uint8Array(MAX_ATTACHMENT_BYTES)], "site.zip", { type: "application/zip" });
-  expect(await uploadPaneImage("p1", atLimit)).toBe("/work/.herdr-web-ui/site.zip");
+  expect(await uploadPaneImage("p1", atLimit)).toBe("/work/.ovis/site.zip");
   expect(requests).toEqual(["/api/pane/image"]);
 });
 

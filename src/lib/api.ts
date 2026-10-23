@@ -50,6 +50,8 @@ import type {
   ResizePaneRequest,
   SessionHistoryAgent,
   SessionHistoryResponse,
+  SessionResumeRequest,
+  SessionResumeResponse,
   SessionSnapshot,
   SetSplitRatioRequest,
   SlashCommand,
@@ -192,7 +194,7 @@ export async function changeTelemetry(change: TelemetryChange): Promise<Telemetr
 }
 
 /**
- * A non-2xx answer from the herdr-web-ui API. `code` is the server's error-envelope
+ * A non-2xx answer from the Ovis API. `code` is the server's error-envelope
  * code when it sent one, so callers can branch on `status` (401 = the token gate)
  * without parsing the message.
  */
@@ -717,10 +719,18 @@ export async function openWorktree(request: OpenWorktreeRequest, machineId = "lo
   return (await response.json()) as WorktreeOpened;
 }
 
-/** GET /api/sessions/history: the earlier sessions of `agent` in the workspace's folder, newest first; never cached. */
-export function fetchSessionHistory(workspaceId: string, agent: SessionHistoryAgent, machineId = "local"): Promise<SessionHistoryResponse> {
-  const query = new URLSearchParams({ workspace_id: workspaceId, agent });
+/**
+ * GET /api/sessions/history: the earlier sessions of `agent` in the workspace's folder, newest first;
+ * never cached. `paneId` is the pane the list was asked for from: Claude's are that pane's store's.
+ */
+export function fetchSessionHistory(workspaceId: string, agent: SessionHistoryAgent, machineId = "local", paneId: string | null = null): Promise<SessionHistoryResponse> {
+  const query = new URLSearchParams({ workspace_id: workspaceId, agent, ...(paneId === null ? {} : { pane_id: paneId }) });
   return getJson<SessionHistoryResponse>(`${machinePath(machineId, "sessions/history")}?${query.toString()}`, { cache: "no-store" });
+}
+/** POST /api/sessions/resume: a Claude row's Resume, in the store it was listed from. */
+export async function resumeSession(request: SessionResumeRequest, machineId = "local"): Promise<SessionResumeResponse> {
+  const response = await sendJson(machinePath(machineId, "sessions/resume"), "POST", request);
+  return (await response.json()) as SessionResumeResponse;
 }
 /**
  * Whether the PC's bridge has the session history route, asked without a query so no session is
@@ -904,7 +914,7 @@ export async function fetchVoiceStatus(): Promise<VoiceStatus> {
   return (await response.json()) as VoiceStatus;
 }
 
-/** PUT /api/voice/config: ApiError 409 `key_from_env` when the key comes from HERDR_WEB_OPENAI_API_KEY. */
+/** PUT /api/voice/config: ApiError 409 `key_from_env` when the key comes from OVIS_OPENAI_API_KEY. */
 export async function saveVoiceConfig(update: VoiceConfigUpdate): Promise<VoiceStatus> {
   const response = await fetch("/api/voice/config", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(update) });
   if (!response.ok) throw await errorFrom("/api/voice/config", response);

@@ -62,7 +62,7 @@ process.stdin.on("data", data => {
 });
 process.stdout.write(Array.from({ length: 400 }, (_, n) => "history " + n + "\\r\\n").join("") + "\\x1b[?1000h\\x1b[?1002h\\x1b[?1006hFIXTURE_READY\\r\\n");
 `);
-    const made = await workspaceCreate({ cwd, label: "herdr-web-ui-test-question-wheel" });
+    const made = await workspaceCreate({ cwd, label: "ovis-test-question-wheel" });
     workspaces.push(made.workspace.workspace_id);
     const pane = made.root_pane.pane_id;
     const ready = waitOutput(pane, "FIXTURE_READY");
@@ -75,7 +75,7 @@ process.stdout.write(Array.from({ length: 400 }, (_, n) => "history " + n + "\\r
     tailscaleOwner: null, usage: new UsageService(undefined, []) });
   browser = await chromium.launch({ executablePath: chromePath(), headless: true, args: ["--no-sandbox"] });
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US", hasTouch: true });
-  await context.addInitScript(() => localStorage.setItem("herdr-web-ui:settings", JSON.stringify({
+  await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({
     language: "en", defaultView: "terminal", terminalInputMode: "direct", terminalWheelSpeed: 2, alertsOn: false,
   })));
   const page = await context.newPage();
@@ -102,7 +102,7 @@ process.stdout.write(Array.from({ length: 400 }, (_, n) => "history " + n + "\\r
       if (firstMetrics) { firstMetrics = false; await releaseMetrics.promise; }
       await route.continue();
     });
-    const metrics = page.waitForResponse(response => response.url().includes("/pane/scroll?"));
+    const metrics = delayed ? null : page.waitForResponse(response => response.url().includes("/pane/scroll?"));
     await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(pane)}`);
     if (!delayed) await metrics;
     const body: { snapshot: SessionSnapshot } = await (await page.request.get(`http://127.0.0.1:${server.port}/api/session`)).json();
@@ -130,8 +130,13 @@ process.stdout.write(Array.from({ length: 400 }, (_, n) => "history " + n + "\\r
     // The initial metrics read is deliberately held until the wheel has been handled.
     // Its intent must survive that read rather than disappearing on a fresh terminal.
     await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve())));
+    // The held response cannot arrive until release: start its timeout here, not before
+    // navigation and terminal startup, and subscribe before allowing it to continue.
+    const releasedMetrics = delayed
+      ? page.waitForResponse(response => response.url().includes("/pane/scroll?"))
+      : metrics;
     releaseMetrics.resolve();
-    await metrics;
+    await releasedMetrics;
     await received;
     // Then: only a blocked OmO pane scrolls history instead of delivering mouse input.
     const after = await paneScrollInfo(pane);

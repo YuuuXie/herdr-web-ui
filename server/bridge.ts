@@ -27,7 +27,7 @@ export async function bridgeIdentity(sidecar = sidecarAvailable()): Promise<Brid
     throw error;
   }
   const info = attachableIdentity(await ping(), sidecar);
-  return { pid: process.pid, managed_remote: process.env["HERDR_WEB_REMOTE"] === "1", bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION, socket_path: socket, socket_id: `${stat.dev}:${stat.ino}`, herdr: info };
+  return { pid: process.pid, managed_remote: process.env["OVIS_REMOTE"] === "1", bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION, socket_path: socket, socket_id: `${stat.dev}:${stat.ino}`, herdr: info };
 }
 /**
  * Whether the bridge a descriptor names still runs: a PID now held by a process of another birth
@@ -76,7 +76,7 @@ export function registerBridge(port: number, token = randomBytes(32).toString("h
       // another bridge registered while this one started: it is the registered one
       if (now?.id !== seen?.id || now?.text !== seen?.text || liveIn(now)) return false;
       const tmp = `${path}.${process.pid}.tmp`;
-      writeFileSync(tmp, JSON.stringify({ managed_remote: process.env["HERDR_WEB_REMOTE"] === "1", port, token, pid: process.pid, generation: record.generation, ...(record.birth ? { birth: record.birth } : {}), socket_path: socketPath(), bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION } satisfies BridgeDescriptor), { mode: 0o600 });
+      writeFileSync(tmp, JSON.stringify({ managed_remote: process.env["OVIS_REMOTE"] === "1", port, token, pid: process.pid, generation: record.generation, ...(record.birth ? { birth: record.birth } : {}), socket_path: socketPath(), bridge_protocol: BRIDGE_PROTOCOL, bundle_version: REMOTE_BUNDLE_VERSION } satisfies BridgeDescriptor), { mode: 0o600 });
       chmodSync(tmp, 0o600);
       renameSync(tmp, path);
       return true;

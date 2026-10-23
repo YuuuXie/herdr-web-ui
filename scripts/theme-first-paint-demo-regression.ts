@@ -29,8 +29,8 @@ import { buildDemoApp } from "./demo-build.ts";
 
 const repo = join(import.meta.dir, "..");
 const evidence = process.env["UI_EVIDENCE_DIR"] || null;
-const SETTINGS_KEY = "herdr-web-ui:settings";
-const THEMES_KEY = "herdr-web-ui:themes";
+const SETTINGS_KEY = "ovis:settings";
+const THEMES_KEY = "ovis:themes";
 const DEMO_PREFIX = "/herdr-web-ui/demo/app/";
 
 type Stored = string | object | null;

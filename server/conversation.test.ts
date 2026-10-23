@@ -286,11 +286,15 @@ describe("Devin pane identity", () => {
     const pane = { pane_id: "pane-a", cwd, agent: "devin", agent_session: { agent: "devin", kind: "id", value: "one" } } as HerdrPane;
     const db = new Database(dbPath);
     try {
+      // Cache identity needs committed rows, not a durable sync for each fixture node.
+      db.exec("PRAGMA synchronous = OFF");
       db.exec("CREATE TABLE sessions(id TEXT, working_directory TEXT, main_chain_id INTEGER, hidden INTEGER, model TEXT); CREATE TABLE message_nodes(session_id TEXT,node_id INTEGER,parent_node_id INTEGER,chat_message TEXT,created_at INTEGER); CREATE TABLE tool_call_state(session_id TEXT,tool_call_id TEXT,tool_call_json TEXT,tool_call_update_json TEXT)");
       // more turns than one page holds, so the newest page carries a cursor
       db.query("INSERT INTO sessions VALUES ('one', ?, 120, 0, NULL)").run(cwd);
       const insert = db.query("INSERT INTO message_nodes VALUES ('one', ?, ?, ?, 1700000000)");
-      for (let node = 1; node <= 120; node++) insert.run(node, node === 1 ? null : node - 1, JSON.stringify({ role: "user", content: `synthetic ${node}` }));
+      db.transaction(() => {
+        for (let node = 1; node <= 120; node++) insert.run(node, node === 1 ? null : node - 1, JSON.stringify({ role: "user", content: `synthetic ${node}` }));
+      })();
       mockedPanes = [pane];
       mockedProcesses = [{ argv: ["/usr/local/bin/devin", "--resume", "one"] }];
       // the store never changes below, so only a forgotten cache can move the identity
@@ -313,7 +317,7 @@ describe("Devin pane identity", () => {
       mockedProcesses = [];
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 15_000); // Seven awaited pane reads, including three complete ancestry/cache builds.
 });
 
 /** Minimal but shape-true slices of a Claude Code session jsonl. */
@@ -1859,6 +1863,8 @@ describe("Agy native ledger through shared paging", () => {
     mkdirSync(join(path, ".."), { recursive: true });
     mkdirSync(join(root, "conversations"));
     db = new Database(join(root, "conversations", `${session}.db`));
+    // The ledger tests observe committed DB changes, never recovery after a crash.
+    db.exec("PRAGMA synchronous = OFF");
     db.exec("CREATE TABLE steps(idx INTEGER PRIMARY KEY)");
     writeFileSync(path, "");
     forgetTranscriptState();
@@ -1926,15 +1932,15 @@ describe("Agy native ledger through shared paging", () => {
     expect(turns[2]!.role).toBe("user");
   });
   it("keeps paging and refs stable on append, then rejects them on a DB-only idle rewind", () => {
-    // one commit: 160 separate ones each wait for the disk, seconds under load
-    db.transaction(() => { for (let i = 0; i < 80; i++) { add(i * 2, "USER_INPUT", `prompt ${i}`); add(i * 2 + 1, "GENERIC", "x".repeat(5000)); } })();
+    // One prompt beyond the 50-prompt page boundary, committed as one fixture batch.
+    db.transaction(() => { for (let i = 0; i < 51; i++) { add(i * 2, "USER_INPUT", `prompt ${i}`); add(i * 2 + 1, "GENERIC", "x".repeat(5000)); } })();
     const first = page();
     expect(first.cursor).not.toBeNull();
     const older = transcriptPage("agy-transcript", path, { before: first.cursor! });
     const tool = first.turns.flatMap((t) => t.parts).find((p) => p.kind === "tool")!;
     if (tool.kind !== "tool") throw new Error("missing result");
     expect(transcriptToolOutput("agy-transcript", path, tool.output_ref!)).toBe("x".repeat(5000));
-    add(160, "USER_INPUT", "append");
+    add(102, "USER_INPUT", "append");
     expect(page().history_id).toBe(first.history_id);
     expect(transcriptPage("agy-transcript", path, { before: first.cursor! })).toEqual(older);
     db.exec("DELETE FROM steps WHERE idx >= 4");

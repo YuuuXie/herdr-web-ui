@@ -638,7 +638,7 @@ export function useSettings(): SettingsContextValue {
   return value;
 }
 
-export const PANE_VIEW_KEY_PREFIX = "herdr-web-ui:view:";
+export const PANE_VIEW_KEY_PREFIX = "ovis:view:";
 
 /** Forgets every pane's own lens on this device, so each opens in the default one again. */
 export function forgetPaneViews(given?: Pick<Storage, "length" | "key" | "removeItem">): number {

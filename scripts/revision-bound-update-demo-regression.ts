@@ -130,7 +130,7 @@ async function open(browser: Browser, fixture: Fixture, options: { width: number
   const context = await browser.newContext(device
     ? { ...device, viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true, locale: options.language }
     : { viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1, locale: options.language });
-  await context.addInitScript((settings) => { localStorage.setItem("herdr-web-ui:settings", settings); }, JSON.stringify({ language: options.language, theme: options.theme }));
+  await context.addInitScript((settings) => { localStorage.setItem("ovis:settings", settings); }, JSON.stringify({ language: options.language, theme: options.theme }));
   let tabs = 0;
   const names = new WeakMap<Page, string>();
   await context.exposeBinding("__updateFixture", (source, path: string, method: string, body: string | null) => {

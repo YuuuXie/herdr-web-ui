@@ -33,8 +33,8 @@ describe("saved theme migration", () => {
     if (originalDocument) Object.defineProperty(globalThis, "document", originalDocument);
     else Reflect.deleteProperty(globalThis, "document");
   });
-  const main = "herdr-web-ui:settings";
-  const protectedThemes = "herdr-web-ui:themes";
+  const main = "ovis:settings";
+  const protectedThemes = "ovis:themes";
   const putOld = (record: object) => records.set(main, JSON.stringify(record));
   const readOld = () => oldSanitizeSettings(JSON.parse(records.get(main) ?? "{}"));
 
@@ -984,10 +984,10 @@ describe("default lens", () => {
     expect(sanitizeSettings({ defaultView: "split" }).defaultView).toBe("auto");
   });
   it("forgets every pane's own lens and nothing else", () => {
-    const data = new Map<string, string>([["herdr-web-ui:view:local:w1:p1", "terminal"], ["herdr-web-ui:view:remote:pc:w2:p1", "chat"], ["herdr-web-ui:settings", "{}"]]);
+    const data = new Map<string, string>([["ovis:view:local:w1:p1", "terminal"], ["ovis:view:remote:pc:w2:p1", "chat"], ["ovis:settings", "{}"]]);
     const storage = { get length() { return data.size; }, key: (i: number) => [...data.keys()][i] ?? null, removeItem: (k: string) => { data.delete(k); } };
     expect(forgetPaneViews(storage)).toBe(2);
-    expect([...data.keys()]).toEqual(["herdr-web-ui:settings"]);
+    expect([...data.keys()]).toEqual(["ovis:settings"]);
   });
 });
 

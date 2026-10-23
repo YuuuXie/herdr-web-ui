@@ -39,6 +39,7 @@ export class PtySession {
   constructor(private readonly options: PtySessionOptions) {
     // The bridge's bearer token is for browsers; neither the sidecar nor the attach needs it.
     const env = { ...process.env, ...options.env };
+    delete env["OVIS_TOKEN"];
     delete env["HERDR_WEB_TOKEN"];
     this.proc = Bun.spawn(
       ["node", HOST_SCRIPT, String(options.cols), String(options.rows), options.command, ...options.args],

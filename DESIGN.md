@@ -615,7 +615,7 @@ The values are the ones in `src/styles.css`. Every token but `--fs-input` is `ca
   event, scoped to the active, presented pane and its PC; a modal or observe mode blocks it.
   It sends no text or keys and never takes an attach. The binding follows the existing shortcut
   customization and Mod+Shift policy.
-- All settings share one sanitized `localStorage["herdr-web-ui:settings"]` record.
+- All settings share one sanitized `localStorage["ovis:settings"]` record.
 
 ## 4. Spacing & Layout
 
@@ -741,7 +741,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   it to resize the sidebar between `240px` and `520px`, never past half the window; the arrow
   keys move the focused edge `16px`, Home and End go to the limits, and a double-click returns to
   `--sidebar-w`. The seam shows `--border-strong` under a pointer and `--accent` while held or
-  focused. The chosen width is kept per device (`herdr-web-ui:sidebar-width`) and written as
+  focused. The chosen width is kept per device (`ovis:sidebar-width`) and written as
   `--sidebar-user-w` on `.app`; the sidebar and its top row in the header both read
   `--sidebar-shown-w`. A phone's drawer keeps `--sidebar-w`.
 - The sidebar keeps its width on desktop until its edge is dragged, and is a `<=768px` drawer. The desktop collapse removes its
@@ -949,7 +949,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   that same open or closed folder takes its place. Where nothing hovers (touch) the folder always
   shows. For any other workspace it is a dim glyph or the icon, and no control. Worktree rows have no folder: they sit one cell in, their marks under the parent's.
   Worktree folds are remembered at
-  `herdr-web-ui:worktree-group-collapsed:<machineId>:<repo_key>`; a folded group keeps the selected
+  `ovis:worktree-group-collapsed:<machineId>:<repo_key>`; a folded group keeps the selected
   child visible, and status snapshots preserve a deliberate fold.
 - Worktree branches come from the existing `GET /api/worktree/list`, matched by repository key,
   open workspace ID and normalized checkout path. A listing-confirmed detached checkout reads
@@ -1080,13 +1080,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   Events carry the epoch too: changing it invalidates other panes' cached finish IDs until their
   next snapshot. The browser never infers a finish epoch from counters. An older bridge missing either
   field always keeps the dot; transitions wholly missed by the server cannot be counted.
-- Each `(PC, epoch, pane)` has its own `herdr-web-ui:finish:` localStorage key, containing the
+- Each `(PC, epoch, pane)` has its own `ovis:finish:` localStorage key, containing the
   greatest viewed finish ID, its write time and an optional completed-answer fingerprint. A
   delayed lower finish ID also stays read: counters only advance inside an epoch, while other
   epochs have separate keys. Tabs writing different panes cannot overwrite
   one another; storage events reconcile a same-pane race toward the maximum. A tab closed before
   reconciliation or storage eviction can bring back a read dot, never acknowledge a newer finish.
-  Old `herdr-web-ui:seen:<pc>` records are removed. Epochs this tab actually left are removed;
+  Old `ovis:seen:<pc>` records are removed. Epochs this tab actually left are removed;
   unfamiliar epochs are ignored, not deleted using a possibly stale first roster. Storage is
   capped at 2,000 keys, oldest first, never pruned by a tab's pane or PC roster. A record this
   browser writes is also sent to its server (`POST /api/seen`, shared/seen.ts), which keeps the
@@ -1207,9 +1207,19 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   note is dim, red for an expired sign-in or a failed request.
 
 ### New workspace dialog
-- Agent select comes from `GET /api/agents`; shell-only is always available. The selected PC's
-  installed, supported agents share this picker. GitHub Copilot uses the existing launch path
-  without new permission defaults. Directory defaults to
+- Agent select comes from `GET /api/agents`; shell-only is always available. The bridge offers the
+  agents it types into the pane's shell itself (omo, gjc) exactly where it can start them: its own
+  PATH first, then on Unix the PATH its user's login shell sets (`server/shell-agent.ts`
+  ShellAgentLocator), and the start types the same absolute path the offer found. The login shell
+  runs only on demand: when `/api/agents` or a shell-agent start asks for an agent its own PATH
+  misses and the last answer is more than a minute old, never from a timer, and concurrent askers
+  share one run. Each run is bounded (2 s, 64 KiB of output, a short wait after a kill or the
+  shell's exit); a run that finds no PATH is a miss, and the server logs why once each time the
+  reason changes. A server run as a service with a bare PATH therefore still offers an agent
+  installed under `~/.local/bin` or a version manager. The agents herdr starts keep their own
+  environment's answer. The selected PC's installed, supported agents share this picker.
+  GitHub Copilot uses the existing launch path without new permission defaults. The picker itself
+  is unchanged. Directory defaults to
   the selected pane cwd and name is an optional workspace label. **Browse** updates Directory as
   each folder opens (`onFolder`), so **Start** uses the path shown in the browser even when
   **Use this folder** was not pressed; Directory keeps the `~/…` form for a folder under home, as
@@ -1411,6 +1421,28 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   An empty store says **No earlier Codex sessions in this folder.**; a PC whose bridge answers
   404 for the route says the bridge does not offer this yet, and the workspace menu of such a PC
   has no item (the bridge is asked once, without a workspace, so nothing is listed by the probe).
+- Claude keeps one store per `CLAUDE_CONFIG_DIR`, and two stores can hold the same session id. A
+  Claude list is the store of the pane it is opened from (the pane asking; from a workspace row,
+  the selected pane, else the workspace's first in tab order), and each row's Resume is bound to
+  that pane and store: it goes to `POST /api/sessions/resume`, never the argv-only tab request,
+  which starts it in the same store or names the pane already showing it there (selected, as
+  **Open** is). A pane that reports the same id is **Already open** for the row only when it is the
+  list's own pane; another may be on another store. A store that changed since the list is read
+  again in place: the rows stay where they are without their buttons until the new ones come, the
+  focus goes back to the row that asked, and the `role="status"` line under the rows says so. That
+  line (`.session-status`) is kept one line high under every non-empty list, empty until it says
+  **Resuming…**, **Reading sessions…** or why the list was read again, so no row moves under the
+  pointer when it speaks. A pane whose store cannot be told (herdr reports none of its processes,
+  two Claudes in front of it, an environment that cannot be read in full, as Linux's `/proc` and
+  macOS's `sysctl` give it, or, on Windows, Claude's live PID record in no store, in two (a store
+  copied while Claude ran) or in one that cannot be read) lists nothing and says why in words,
+  with the next step: one Claude in the pane, its store folder there, then open the list again. A row its bridge bound to
+  no store (an older bridge, or a store a new tab would not repeat: none exported by the pane's
+  Claude while the environment a new tab inherits exports one; that is herdr's own on Linux and
+  the bridge's elsewhere) shows a quiet **Resume unavailable** pill
+  instead of the button: no store selector is added, and nothing is started in the default store
+  in its place. This keeps the Codex CLI and Claude Code pickers' one-session-per-row design;
+  Claude Code itself only ever lists the store it runs on, which is what binding to the pane does.
 - Keyboard: the first row's button takes the focus once the rows are in (the agent field until
   then; focus the user moved meanwhile stays), ArrowUp/ArrowDown and Home/End move along the
   rows' buttons, Tab stays inside, Enter resumes, Escape, the X, Cancel and the scrim close, and
@@ -1422,6 +1454,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   above them because the folder may hold several agents' sessions.
 - The browser demo answers `GET /api/sessions/history` with two fictional sessions per agent and
   marks a tab resumed through it as showing that session, so the **Already open** path shows too.
+  Its flaky-retry-test workspace answers Claude's list as an older bridge would (no store source,
+  no resume route), so **Resume unavailable** shows there.
 
 ### Changes list and diff viewer (`.repo-changes`, `.repo-diff*`)
 - Files has two faces, **Browse** | **Changes** (`.segmented` in its header). **Changes** lists
@@ -2031,7 +2065,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - Only an accepted direct send or an explicit **Send now** of a terminal command opens a
   **terminal peek** (`lib/terminalPeek.ts`): the pane's own attached grid over the chat's
   transcript, in the box the hidden grid already holds. It is this browser's state alone: the
-  lens stays Chat (the header keeps Chat pressed; `herdr-web-ui:view:<pane>` and `?view=` are not
+  lens stays Chat (the header keeps Chat pressed; `ovis:view:<pane>` and `?view=` are not
   written), nothing attaches anew and herdr's focus never moves. Queue acceptance and automatic
   delivery open none, refused or unconfirmed sends keep the draft and existing note, and a
   view-only device has no composer to open one from. The chat stays mounted under the grid
@@ -2448,8 +2482,17 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   labels kept whole; wrapped lines start at the left. The reconnecting banner's held preview
   (`Input held: “…”`) stays on one line in mono, cut with an ellipsis, with the whole text as its
   title: a command is never broken inside a word.
+- The touch input line keeps `--space-1` above and below its field and send button (and `--space-2`
+  at the sides, as the key bar), so neither sits on the key bar's rule; its row keeps the height it
+  had, so the grid and the pty are not resized. Keys draw at `--key-h` (`--keybar-h` less `3 * --space-1`), centered
+  in the bar with equal room above and below, and reach `--touch-target` through an invisible
+  expander inside the bar; the bar's safe-area padding is added below that.
 - The mobile key bar starts with Esc, Tab and `^C`, then sticky Ctrl/Alt/Shift, Enter and arrows;
-  it never steals typing focus. Modifiers remain highlighted until toggled off,
+  it never steals typing focus, and on a touch screen it never takes the focus either: a key tapped
+  with the keyboard put away leaves it away (only the keyboard key or a tap on the line or the grid
+  raises it). That follows the platform's own rule rather than an app's: a button never raises a
+  phone's keyboard, only a text field does. A fine pointer, which raises no keyboard, still moves
+  the focus to the grid. Modifiers remain highlighted until toggled off,
   leaving the pane/lens or disconnecting; each exposes `aria-pressed`.
 - That is the default row. Settings → Terminal → Key bar can add, remove and reorder every
   terminal key and register exact combinations. Removing a held modifier clears it immediately.

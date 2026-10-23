@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { codexOpenRollout, codexTranscriptPath } from "./codex.ts";
 import * as processStart from "./process-start.ts";
-import { processStartedAt, processStartLowerBound } from "./process-start.ts";
+import { processStartedAt } from "./process-start.ts";
 
 // Native stores and the real RPC client; only herdr's foreground metadata is synthetic.
 // In particular, a real process supplies /proc/cmdline when that metadata omits argv.
@@ -24,7 +24,7 @@ let socketBefore: string | undefined;
 const children: ReturnType<typeof Bun.spawn>[] = [];
 
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), "herdr-web-ui-codex-processes-"));
+  root = mkdtempSync(join(tmpdir(), "ovis-codex-processes-"));
   home = join(root, "codex");
   mkdirSync(join(home, "sessions"), { recursive: true });
   path = join(home, "sessions", `rollout-${thread}.jsonl`);
@@ -286,31 +286,38 @@ shortIt("resolves a seconds-only schema when creation is provably after process 
 });
 
 shortIt("rejects a thread made before its process could have started, and takes one made as it starts", async () => {
-  const before = Date.now();
   await shortSession();
-  const ready = Date.now();
-  const pid = foreground[0]!.pid;
+  // Put the start at a second boundary, independently of btime/ps rounding or fixture setup time.
+  const started = 1_001_000;
+  const bound = spyOn(processStart, "processStartLowerBound").mockReturnValue(started);
   const setCreated = (created: number) => {
     const db = new Database(join(home, "state_5.sqlite"));
     db.query("UPDATE threads SET created_at = ?, created_at_ms = ?").run(Math.floor(created / 1000), created);
     db.close();
   };
-  // before the start's lower bound: an older conversation of the cwd
-  expect(processStartLowerBound(pid)).not.toBeNull();
-  setCreated(before - 1500);
-  expect(await resolve()).toBeNull();
-  // Codex 0.163 makes its thread as its process starts: within a tick of it on Linux, in the
-  // second macOS's ps counts. The bound from above left both out.
-  setCreated(process.platform === "linux" ? processStartedAt(pid)! + 1 : ready);
-  expect(await resolve()).toBe(path);
+  try {
+    setCreated(started - 1);
+    expect(await resolve()).toBeNull();
+    setCreated(started);
+    expect(await resolve()).toBe(path);
+  } finally { bound.mockRestore(); }
 });
 
 shortIt("takes a seconds-only thread made in its process's second", async () => {
   await shortSession(false);
-  const db = new Database(join(home, "state_5.sqlite"));
-  db.query("UPDATE threads SET created_at = ?").run(Math.floor(processStartedAt(foreground[0]!.pid)! / 1000));
-  db.close();
-  expect(await resolve()).toBe(path);
+  const bound = spyOn(processStart, "processStartLowerBound");
+  try {
+    // The same stored second must work at its first and last millisecond, but not the next second.
+    const db = new Database(join(home, "state_5.sqlite"));
+    db.query("UPDATE threads SET created_at = 1000").run();
+    db.close();
+    for (const started of [1_000_000, 1_000_999]) {
+      bound.mockReturnValue(started);
+      expect(await resolve()).toBe(path);
+    }
+    bound.mockReturnValue(1_001_000);
+    expect(await resolve()).toBeNull();
+  } finally { bound.mockRestore(); }
 });
 
 // --- after another pane's /new, this pane's one-word exchange still tells ---

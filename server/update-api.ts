@@ -46,7 +46,7 @@ export function connectUpdater(channel?: SupervisorChannel): UpdateService {
   let status = unmanagedUpdateStatus();
   let notes = noUpdateNotes();
   let installed = noInstalledNotes();
-  const managed = Boolean(process.send) && process.env["HERDR_WEB_MANAGED"] === "1";
+  const managed = Boolean(process.send) && process.env["OVIS_MANAGED"] === "1";
   const supervisor = channel ?? (managed ? { send: (message: unknown) => process.send?.(message), onMessage: (listener: (message: unknown) => void) => process.on("message", listener) } : null);
   if (supervisor) {
     supervisor.onMessage((message: unknown) => {

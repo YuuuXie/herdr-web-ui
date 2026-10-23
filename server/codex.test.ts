@@ -332,7 +332,7 @@ describe("Codex queued questions (request_user_input_async)", () => {
   });
 
   it("scans a rollout once however many ask at the same time", async () => {
-    dir = mkdtempSync(join(tmpdir(), "herdr-web-ui-codex-questions-"));
+    dir = mkdtempSync(join(tmpdir(), "ovis-codex-questions-"));
     const path = join(dir, "rollout.jsonl");
     writeFileSync(path, `${jsonl(message("user", "go"), ask("call_x", [{ title: "First?", options: ["a"] }]))}\n`);
     await unansweredCodexQuestions(path);
@@ -345,7 +345,7 @@ describe("Codex queued questions (request_user_input_async)", () => {
   });
 
   it("lists the questions still unanswered, reading only what the rollout appends", async () => {
-    dir = mkdtempSync(join(tmpdir(), "herdr-web-ui-codex-questions-"));
+    dir = mkdtempSync(join(tmpdir(), "ovis-codex-questions-"));
     const path = join(dir, "rollout.jsonl");
     writeFileSync(path, `${jsonl(message("user", "go"), asked)}\n`);
     expect(await unansweredCodexQuestions(path)).toEqual([
@@ -694,7 +694,7 @@ describe("Codex rollout resolution", () => {
   const short = [
     "세 사진을 확인하고 한 장으로 합칠게요. 이미지 편집을 위해 imagegen 스킬을 사용할게요.",
     "세 화면이 모두 보이도록, 올려주신 순서대로 가로로 나란히 배치할게요.",
-    "imagegen으로 세 사진을 올려주신 순서대로 가로로 합쳤어요.\n\n[합친 이미지 다운로드](/home/user/repo/.herdr-web-ui/combined-20261002.png)",
+    "imagegen으로 세 사진을 올려주신 순서대로 가로로 합쳤어요.\n\n[합친 이미지 다운로드](/home/user/repo/.ovis/combined-20261002.png)",
   ];
   const shortRollout = jsonl(
     message("user", "이거 세개 사진 합처서 하나의 이미지로 만들어줘."),

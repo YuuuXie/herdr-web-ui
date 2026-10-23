@@ -222,8 +222,8 @@ describe("composerPayload", () => {
 
 describe("imageMention", () => {
   it("references the stored file as an editable @path with a trailing space", () => {
-    expect(imageMention("/tmp/proj/.herdr-web-ui/paste-1.png")).toBe(
-      "@/tmp/proj/.herdr-web-ui/paste-1.png ",
+    expect(imageMention("/tmp/proj/.ovis/paste-1.png")).toBe(
+      "@/tmp/proj/.ovis/paste-1.png ",
     );
   });
 });
