@@ -1,7 +1,7 @@
 /** Owned native Copilot-shaped fixture -> Herdr -> HTTP -> built React chat. */
 import "./test-herdr.ts";
 import assert from "node:assert/strict";
-import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { chromium } from "playwright-core";
@@ -76,7 +76,11 @@ console.log("fixture ready");`);
   const body = await (await fetch(endpoint)).json() as { source: string };
   assert.equal(body.source, "copilot-transcript");
 
-  browser = await chromium.launch({ executablePath: chromePath(), headless: true, chromiumSandbox: true });
+  // Ubuntu's installed Chrome has an AppArmor policy allowing its user-namespace sandbox;
+  // the downloaded Playwright binary does not have that policy on hosted runners.
+  const installedChrome = "/opt/google/chrome/chrome";
+  const executablePath = process.env.CI && existsSync(installedChrome) ? installedChrome : chromePath();
+  browser = await chromium.launch({ executablePath, headless: true, chromiumSandbox: true });
   const page = await browser.newPage({ viewport: { width: 1100, height: 800 }, locale: "en-US" });
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
