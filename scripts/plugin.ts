@@ -23,9 +23,9 @@
 import { mergeEnvLayers } from "../server/legacy-env.ts";
 import { defaultStateDir } from "../server/update-state.ts";
 import { spawn, spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, platform } from "node:os";
-import { delimiter, join, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 
 import qrcode from "qrcode-generator";
 
@@ -51,12 +51,17 @@ function ownDir(parent: string): string {
   return existsSync(next) || !existsSync(legacy) ? next : legacy;
 }
 const DEFAULT_STATE_DIR = ownDir(join(homedir(), ".local", "state"));
-const MANAGED_STATE_DIR = join(herdrStateDir(process.env, platform(), homedir()), "plugins", "devswha.herdr-web-ui");
+const PLUGIN_ID = "devswha.ovis";
+/** the id before the rename: an install from then keeps it until the installer moves it to PLUGIN_ID */
+const LEGACY_PLUGIN_ID = "devswha.herdr-web-ui";
+const HERDR_PLUGIN_STATE = join(herdrStateDir(process.env, platform(), homedir()), "plugins");
+const MANAGED_STATE_DIR = [PLUGIN_ID, LEGACY_PLUGIN_ID].map((id) => join(HERDR_PLUGIN_STATE, id)).find((dir) => existsSync(dir)) ?? join(HERDR_PLUGIN_STATE, PLUGIN_ID);
 // run by hand, without herdr's HERDR_PLUGIN_STATE_DIR: a server started from a checkout keeps its
 // own dir while it runs; otherwise the dir herdr gives the plugin, where its startup hook wrote
-const STATE_DIR = process.env["HERDR_PLUGIN_STATE_DIR"]
-  ?? (pidIn(join(DEFAULT_STATE_DIR, "server.pid")) !== null || !existsSync(MANAGED_STATE_DIR) ? DEFAULT_STATE_DIR : MANAGED_STATE_DIR);
+const STATE_DIR = runningStateDir(process.env["HERDR_PLUGIN_STATE_DIR"]
+  ?? (pidIn(join(DEFAULT_STATE_DIR, "server.pid")) !== null || !existsSync(MANAGED_STATE_DIR) ? DEFAULT_STATE_DIR : MANAGED_STATE_DIR));
 const CONFIG_DIR = process.env["HERDR_PLUGIN_CONFIG_DIR"] ?? herdrConfigDir() ?? ownDir(join(homedir(), ".config"));
+adoptLegacyConfig(CONFIG_DIR);
 const PID_FILE = join(STATE_DIR, "server.pid");
 const LOG_FILE = join(STATE_DIR, "server.log");
 /** the server needs a moment to bind and open its first herdr connection */
@@ -79,12 +84,34 @@ const PHONE_AGAIN = platform() === "win32"
 function herdrConfigDir(): string | null {
   const herdr = Bun.which("herdr");
   if (herdr === null) return null;
-  try {
-    const result = Bun.spawnSync([herdr, "plugin", "config-dir", "devswha.herdr-web-ui"], { windowsHide: true, stdout: "pipe", stderr: "ignore", timeout: 3000 });
-    const dir = result.exitCode === 0 ? result.stdout.toString().trim() : "";
-    return dir !== "" && ENV_FILES.some((name) => existsSync(join(dir, name))) ? dir : null;
-  } catch {
-    return null;
+  for (const id of [PLUGIN_ID, LEGACY_PLUGIN_ID]) {
+    try {
+      const result = Bun.spawnSync([herdr, "plugin", "config-dir", id], { windowsHide: true, stdout: "pipe", stderr: "ignore", timeout: 3000 });
+      const dir = result.exitCode === 0 ? result.stdout.toString().trim() : "";
+      if (dir !== "" && ENV_FILES.some((name) => existsSync(join(dir, name)))) return dir;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * herdr keeps a plugin's config dir by its id (`plugins/config/<id>`), so the settings and token
+ * an install wrote under the old id are copied to the new id's dir the first time it has none.
+ * The old dir stays: the plugin under the old id, still installed until the installer removes
+ * it, reads it too.
+ */
+function adoptLegacyConfig(dir: string): void {
+  if (basename(dir) !== PLUGIN_ID || ENV_FILES.some((name) => existsSync(join(dir, name)))) return;
+  const legacy = join(dirname(dir), LEGACY_PLUGIN_ID);
+  for (const name of ENV_FILES) {
+    const from = join(legacy, name);
+    if (!existsSync(from)) continue;
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    copyFileSync(from, join(dir, name));
+    // the token is in there: keep the old file's owner-only mode
+    chmodSync(join(dir, name), statSync(from).mode & 0o777);
   }
 }
 
@@ -195,6 +222,17 @@ function recordedPid(): number | null {
 }
 
 /** the live process a pid file names, or null */
+/**
+ * herdr keeps a plugin's state dir by its id too. A server started under the old id keeps its pid
+ * in the old id's dir until it stops (the installer stops it before moving the install to the new
+ * id; `herdr plugin update` never moves the id), so `stop` and `status` read that dir while it runs.
+ */
+function runningStateDir(dir: string): string {
+  if (basename(dir) !== PLUGIN_ID || pidIn(join(dir, "server.pid")) !== null) return dir;
+  const legacy = join(dirname(dir), LEGACY_PLUGIN_ID);
+  return pidIn(join(legacy, "server.pid")) !== null ? legacy : dir;
+}
+
 function pidIn(file: string): number | null {
   if (!existsSync(file)) return null;
   const pid = Number(readFileSync(file, "utf8").trim());

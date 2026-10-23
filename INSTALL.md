@@ -62,30 +62,34 @@ It starts the plugin when herdr runs. Phone access stays optional: use the **Pho
 ## 3A. Install as a herdr plugin
 
 ```bash
-herdr plugin install devswha/herdr-web-ui --yes
+herdr plugin install devswha/ovis --yes
 ```
 
 herdr clones the repository, runs `bun install` and `bun run build`, then registers the plugin. This
 takes about a minute.
 
-- Success: the command exits 0 and `herdr plugin list` shows `devswha.herdr-web-ui`.
+- Success: the command exits 0 and `herdr plugin list` shows `devswha.ovis`.
 - The first build step is a check that prints, in one line, what is missing (`bun`, `node`, or a
   version too old) and how to fix it. `bun` or `node` not found means herdr runs build commands
   with **its own** environment: make sure they are on the `PATH` of the shell that started herdr
   (Bun installs to `~/.bun/bin`), ask the user to restart herdr from that shell, then retry.
 - On Windows, the plugin launcher reads the current user PATH and Bun's user-local directory,
   so installing Bun while herdr is running does not require restarting herdr.
-- "installing over a locally linked plugin is refused": run `herdr plugin unlink devswha.herdr-web-ui`
+- "installing over a locally linked plugin is refused": run `herdr plugin unlink devswha.ovis`
   first.
+- Installed before the rename, the plugin is `devswha.herdr-web-ui`. The one-line installer moves
+  it: it stops that plugin's server, installs `devswha.ovis`, copies the `env` and `.env` files
+  from `herdr plugin config-dir devswha.herdr-web-ui` to the new id's config dir (unless that one
+  has its own), then uninstalls the old id. By hand, do the same in that order.
 
 Start it now. Otherwise it starts the next time herdr starts:
 
 ```bash
-herdr plugin action invoke devswha.herdr-web-ui.start
+herdr plugin action invoke devswha.ovis.start
 ```
 
-On Windows, the start and stop action IDs are `devswha.herdr-web-ui.start-windows` and
-`devswha.herdr-web-ui.stop-windows`. The menu titles are the same on every platform.
+On Windows, the start and stop action IDs are `devswha.ovis.start-windows` and
+`devswha.ovis.stop-windows`. The menu titles are the same on every platform.
 
 The command only queues the action and prints herdr's JSON acknowledgement; the action's own output
 (`Ovis listening at http://127.0.0.1:7317`, and possibly `no token set: ...`, expected for a
@@ -94,7 +98,7 @@ local-only install) goes to the plugin log (`herdr plugin log list`). Check it w
 Plugin settings do **not** come from the user's shell. They go in an `env` file (no dot):
 
 ```bash
-CONFIG_DIR="$(herdr plugin config-dir devswha.herdr-web-ui)"
+CONFIG_DIR="$(herdr plugin config-dir devswha.ovis)"
 echo "$CONFIG_DIR/env"
 ```
 
@@ -105,22 +109,22 @@ relying on `.env`. The plugin path comes from `herdr plugin list`, since herdr 0
 checkouts. Run:
 
 ```bash
-root=$(herdr plugin list --json | bun -e 'const d = JSON.parse(await Bun.stdin.text()); console.log(d.result.plugins.find((p) => p.plugin_id === "devswha.herdr-web-ui")?.plugin_root ?? "")')
+root=$(herdr plugin list --json | bun -e 'const d = JSON.parse(await Bun.stdin.text()); console.log(d.result.plugins.find((p) => p.plugin_id === "devswha.ovis")?.plugin_root ?? "")')
 bun "$root/scripts/plugin.ts" status
 ```
 
 This prints the files it read. After editing, restart the plugin:
 
 ```bash
-herdr plugin action invoke devswha.herdr-web-ui.stop
-herdr plugin action invoke devswha.herdr-web-ui.start
+herdr plugin action invoke devswha.ovis.stop
+herdr plugin action invoke devswha.ovis.start
 ```
 
 ## 3B. Install from source
 
 ```bash
-git clone https://github.com/devswha/herdr-web-ui.git
-cd herdr-web-ui
+git clone https://github.com/devswha/ovis.git
+cd ovis
 bun install
 bun run start
 ```
@@ -175,7 +179,7 @@ code, or the exact command still to run. Who gets in:
   then run:
 
   ```bash
-  root=$(herdr plugin list --json | bun -e 'const d = JSON.parse(await Bun.stdin.text()); console.log(d.result.plugins.find((p) => p.plugin_id === "devswha.herdr-web-ui")?.plugin_root ?? "")')
+  root=$(herdr plugin list --json | bun -e 'const d = JSON.parse(await Bun.stdin.text()); console.log(d.result.plugins.find((p) => p.plugin_id === "devswha.ovis")?.plugin_root ?? "")')
   bun "$root/scripts/plugin.ts" pair
   ```
 
@@ -185,7 +189,7 @@ code, or the exact command still to run. Who gets in:
   without printing it. For the plugin:
 
    ```bash
-   CONFIG_ENV="$(herdr plugin config-dir devswha.herdr-web-ui)/env"
+   CONFIG_ENV="$(herdr plugin config-dir devswha.ovis)/env"
    touch "$CONFIG_ENV" && chmod 600 "$CONFIG_ENV"
    printf 'OVIS_TOKEN=%s\n' "$(openssl rand -hex 32)" >> "$CONFIG_ENV"
    ```
@@ -219,7 +223,7 @@ The old `HERDR_WEB_*` names still work. The [user guide](docs/guide.md#configura
 - Settings → **About** → **Update and restart** when a new release (`vX.Y.Z`) is out. It works for
   both install methods. The new
   version is built separately and the app restarts only if the build and health check pass.
-- Plugin alternative: `herdr plugin install devswha/herdr-web-ui --yes` again. It replaces the
+- Plugin alternative: `herdr plugin install devswha/ovis --yes` again. It replaces the
   checkout; restart the plugin afterwards.
 - Source alternative: `git pull` on `main`, then restart `bun run start`. The in-app updater only
   offers published releases (`vX.Y.Z` tags); `main` can be ahead of the latest release.
@@ -227,8 +231,9 @@ The old `HERDR_WEB_*` names still work. The [user guide](docs/guide.md#configura
 ## Uninstall
 
 ```bash
-herdr plugin action invoke devswha.herdr-web-ui.stop
-herdr plugin uninstall devswha.herdr-web-ui
+# an install from before the rename runs, or is registered, under its old id until the installer moves it
+herdr plugin action invoke devswha.ovis.stop || herdr plugin action invoke devswha.herdr-web-ui.stop
+herdr plugin uninstall devswha.ovis || herdr plugin uninstall devswha.herdr-web-ui
 ```
 
 Uninstall removes herdr's managed checkout. It does not touch `~/.config/ovis` (push

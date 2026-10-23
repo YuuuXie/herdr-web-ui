@@ -1,7 +1,7 @@
 # Ovis for Mac
 
 The one-click setup for a Mac, downloaded from https://ovis.sh as `Ovis.dmg`. The phone apps
-need herdr web UI running on the computer; this app sets that up without a terminal and shows the
+need the Ovis server running on the computer; this app sets that up without a terminal and shows the
 QR code the phone app scans.
 
 It is a small SwiftUI app with no code of its own for installing: everything goes through what a

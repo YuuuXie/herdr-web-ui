@@ -240,6 +240,23 @@ describe("port", () => {
 });
 
 describe("stop", () => {
+  it("stops the server an install started under its old id after herdr updated the plugin to the new id", async () => {
+    // herdr hands the updated plugin plugins/devswha.ovis while the running server's record is under devswha.herdr-web-ui
+    const plugins = join(scratch, "plugins");
+    const legacy = join(plugins, "devswha.herdr-web-ui");
+    mkdirSync(legacy, { recursive: true });
+    const server = spawn("sleep", ["30"], { detached: true, stdio: "ignore" });
+    try {
+      writeFileSync(join(legacy, "server.pid"), `${server.pid}\n`);
+      const stopped = await run("stop", { HERDR_PLUGIN_STATE_DIR: join(plugins, "devswha.ovis"), PORT: "1" });
+      expect(stopped.exitCode, stopped.err).toBe(0);
+      expect(existsSync(join(legacy, "server.pid"))).toBe(false);
+      expect(() => process.kill(server.pid!, 0)).toThrow();
+    } finally {
+      try { process.kill(-server.pid!, "SIGKILL"); } catch { /* already stopped */ }
+    }
+  });
+
   it("returns only once the server's process group is gone", async () => {
     // a server that takes a second to exit, as the supervisor does while its bridge shuts down
     const server = spawn("sh", ["-c", "trap 'sleep 1; exit 0' TERM; while :; do sleep 0.1; done"], { detached: true, stdio: "ignore" });
@@ -281,7 +298,7 @@ describe("stop", () => {
 
 describe("the state dir when run by hand", () => {
   const legacy = () => join(scratch, ".local", "state", "herdr-web-ui");
-  const managed = (base = join(scratch, ".local", "state")) => join(base, "herdr", "plugins", "devswha.herdr-web-ui");
+  const managed = (base = join(scratch, ".local", "state")) => join(base, "herdr", "plugins", "devswha.ovis");
   const pidFile = (dir: string, pid: number) => { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, "server.pid"), `${pid}\n`); };
   const byHand = (extra: Record<string, string | undefined> = {}) => run("status", { HERDR_PLUGIN_STATE_DIR: undefined, PORT: "1", ...extra });
 

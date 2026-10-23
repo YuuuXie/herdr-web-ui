@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "herdr-web-ui-app",
+      "name": "ovis-app",
       "dependencies": {
         "@capacitor/android": "8.5.3",
         "@capacitor/barcode-scanner": "3.1.3",
@@ -14,6 +14,9 @@
         "@capacitor/cli": "8.5.3",
       },
     },
+  },
+  "patchedDependencies": {
+    "@capacitor/barcode-scanner@3.1.3": "patches/@capacitor%2Fbarcode-scanner@3.1.3.patch",
   },
   "packages": {
     "@capacitor/android": ["@capacitor/android@8.5.3", "", { "peerDependencies": { "@capacitor/core": "^8.5.0" } }, "sha512-ilH4gSSz3DrketMkzDVAvY9JsWJ//rCQnECLTdcFRO7xXDogwAbUvQAnIAbiqefwV/D1xfjEL4Gw1MJXEcaA9g=="],

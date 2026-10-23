@@ -20,14 +20,32 @@
 #   OVIS_TAILSCALE_HTTPS_PORT=<port>   serve the app on that HTTPS port only, keeping 443 free
 set -eu
 
-REPO="devswha/herdr-web-ui"
-PLUGIN="devswha.herdr-web-ui"
+REPO="devswha/ovis"
+PLUGIN="devswha.ovis"
+# the id before the rename: an install under it moves to PLUGIN, keeping its config
+LEGACY_PLUGIN="devswha.herdr-web-ui"
 BIN_DIR="$HOME/.local/bin"
 NODE_DIR="$HOME/.local/share/ovis/node"
 # Official digests from nodejs.org/dist/v22.23.2/SHASUMS256.txt, as scripts/build-remote-bundle.ts pins them
 NODE_VERSION="v22.23.2"
 
 say() { printf '%s\n' "Ovis: $*"; }
+
+# shellcheck disable=SC2016 # JavaScript, not shell
+plugin_root() { herdr plugin list --json | bun -e 'const d = JSON.parse(await Bun.stdin.text()); console.log(d.result.plugins.find((p) => p.plugin_id === process.argv[1])?.plugin_root ?? "")' "$1"; }
+
+# herdr keeps a plugin's config by its id: the old id's env files (the token among them) go to
+# the new id's dir unless it has its own, with their owner-only mode
+adopt_legacy_config() {
+  old=$(herdr plugin config-dir "$LEGACY_PLUGIN" 2>/dev/null </dev/null) || return 0
+  new=$(herdr plugin config-dir "$PLUGIN" 2>/dev/null </dev/null) || return 0
+  [ ! -e "$new/env" ] && [ ! -e "$new/.env" ] || return 0
+  for name in env .env; do
+    [ -e "$old/$name" ] || continue
+    mkdir -p "$new"
+    cp -p "$old/$name" "$new/$name"
+  done
+}
 # a clickable address in a terminal (OSC 8); $terminal is set once, since $(link …) runs in a pipe
 # shellcheck disable=SC1003 # the backslashes end OSC 8 escapes (ESC \\), no quote is escaped
 link() { if [ "$terminal" = 1 ]; then printf '\033]8;;%s\033\\%s\033]8;;\033\\' "$1" "$1"; else printf '%s' "$1"; fi; }
@@ -39,6 +57,17 @@ latest_release() {
   git ls-remote --tags --refs "https://github.com/$REPO.git" 'v*' 2>/dev/null |
     sed -n 's|.*refs/tags/\(v[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)$|\1|p' |
     sort -t. -k1.2,1n -k2,2n -k3,3n | tail -n 1
+}
+# The plugin id a ref installs under, or nothing when it cannot be told. Releases before the rename
+# (0.4.13 and older) name the old id. Its manifest says so; raw.githubusercontent.com can be blocked
+# where github.com is not, and then a release tag's version tells it.
+ref_plugin_id() {
+  ref_id=$(curl -fsSL --max-time 10 "https://raw.githubusercontent.com/$REPO/$1/herdr-plugin.toml" 2>/dev/null </dev/null |
+    sed -n '/^id *=/{s/^id *= *"\([^"]*\)".*/\1/p;q;}') || ref_id=""
+  if [ -z "$ref_id" ] && printf '%s\n' "$1" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+    if at_least 0.4.14 "${1#v}"; then ref_id=$PLUGIN; else ref_id=$LEGACY_PLUGIN; fi
+  fi
+  printf '%s' "$ref_id"
 }
 # at_least 1.4.0 1.10.2: is the second dotted version the first or newer
 at_least() {
@@ -260,12 +289,40 @@ main() {
   node_major=$(node --version 2>/dev/null | sed -n 's/^v\([0-9][0-9]*\).*/\1/p')
   [ "${node_major:-0}" -ge 18 ] || install_node
 
-  if herdr plugin list 2>/dev/null | grep -q "$PLUGIN "; then
-    say "already installed as a herdr plugin; Settings → Updates keeps it current"
-  else
+  # The ref to install is settled before anything moves: a release from before the rename still
+  # names the plugin by its old id, and installing it cannot move an install to the new one
+  ref=""
+  move=1
+  if ! herdr plugin list 2>/dev/null | grep -q "$PLUGIN "; then
     need git
     ref=${OVIS_REF:-${HERDR_WEB_UI_REF:-$(latest_release)}}
     [ -n "$ref" ] || fail "could not look up the latest release on github.com. Check the connection and run this again."
+    case "$(ref_plugin_id "$ref")" in
+      # that release installs, runs and updates under the old id: the move waits for a release
+      # that names the new one, which Settings → Updates or this script brings
+      "$LEGACY_PLUGIN") PLUGIN=$LEGACY_PLUGIN ;;
+      # a branch whose manifest cannot be read: an install under the old id is left running, since
+      # the ref may not be able to move it
+      "") move=0 ;;
+    esac
+  fi
+
+  legacy_root=""
+  if [ "$move" = 0 ] && herdr plugin list 2>/dev/null | grep -q "$LEGACY_PLUGIN "; then
+    say "could not read the plugin id at $ref, so the install under $LEGACY_PLUGIN is left as it is; run this again to move it"
+  elif [ "$PLUGIN" != "$LEGACY_PLUGIN" ] && herdr plugin list 2>/dev/null | grep -q "$LEGACY_PLUGIN "; then
+    legacy_root=$(plugin_root "$LEGACY_PLUGIN")
+    say "moving the installed plugin to its Ovis id; its settings and token come along"
+    # stopped first: removed with its server up, the old checkout would keep serving, and the new
+    # id's start would find the port answering and leave it
+    if [ -n "$legacy_root" ] && ! bun "$legacy_root/scripts/plugin.ts" stop </dev/null >/dev/null 2>&1; then
+      fail "could not stop the server of the old id, so nothing was moved. Stop it (herdr plugin action invoke $LEGACY_PLUGIN.stop, or restart herdr), then run this again."
+    fi
+  fi
+
+  if herdr plugin list 2>/dev/null | grep -q "$PLUGIN "; then
+    say "already installed as a herdr plugin; Settings → Updates keeps it current"
+  else
     say "installing the herdr plugin at $ref (herdr clones and builds it: about a minute)"
     # herdr previews the whole manifest first; on success its last word is enough, on failure all of it
     log=$(mktemp)
@@ -280,8 +337,18 @@ main() {
     fi
   fi
 
-  root=$(herdr plugin list --json | bun -e 'const d = JSON.parse(await Bun.stdin.text()); console.log(d.result.plugins.find((p) => p.plugin_id === "'"$PLUGIN"'")?.plugin_root ?? "")')
+  root=$(plugin_root "$PLUGIN")
+  # the id unknown before the install: the ref may have named the old one
+  if [ -z "$root" ] && [ "$move" = 0 ]; then
+    PLUGIN=$LEGACY_PLUGIN
+    root=$(plugin_root "$PLUGIN")
+  fi
   [ -n "$root" ] || fail "herdr does not list the plugin after installing it; see: herdr plugin list"
+
+  if [ "$PLUGIN" != "$LEGACY_PLUGIN" ] && [ "$move" = 1 ] && herdr plugin list 2>/dev/null | grep -q "$LEGACY_PLUGIN "; then
+    adopt_legacy_config
+    herdr plugin uninstall "$LEGACY_PLUGIN" </dev/null >/dev/null || fail "could not remove the plugin's old id; run: herdr plugin uninstall $LEGACY_PLUGIN"
+  fi
 
   if herdr status server --json 2>/dev/null | grep -q '"running":true'; then
     # the action only queues the start (its output goes to herdr's plugin log), so wait for it here

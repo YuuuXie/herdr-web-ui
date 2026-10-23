@@ -1,10 +1,10 @@
 # Contributing
 
-Thanks for helping. Bugs and ideas go in an [issue](https://github.com/devswha/herdr-web-ui/issues/new/choose);
+Thanks for helping. Bugs and ideas go in an [issue](https://github.com/devswha/ovis/issues/new/choose);
 security problems never do: see [SECURITY.md](SECURITY.md). For a larger change, open an issue first so
 the approach can be agreed before you build it. Small fixes can go straight to a PR.
 
-**Features.** Open a [feature request](https://github.com/devswha/herdr-web-ui/issues/new?template=feature_request.yml)
+**Features.** Open a [feature request](https://github.com/devswha/ovis/issues/new?template=feature_request.yml)
 and wait for a maintainer's yes before you write code; a feature PR without one may be closed, however
 well it is built. The app is a bridge to herdr, so a feature should either mirror something herdr's
 own TUI does, or meet a need that widely used coding-agent apps already meet (the Codex and Claude
@@ -89,9 +89,13 @@ running terminals: see [development](docs/development.md#checks).
 - **Theme colors:** edit them only in the theme blocks of `src/styles.css`. Never edit
   `src/lib/themes.generated.ts` or the generated copies in DESIGN.md, `index.html` and
   `public/manifest.webmanifest`; run `bun run generate:themes`.
-- **UI text:** every new `t("…")` string needs an entry in `src/lib/i18n.ko.ts`, `i18n.ja.ts`
-  and `i18n.zh.ts`, with the same placeholders. `bun run test:unit` fails on a missing, unused or
-  untranslated entry.
+- **UI text:** every new `t("…")` string needs a Korean, Japanese and Simplified Chinese entry with
+  the same placeholders. A string that only one feature's files use goes in that feature's files in
+  `src/lib/i18n/` when it has them (`settings.ko.ts`, `settings.ja.ts` and `settings.zh.ts` for the
+  Settings dialog; each file's header lists its feature's files). Any other string goes in
+  `src/lib/i18n.ko.ts`, `i18n.ja.ts` and `i18n.zh.ts`, and so does a feature's string once another
+  feature uses it too. `bun run test:unit` fails on a missing, unused or untranslated entry, and on one
+  kept in the wrong file or in different files across the three languages.
 - **UI languages:** the app keeps English, Korean, Japanese and Simplified Chinese and does not take
   new ones. Every language has to translate each later string, so a PR that adds a language is
   closed.

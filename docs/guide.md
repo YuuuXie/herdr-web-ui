@@ -76,14 +76,14 @@ On a first install it mentions a GitHub star, once, unless the account the [gh C
 the plugin's **Phone setup** action inside herdr to see the address, QR and a pairing code.
 
 ```bash
-herdr plugin install devswha/herdr-web-ui
+herdr plugin install devswha/ovis
 ```
 
 **From a checkout:**
 
 ```bash
-git clone https://github.com/devswha/herdr-web-ui.git
-cd herdr-web-ui
+git clone https://github.com/devswha/ovis.git
+cd ovis
 bun install
 bun run start
 ```
@@ -116,12 +116,12 @@ tab, and you type in whichever half is active; the other half shows that tab at 
 
 ### In a terminal
 
-**The phone address, again:** run the one-line installer again. On a PC where the app is installed it installs nothing and prints the address and its QR code, serving the app to your tailnet first if nothing does yet. It finds the version that actually runs: herdr's plugin directory keeps the version first installed, and **Settings → Updates** runs newer ones from `~/.config/herdr-web-ui/updates`. From a checkout, `bun scripts/plugin.ts phone` does the same.
+**The phone address, again:** run the one-line installer again. On a PC where the app is installed it installs nothing and prints the address and its QR code, serving the app to your tailnet first if nothing does yet. It finds the version that actually runs: herdr's plugin directory keeps the version first installed, and **Settings → Updates** runs newer ones from `~/.config/ovis/updates`. From a checkout, `bun scripts/plugin.ts phone` does the same.
 
 **A pairing code, on a PC with no browser of its own:**
 
 ```bash
-root=$(herdr plugin list --json | bun -e 'const d = JSON.parse(await Bun.stdin.text()); console.log(d.result.plugins.find((p) => p.plugin_id === "devswha.herdr-web-ui")?.plugin_root ?? "")')
+root=$(herdr plugin list --json | bun -e 'const d = JSON.parse(await Bun.stdin.text()); console.log(d.result.plugins.find((p) => p.plugin_id === "devswha.ovis")?.plugin_root ?? "")')
 bun "$root/scripts/plugin.ts" pair   # plugin install
 bun scripts/plugin.ts pair           # from a checkout
 ```
@@ -129,19 +129,20 @@ bun scripts/plugin.ts pair           # from a checkout
 `pair` prints the code, the address the phone opens when Tailscale serves one, and that address as a QR code. Neither is a herdr action: herdr keeps an action's output in its log, and a pairing code belongs on the screen. The actions start, stop and report on the server:
 
 ```bash
-herdr plugin action invoke devswha.herdr-web-ui.start    # leaves a running server alone
-herdr plugin action invoke devswha.herdr-web-ui.status
-herdr plugin action invoke devswha.herdr-web-ui.phone    # visible phone setup pane
-herdr plugin action invoke devswha.herdr-web-ui.stop
+herdr plugin action invoke devswha.ovis.start    # leaves a running server alone
+herdr plugin action invoke devswha.ovis.status
+herdr plugin action invoke devswha.ovis.phone    # visible phone setup pane
+herdr plugin action invoke devswha.ovis.stop
 ```
 
-Its PID and log live under `HERDR_PLUGIN_STATE_DIR`. For persistent settings (see [Configuration](#configuration)), add `KEY=value` lines to the `env` file (no dot) in the directory that `herdr plugin config-dir devswha.herdr-web-ui` prints. A plugin checkout from 0.3.25 on also reads `.env` there, which wins where both set a key; an older one needs a plugin reinstall first, since in-app updates do not replace the checkout. The plugin's `status` prints the files it read. Protect that file if it holds a token.
+Its PID and log live under `HERDR_PLUGIN_STATE_DIR`. For persistent settings (see [Configuration](#configuration)), add `KEY=value` lines to the `env` file (no dot) in the directory that `herdr plugin config-dir devswha.ovis` prints. A plugin checkout from 0.3.25 on also reads `.env` there, which wins where both set a key; an older one needs a plugin reinstall first, since in-app updates do not replace the checkout. The plugin's `status` prints the files it read. Protect that file if it holds a token.
 
 ### Uninstall
 
 ```bash
-herdr plugin action invoke devswha.herdr-web-ui.stop
-herdr plugin uninstall devswha.herdr-web-ui
+# an install from before the rename runs, or is registered, under its old id until the installer moves it
+herdr plugin action invoke devswha.ovis.stop || herdr plugin action invoke devswha.herdr-web-ui.stop
+herdr plugin uninstall devswha.ovis || herdr plugin uninstall devswha.herdr-web-ui
 tailscale serve --https=<port> off    # the port the installer printed, if it served the app
 ```
 
@@ -158,7 +159,7 @@ Every agent herdr runs shows up with its live status, terminal and alerts. The c
 | **Copilot CLI** | Linux native `events.jsonl` when Herdr's Copilot `SessionStart` hook reports an exact UUID and the pane's unique foreground process holds **only that session** in its own `COPILOT_HOME` (otherwise its own `HOME/.copilot`). Follows the existing Codex-style chat presentation for text, tool calls/results and recorded model/effort. In the effective Copilot home (including any `COPILOT_HOME` or `--config-dir`), run `herdr integration install copilot` before starting Copilot. Choose **GitHub Copilot** in **New workspace** or **New tab with agent…** where it is installed, or run `copilot` in a Herdr pane's **Terminal**. Ovis neither installs the hook automatically nor changes your home. This native path was verified on Linux with Copilot CLI 1.0.102-1 and Herdr 0.9.3. Herdr may keep the old ID after `/new`, `/clear` or in-process `/resume`; Copilot may also hold older sessions open. If the current session cannot be proved, chat uses Terminal instead of showing a guessed or stale session. Exit Copilot and start a fresh process (resume there if needed) to regain native chat after an ambiguous in-process switch. Missing hooks, ambiguous holds and macOS/Windows use Terminal. | — approvals and menus use Terminal |
 | **omp** | Native session file | ✓ approvals, questions, and the model picker of `/model` and `/switch` (picked for the session: the chat sends `/model` as `/switch`, since omp's own `/model` opens its role hub) |
 | **omo** | Native session file, found through the pane's process tree | ✓ the `/model` list (picked for the session); other menus — use Terminal |
-| **gjc** | Native session file identified by GJC's SDK broker and the pane's process | — use Terminal |
+| **gjc** | Native session file reported by the web UI's GJC extension, verified against the pane's process | — use Terminal |
 | **pi** | Native session file, resolved through herdr; after `/tree`, the branch in play | ✓ its dialogs: a question, a confirmation, an answer typed in |
 | **Command Code** (`cmd`) | Native session file under `~/.commandcode/projects/`, resolved through herdr; after `/tree`, the branch in play | ✓ its permission prompts: Yes / Yes, don't ask again / No |
 | **OpenCode** | Native session in OpenCode 2's own database, resolved through herdr: `~/.local/share/opencode/opencode.db` (`%USERPROFILE%\.local\share\opencode\opencode.db` on Windows), or where the server's `XDG_DATA_HOME` or `OPENCODE_DB` puts it | ✓ its questions on OpenCode 2.0 or later, answered through its background service (`~/.local/state/opencode/service.json`, or under the server's `XDG_STATE_HOME`) one question at a time, with Back to change an earlier one; other prompts, and OpenCode 1 — use Terminal |
@@ -174,13 +175,33 @@ Copilot home and that its transcript does not exist yet. Existing history still 
 SessionStart hook; unreadable files, explicit resume/continue launches and ambiguous identities
 keep the terminal fallback rather than appearing as an empty conversation.
 
-GJC chat requires GJC 0.18.9 or later for its broker-bound SDK session CLI, with `gjc`
-on the server PC's PATH and its SDK broker already running. An older GJC opens in Terminal.
-Git must also be on PATH for the SDK's workspace-scope discovery.
-The bridge asks the broker which saved session belongs to the pane's GJC process;
-it does not start a broker or guess from the screen, session title or newest file.
-Missing, ambiguous or unreadable SDK identity uses Terminal instead. Terminal input,
-status tracking and prompt handling are unchanged.
+GJC chat and GJC done alerts use a native extension rather than SDK session queries. From
+this checkout on each PC that runs GJC, explicitly install the extension:
+
+```sh
+bun scripts/install-gjc-integration.ts
+```
+
+Restart existing GJC sessions to load it. The installer writes only the web UI's extension;
+it does not replace GJC settings or other extensions. To remove it, run the same command
+with `--remove` and restart GJC again. No running session is modified by the installer.
+A remote PC with only the runtime bundle has no checkout: run the installer with the bundle's
+own Bun from its folder, `cd ~/.local/share/herdr-web-ui/remote-vN && bin/bun
+scripts/install-gjc-integration.ts` (on Windows, `bin\bun.exe` in
+`%LOCALAPPDATA%\herdr-web-ui\remote-vN`), where `N` is the bundle version.
+
+The extension reports its current session ID and exact file path on session changes and
+refreshes a short-lived process binding. The bridge checks the process identity and native
+transcript header instead of invoking `gjc sdk` or Git. The default
+`~/.gjc/agent/sessions/` store is supported; custom stores are not inferred.
+Missing, expired, ambiguous or unreadable bindings use Terminal. Existing sessions without
+the extension also use Terminal; there is no SDK fallback. The extension API was probed
+with GJC 0.18.12. Terminal input and prompt handling are unchanged.
+
+Status tracking reads the same binding. Without it, a GJC pane keeps herdr's own status,
+which follows GJC's provider child: a finished turn can stay on working, so no done alert
+comes and no INPUT shows for an open question. Install the extension and restart GJC to
+get both chat and done alerts back.
 
 Devin sessions are never selected by directory or recency alone. A plain `devin` shows the
 terminal text, since herdr does not report its session without its Devin integration; a session
@@ -517,10 +538,10 @@ An update is built and typechecked in a private checkout while the current serve
 After a herdr plugin reinstall, or a `git pull` and a build, in the checkout the app runs from, reloading the page cannot bring the update in: the server keeps running its old code. The page says so on its next status read, in place of the **Reload app** notice, and asks you to restart Ovis on the PC. The notice goes away once it restarts:
 
 ```sh
-herdr plugin action invoke devswha.herdr-web-ui.stop    # plugin install
-herdr plugin action invoke devswha.herdr-web-ui.start
-herdr plugin action invoke devswha.herdr-web-ui.stop-windows    # on Windows
-herdr plugin action invoke devswha.herdr-web-ui.start-windows
+herdr plugin action invoke devswha.ovis.stop    # plugin install
+herdr plugin action invoke devswha.ovis.start
+herdr plugin action invoke devswha.ovis.stop-windows    # on Windows
+herdr plugin action invoke devswha.ovis.start-windows
 ```
 
 From a checkout, stop `bun run start` and run it again.
@@ -699,7 +720,7 @@ The chat needs the agent's own session file. Check that the agent runs in a herd
 <details>
 <summary><b>The colors look too dark, or the light theme looks dark, in Samsung Internet.</b></summary>
 
-Samsung Internet has a forced dark mode that repaints every page, including one that brings its own light and dark themes, as this app does. A light theme comes out dark, and a dark one is darkened a second time: similar shades run together, and the bars of the plan meters can look empty. Turn off **Force dark mode for web content** (**웹 콘텐츠에 어두운 화면 모드 강제 적용**) in Samsung Internet's settings, or open the app in Chrome. Reported on a Galaxy Tab S7+ ([#451](https://github.com/devswha/herdr-web-ui/issues/451)).
+Samsung Internet has a forced dark mode that repaints every page, including one that brings its own light and dark themes, as this app does. A light theme comes out dark, and a dark one is darkened a second time: similar shades run together, and the bars of the plan meters can look empty. Turn off **Force dark mode for web content** (**웹 콘텐츠에 어두운 화면 모드 강제 적용**) in Samsung Internet's settings, or open the app in Chrome. Reported on a Galaxy Tab S7+ ([#451](https://github.com/devswha/ovis/issues/451)).
 </details>
 
 <details>

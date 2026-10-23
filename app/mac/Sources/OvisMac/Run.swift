@@ -1,7 +1,7 @@
 import Foundation
 
 enum Ovis {
-    static let pluginID = "devswha.herdr-web-ui"
+    static let pluginID = "devswha.ovis"
     static let agentLabel = "sh.ovis.herdr-server"
     static let installScript = URL(string: "https://ovis.sh/install.sh")!
     static let support = URL(string: "https://ovis.sh/support/")!
