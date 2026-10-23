@@ -11,3 +11,5 @@
   also stops serving the old conversation.
 - Copilot foreground discovery revalidates log checkpoints after rewrites and recovers
   from large polling gaps using bounded lifecycle-log reads.
+- Copilot sessions with a complete CLI log containing no lifecycle events still use
+  the verified Herdr report and unique process-held marker to read existing history.

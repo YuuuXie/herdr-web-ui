@@ -31,6 +31,7 @@ function logBoundary(fd: number, size: number): string | null {
 function loggedForeground(pid: number, logDirectories: readonly string[]): ForegroundBinding | null | undefined {
   const directory = opendirSync(`/proc/${pid}/fd`);
   let found: ForegroundBinding | null = null;
+  let logFound = false;
   let count = 0;
   try {
     for (let descriptor = directory.readSync(); descriptor; descriptor = directory.readSync()) {
@@ -40,7 +41,8 @@ function loggedForeground(pid: number, logDirectories: readonly string[]): Foreg
       catch { return undefined; }
       if (target.endsWith(" (deleted)") && LOG_NAME.test(basename(target.slice(0, -10)))) return undefined;
       if (!logDirectories.some((path) => dirname(target) === path) || LOG_NAME.exec(basename(target))?.[1] !== String(pid)) continue;
-      if (found !== null) return undefined;
+      if (logFound) return undefined;
+      logFound = true;
       try {
         if (realpathSync(target) !== target) return undefined;
         const fd = openSync(`/proc/${pid}/fd/${descriptor.name}`, constants.O_RDONLY | constants.O_NONBLOCK);
@@ -53,7 +55,6 @@ function loggedForeground(pid: number, logDirectories: readonly string[]): Foreg
             && stat.size >= cached.size && stat.size - cached.size <= LOG_WINDOW_BYTES
             && (stat.size !== cached.size || (stat.mtimeMs === cached.mtimeMs && stat.ctimeMs === cached.ctimeMs))
             && logBoundary(fd, cached.size) === cached.boundary;
-          if (!same) foregroundCheckpoints.delete(pid);
           const epoch = same ? cached.epoch : randomUUID();
           const start = same ? cached.size : Math.max(0, stat.size - LOG_WINDOW_BYTES);
           const bytes = Buffer.alloc(stat.size - start);
@@ -81,7 +82,11 @@ function loggedForeground(pid: number, logDirectories: readonly string[]): Foreg
             }
             position += Buffer.byteLength(line) + 1;
           }
-          if (!observed && !same) return undefined;
+          if (!observed && !same) {
+            // A complete non-lifecycle log adds no identity; the report and held marker still must agree.
+            if (start === 0 && cached === undefined) continue;
+            return undefined;
+          }
           if (selected === null) return undefined;
           if (foregroundCheckpoints.size >= 256 && !foregroundCheckpoints.has(pid)) foregroundCheckpoints.delete(foregroundCheckpoints.keys().next().value!);
           foregroundCheckpoints.set(pid, {
