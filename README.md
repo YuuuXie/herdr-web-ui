@@ -92,7 +92,7 @@ https://github.com/user-attachments/assets/d854dbb6-64bd-4eba-81c7-fbd3f525726b
 curl -fsSL https://ovis.sh/install.sh | sh
 ```
 
-Linux with glibc (x64, arm64) or macOS (Intel, Apple Silicon); not Alpine/musl or 32-bit ARM. Have `curl`, Git and `tar` installed; installing a missing Bun also needs Bash and `unzip`. Requires herdr 0.9.0+, Bun 1.4+ and Node 18+. The installer adds missing prerequisites for your user, upgrades an older Bun and installs Node 22 if Node is missing or older than 18, then installs the app as a herdr plugin. If an existing herdr installation is older than 0.9.0, update and restart herdr yourself before rerunning the installer.
+Linux with glibc (x64, arm64) or macOS (Intel, Apple Silicon); not Alpine/musl or 32-bit ARM. Have `curl`, Git and `tar` installed; installing a missing Bun also needs Bash and `unzip`. Requires herdr 0.9.0+ and Bun 1.4+; Node is not needed. The installer adds missing prerequisites for your user, upgrades an older Bun, then installs the app as a herdr plugin. Terminals run on the Rust PTY host each release ships, checked against its SHA-256; a Node 18+ already on the PC is only its fallback. If an existing herdr installation is older than 0.9.0, update and restart herdr yourself before rerunning the installer.
 
 With the default listen address and Tailscale running, successful HTTPS setup provides a tailnet address and QR code. Without a configured token, your devices normally get in without a code when `tailscale serve` reports the same login as this PC's owner. If your own phone is asked to pair anyway, `OVIS_TAILSCALE_SERVE_ONLY=1` allows the no-login path only when Tailscale confirms one login owns the tailnet with no tagged nodes, and serve is the sole route to this port. Never enable it when a public proxy, tunnel or other forwarding server also reaches the port ([Access and safety](docs/guide.md#access-and-safety)).
 
@@ -105,10 +105,10 @@ irm https://ovis.sh/install.ps1 | iex
 Requires [Git for Windows](https://git-scm.com/download/win). Installs missing herdr and Bun for your user, then installs the same plugin. No Node or WSL is needed. Open **Phone setup** in herdr for phone access. Windows terminals use the [screen mirror](docs/remote-pcs.md#windows-pcs), with typing and a fixed grid, until herdr supports terminal attach there.
 
 <p align="center">
-  <img src="docs/screenshots/install.png" width="720" alt="Installer output: Bun, Node and the herdr plugin install, then tailscale serve publishes the app and a QR code for the phone appears.">
+  <img src="docs/screenshots/install.png" width="720" alt="Installer output: Bun and the herdr plugin install, then tailscale serve publishes the app and a QR code for the phone appears.">
 </p>
 
-Already have herdr 0.9.0+, Bun 1.4+ and Node 18+ (Node isn't needed on Windows)? Install just the plugin:
+Already have herdr 0.9.0+ and Bun 1.4+? Install just the plugin:
 
 ```bash
 herdr plugin install devswha/ovis

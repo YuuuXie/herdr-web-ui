@@ -43,8 +43,7 @@ assert.ok(RUST_HOST, `build the Rust host first (${RUST_SIDECAR_BUILD}) or set O
 const TICK_MS = 1000 / Number(Bun.spawnSync(["getconf", "CLK_TCK"]).stdout.toString().trim() || 100);
 
 function use(host: Host): void {
-  if (host === "rust") process.env["OVIS_PTY_SIDECAR"] = "rust";
-  else delete process.env["OVIS_PTY_SIDECAR"];
+  process.env["OVIS_PTY_SIDECAR"] = host;
 }
 
 function stat(pid: number): string[] | null {

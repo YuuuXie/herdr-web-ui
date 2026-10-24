@@ -152,6 +152,12 @@ export interface ChatViewProps {
   onTerminalOutput?: (listener: (() => void) | null) => void;
   /** bumped when a composer message goes out, before the transcript holds it */
   sentKey?: number;
+  /** bumped once this browser's own message from the box was accepted at once, with the navigation
+   * generation it went out at: the chat follows it to the end unless the reader navigated since */
+  localSend?: { key: number; navigationGeneration: number };
+  /** the reader's navigation generation, shared with the sender: scrolling or paging back, a jump, a
+   * restored place, a replaced history and leaving the pane raise it */
+  navigation?: { current: number };
   connected: boolean;
   ended: boolean;
   agent: string | null;
@@ -955,7 +961,7 @@ function TerminalFallback({ paneId, visible }: { paneId: string; visible: boolea
 }
 
 // the app re-renders on every pane-status and poll; an unchanged transcript sits those out
-export const ChatView = memo(function ChatView({ paneId, presentationKey, finishEpoch, finishId, active = true, visible: paneVisible = true, pageScroll, refreshKey, invalidationKey = 0, onConversationWatch, conversationPushes = false, onTerminalOutput, sentKey = 0, connected, ended, agent, agentStatus, onMetadata, onRead, greeted = false, onPrompt, onSuggestion, onRestored, promptRefreshKey = 0, pendingAnswer = null, onPendingAnswerDone, promptDock = null, onPromptAnswered, title = null, onOpenTerminal, covered = false, peek = null, onCommandScreenClosed, onOutcomes, interactive = false, onRewindInTerminal }: ChatViewProps) {
+export const ChatView = memo(function ChatView({ paneId, presentationKey, finishEpoch, finishId, active = true, visible: paneVisible = true, pageScroll, refreshKey, invalidationKey = 0, onConversationWatch, conversationPushes = false, onTerminalOutput, sentKey = 0, localSend, navigation, connected, ended, agent, agentStatus, onMetadata, onRead, greeted = false, onPrompt, onSuggestion, onRestored, promptRefreshKey = 0, pendingAnswer = null, onPendingAnswerDone, promptDock = null, onPromptAnswered, title = null, onOpenTerminal, covered = false, peek = null, onCommandScreenClosed, onOutcomes, interactive = false, onRewindInTerminal }: ChatViewProps) {
   const t = useT();
   const { fetchPaneConversation, peekPaneConversation, fetchPanePromptState, fetchPaneTranscript } = useMachineApi();
   const { settings } = useSettings();
@@ -1028,6 +1034,12 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   const sentKeyRef = useRef(sentKey);
   sentKeyRef.current = sentKey;
   const [promptPollKey, setPromptPollKey] = useState(0);
+  const ownNavigation = useRef(0);
+  const navigationRef = navigation ?? ownNavigation;
+  /** the reader chose a place: a local send already on its way no longer takes them to the end */
+  const navigated = (): void => { navigationRef.current += 1; };
+  // a local send accepted before this chat mounted (another pane, another lens) is not followed here
+  const seenLocalSend = useRef(localSend?.key ?? 0);
   const scroller = useRef<HTMLDivElement>(null);
   const timeline = useRef<LegendListRef>(null);
   const ChatTimeline = useChatTimeline();
@@ -1207,6 +1219,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
           if (cancelled || generation !== olderGeneration.current) return;
         }
         if (history.current !== conversation.history_id) {
+          if (history.current !== undefined) navigated();
           dropOlder(); generation = olderGeneration.current;
           history.current = conversation.history_id; setHistoryId(conversation.history_id);
           pagingAway.current = false; stickToBottom.current = true; setNewMessages(false); setAway(false);
@@ -1365,21 +1378,21 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   // Prompts belong to the visible screen, not the native transcript: a Codex directory-trust
   // menu can appear while idle without any file mutation. Keep their independent 2s poll.
   const [promptStale, setPromptStale] = useState(false);
+  const failedPromptReads = useRef(0);
   const pollPrompt = connected && !ended && agent !== null;
   useEffect(() => {
-    if (!pollPrompt) { setPrompt(null); setPromptStale(false); setRestored(null); onSuggestionRef.current?.(paneId, null); onRestoredRef.current?.(paneId, null); return; }
+    if (!pollPrompt) { setPrompt(null); setPromptStale(false); failedPromptReads.current = 0; setRestored(null); onSuggestionRef.current?.(paneId, null); onRestoredRef.current?.(paneId, null); return; }
     if (!visible) return;
     let cancelled = false;
     let timer = 0;
-    // a restart (the page shown again, a refused answer) keeps the notice: only a read that answers clears it
-    let failedReads = 0;
+    // a restart (the page shown again, a refused answer) keeps the notice and the count of failed reads: only a read that answers clears them
     const readPrompt = async (): Promise<void> => {
       // the same prompt keeps its object: the composer and the card only change with it
       const sent = sentKeyRef.current;
       try {
         const next = await fetchPanePromptState(paneId);
-        failedReads = 0;
         if (!cancelled) {
+          failedPromptReads.current = 0;
           setPromptStale(false);
           setPrompt((current) => current?.id === next.prompt?.id ? current : next.prompt);
           // unchanged outcomes keep their objects: the turns carrying them are not re-rendered
@@ -1396,7 +1409,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       // a read that failed (a network error, a server hiccup) says nothing about the screen: the card,
       // the suggestion and the restored send stay as they are until the next read answers. Reads that
       // keep failing let the card say so (#1335): answering stays safe, the server re-reads first
-      catch { failedReads += 1; if (!cancelled && failedReads >= PROMPT_STALE_READS) setPromptStale(true); }
+      // a read the restart cancelled counts for neither side: the new poll's count is its own
+      catch { if (!cancelled) { failedPromptReads.current += 1; if (failedPromptReads.current >= PROMPT_STALE_READS) setPromptStale(true); } }
       finally { if (!cancelled) timer = window.setTimeout(() => void readPrompt(), PROMPT_POLL_MS); }
     };
     void readPrompt();
@@ -1559,7 +1573,9 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     // An upward move right after upward input is reading intent beyond the 1 px rounding tolerance; one
     // without it (a growing composer shrinking the viewport before the bottom correction) keeps
     // following within 48 px. The end presentation stays exact in measureEnd.
-    const allowance = performance.now() - scrollInputAt.current < SCROLL_INPUT_MS ? 1 : 48;
+    const byReader = performance.now() - scrollInputAt.current < SCROLL_INPUT_MS;
+    const allowance = byReader ? 1 : 48;
+    if (scrollingUp && byReader) navigated();
     // Reaching the rounded endpoint clears reading intent unless still paging upward.
     if ((!pagingAway.current || scrollingDown) && distanceFromBottom <= 1) pagingAway.current = false;
     if (scrollingUp && distanceFromBottom > allowance && stickToBottom.current) {
@@ -1610,6 +1626,18 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     else node.scrollTo({ top: node.scrollHeight, behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
     measureEnd();
   };
+  // This browser's own message, taken by the bridge at once: the reader goes back to the end and
+  // follows the turn there as it is written, unless they navigated after it went out. Each key is
+  // taken once; an upward scroll before the turn shows ends the follow as it always does.
+  useLayoutEffect(() => {
+    if (localSend === undefined || seenLocalSend.current === localSend.key) return;
+    seenLocalSend.current = localSend.key;
+    if (localSend.navigationGeneration === navigationRef.current) scrollToBottom();
+  }, [localSend]);
+  // leaving the pane (a retained pane stays mounted off-tab) or the chat lens is navigation: a
+  // receipt still on its way follows nothing
+  useEffect(() => { if (!paneVisible) navigationRef.current += 1; }, [paneVisible, navigationRef]);
+  useEffect(() => () => { navigationRef.current += 1; }, [navigationRef]);
   useLayoutEffect(() => {
     // under a peek the page keys and the shortcuts page the terminal (TerminalViewportTools)
     if (!pageScroll || covered) return;
@@ -1623,6 +1651,8 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       const distance = pageScrollDistance(node.clientHeight, rowHeight, PAGE_OVERLAP_ROWS);
       const before = node.scrollTop;
       node.scrollTo({ top: before + direction * distance, behavior: "instant" });
+      // paging back is navigation; paging toward the end keeps a follow on its way, as a wheel down does
+      if (direction < 0 && node.scrollTop !== before) navigated();
       // A physical end may still report a positive subpixel gap, even with no movement.
       if (direction > 0 && node.scrollHeight - node.clientHeight - node.scrollTop <= 1) {
         pagingAway.current = false;
@@ -1709,6 +1739,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     if (index === null || list === null || node === null) return;
     const key = timelineRows[index]!.key;
     pagingAway.current = true; stickToBottom.current = false; setAway(true);
+    navigated();
     void list.scrollToIndex({ index, viewPosition: 0, viewOffset: saved.offset, animated: false });
     const olderAt = olderCount.current;
     let frame = 0, frames = 0, stable = 0;
@@ -1745,8 +1776,11 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   // a tick takes the reader to its turn: reading there, follow left off
   const jumpToTurn = useCallback((index: number) => {
     pagingAway.current = true; stickToBottom.current = false; setAway(true);
+    navigationRef.current += 1;
     void timeline.current?.scrollToIndex({ index, animated: false, viewPosition: 0 });
-  }, []);
+  }, [navigationRef]);
+  // the rail scrolls the chat from outside it, where the input listeners do not see the wheel
+  const minimapWheel = useCallback((deltaY: number) => { if (deltaY < 0) scrollInputAt.current = performance.now(); }, []);
   // a chip's action: the card's first control (the card is drawn into the dock, outside the
   // transcript), or the terminal lens where the command's screen is
   const focusPrompt = useCallback(() => {
@@ -1875,7 +1909,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
         {footer}
       </div>
     </div>}
-    {state.source === "conversation" && <ChatMinimap turns={minimap} rowKeys={rowKeys} scroller={scroller} onJump={jumpToTurn} />}
+    {state.source === "conversation" && <ChatMinimap turns={minimap} rowKeys={rowKeys} scroller={scroller} onJump={jumpToTurn} onWheel={minimapWheel} />}
     {jump}
     </div>
     </div>

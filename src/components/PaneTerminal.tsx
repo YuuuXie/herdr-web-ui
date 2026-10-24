@@ -493,6 +493,12 @@ export function PaneTerminal({
   const [chatInvalidation, setChatInvalidation] = useState(0);
   const { autoPeek, onCommandScreenClosed, stillOpen, stillOpenRef, setStillOpen, pendingOpenRef, undecidedOpenRef, chatHistoryRef, stillOpenNotedRef, onInputRowFrameRef, stillOpenNote, showStillOpen } = usePeekReturn({ activeRef, agent, agentRef, agentStatus, chatMounted, coarseRef, compositionCommitPendingRef, composingRef, draftHeldForRef, ended, findOpenRef, frameGateRef, inputRowNow, lineComposingRef, onEndPeekRef, onOpenTerminal, onPeekRef, paneId, paneRef, peek, peekRef, presented, receiptRowRef, stackRef, termRef, terminalId, t, heldRef, unsupportedRef });
   const { conversationPushes, setConversationPushes, onConversationWatch, chatOutputRef, onTerminalOutput, chatSent, setChatSent, chatMetadata, redrawGreeting, onChatRead, greetingRoom, setGreetingRoom, greetingRef, chatPrompt, promptRefresh, setPromptRefresh, chatSuggestion, chatRestored, pendingAnswer, setPendingAnswer, promptDock, setPromptDock, onPromptAnswered, clearPendingAnswer, onChatPrompt, onChatMetadata, onChatSuggestion, onChatRestored } = useChatCallbacks({ activeRef, agentStatus, chatHistoryRef, chatViewRef, findOpenRef, machineId, pendingOpenRef, setStillOpen, socketRef, stackRef, stillOpenRef, undecidedOpenRef });
+  // This browser's own message from the box that the bridge took at once (ok, nothing pending), with
+  // the chat's navigation generation from when it went out: the chat follows it to the end unless
+  // the reader scrolled, paged or jumped since (ChatView `localSend`). A refusal, an uncertain or
+  // pending answer, a queued or Send now delivery and another browser's message never advance it.
+  const [chatLocalSend, setChatLocalSend] = useState({ key: 0, navigationGeneration: 0 });
+  const chatNavigation = useRef(0);
   const queueStore = messageQueues;
   const queueOwner = paneId === null ? null : paneStorageId(machineId, paneId);
   const queued = useSyncExternalStore(queueStore.subscribe, () => queueStore.read(queueOwner ?? ""));
@@ -728,7 +734,7 @@ export function PaneTerminal({
     }} />
     : null;
 
-  const { composerSend, actOnPending } = useComposerSends({ agent, agentStatus, answerPanePrompt, answering, draftHeldForRef, ended, heldByOpenQueue, heldRef, inputRowNow, knownOutcomes, observeRef, paneId, paneRef, pendingScopeRef, queueOwner, queueStore, machineId, secretRef, setPendingAnswer, setPromptRefresh, settings, showSentCommand, socketRef, stillOpenNote, stillOpenNotedRef, stillOpenRef, submitComposerMessage, submitRetention, t });
+  const { composerSend, actOnPending } = useComposerSends({ agent, agentStatus, answerPanePrompt, answering, draftHeldForRef, ended, heldByOpenQueue, heldRef, inputRowNow, knownOutcomes, observeRef, paneId, paneRef, pendingScopeRef, queueOwner, queueStore, machineId, secretRef, setPendingAnswer, setPromptRefresh, settings, showSentCommand, socketRef, stillOpenNote, stillOpenNotedRef, stillOpenRef, submitComposerMessage, submitRetention, t, chatNavigation, setChatLocalSend, sessionRef });
 
 
   // Capture the owner's pane for the entire upload batch, even across a pane switch.
@@ -999,6 +1005,8 @@ export function PaneTerminal({
             conversationPushes={conversationPushes && !released}
             onTerminalOutput={onTerminalOutput}
             sentKey={chatSent}
+            localSend={chatLocalSend}
+            navigation={chatNavigation}
             connected={connected}
             ended={ended}
             agent={agent}

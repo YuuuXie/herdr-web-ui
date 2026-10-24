@@ -156,8 +156,9 @@ describe("isolate", () => {
 
   it("refuses to run in the herdr the user works in, and hands on nothing that names it", () => {
     expect(() => isolate({ HERDR_TEST_LIVE: "1" }, scratch())).toThrow("HERDR_TEST_LIVE");
-    // as a shell inside one of the user's panes has them
-    const { env } = isolate({ HERDR_SOCKET: "/live.sock", HERDR_SOCKET_PATH: "/live.sock", HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1", HERDR_TAB_ID: "w1:t1", HERDR_WORKSPACE_ID: "w1", OVIS_HERDR_BIN: "/bin/herdr" }, scratch());
+    // as a shell inside one of the user's panes has them, and a herdr config of the user's own,
+    // which the run's herdr and every server it starts would otherwise read
+    const { env } = isolate({ HERDR_SOCKET: "/live.sock", HERDR_SOCKET_PATH: "/live.sock", HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1", HERDR_TAB_ID: "w1:t1", HERDR_WORKSPACE_ID: "w1", HERDR_CONFIG_PATH: "/home/me/herdr.toml", OVIS_HERDR_BIN: "/bin/herdr" }, scratch());
     expect(Object.keys(env).filter((name) => name.startsWith("HERDR_") || name.startsWith("OVIS_")).sort()).toEqual(["HERDR_SOCKET", "HERDR_TEST_DISPOSABLE_CONFIG", "HERDR_TEST_SESSION", "HERDR_TEST_SHARDS", "OVIS_HERDR_BIN", "OVIS_STATE_DIR"]);
     // the socket it hands on is the run's own session's, where scripts/test-herdr.ts starts it
     expect(env["HERDR_SOCKET"]).toBe(join(env["XDG_CONFIG_HOME"]!, "herdr", "sessions", env["HERDR_TEST_SESSION"]!, "herdr.sock"));

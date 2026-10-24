@@ -101,8 +101,14 @@ export function ompLaunch(argv: readonly string[]): OmpLaunch | null {
  * leave ~/.omp/profiles, or omp would not start with this argv.
  */
 export function ompAgentDir(argv: readonly string[], environ: readonly string[] | null, home: string): string | null {
+  if (ompLaunch(argv)?.sessionDir) return null;
+  return ompConfigDir(argv, environ, home);
+}
+
+/** The agent directory omp loads extensions from: moving sessions does not move its configuration. */
+export function ompConfigDir(argv: readonly string[], environ: readonly string[] | null, home: string): string | null {
   const launch = ompLaunch(argv);
-  if (launch === null || launch.sessionDir) return null;
+  if (launch === null) return null;
   const profile = launch.profile ?? (environ?.find((word) => word.startsWith("OMP_PROFILE="))?.slice(12) || null);
   if (profile === null) return join(home, ".omp", "agent");
   return /^[\w.-]+$/.test(profile) && profile !== "." && profile !== ".." ? join(home, ".omp", "profiles", profile, "agent") : null;

@@ -1724,6 +1724,15 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   its own box.
   Thinking renders as a folded block only when **Show thinking** is enabled.
 - Auto-follow stops when the reader scrolls up; later output raises a **New messages** pill.
+  A message sent from this browser's message box resumes it once the bridge accepts it at once
+  (a receipt with no pending item, no refusal and no uncertain answer): the view goes to the end
+  and follows the turn and its reply there. Agent of Empires re-pins its view on any prompt, local,
+  remote or replayed; Ovis's sends carry a receipt, so only that accepted local receipt counts. A
+  refused, uncertain, queued or Send now delivery, another browser's message, a reconnect and a
+  pane opened again keep the reader's place. Scrolling or paging back, a minimap jump, a restored
+  place, a replaced history or leaving the pane after the message went out, before its receipt or
+  before its turn shows, cancels the follow. Nothing new is drawn: the existing Jump to latest and
+  New messages controls keep the Ovis/Codex chat look.
 - An empty chat is greeted from the composer (`.composer-greeting`, below), only where the agent's
   conversation was read and holds no turn. A chat still loading, one whose read failed, an agent
   whose transcript could not be read and a pane with no recognized agent keep their own lines
@@ -1869,7 +1878,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - OpenCode multiselect Submit, custom Send and Enter send all checked choices and custom text
   together. A transient native-service failure keeps an existing question card and its edits;
   with no native question known, permissions and legacy prompts use the generic fallback card.
-- While an answer is on its way, a `--text-dim` `--fs-xs` line under the actions says `Sending your answer…` (`role="status"`), so a slow PC never looks like a dead button. When two reads of the screen in a row fail, the same line says `Not updated: the question on screen may have changed.` and the card stays as it was; the next read that answers clears it, and a restarted poll (after a refused answer) keeps it. The line is in the card from its first render, clipped and empty (`.visually-hidden`, never `display: none`) until the answer goes out: a live region that appears together with its content is not announced. The card's busy state (`aria-busy`) sits on its options group (`.prompt-card-options`), never on the card: Chromium fires no live-region event inside an `aria-busy` subtree, so the status line stays outside it.
+- While an answer is on its way, a `--text-dim` `--fs-xs` line under the actions says `Sending your answer…` (`role="status"`), so a slow PC never looks like a dead button. When two reads of the screen in a row fail, the same line says `Not updated: the question on screen may have changed.` and the card stays as it was; the next read that answers clears it. A restarted poll (after a refused answer, or the page shown again) keeps the notice and goes on counting: one failed read, a refused answer and one more failed read show it. The line is in the card from its first render, clipped and empty (`.visually-hidden`, never `display: none`) until the answer goes out: a live region that appears together with its content is not announced. The card's busy state (`aria-busy`) sits on its options group (`.prompt-card-options`), never on the card: Chromium fires no live-region event inside an `aria-busy` subtree, so the status line stays outside it.
 - Options are flat full-width rows (`.prompt-card-option`), not boxes in the box: the menu's
   number as a keycap (mono, `--fs-2xs`, a `--border-strong` outline; the option's name keeps
   `1.`), the label, its description under it in `--text-dim`. All rows weigh the same: none is

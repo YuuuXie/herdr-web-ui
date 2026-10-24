@@ -11,7 +11,7 @@
  * package.json's version, only when that release was built from this checkout's crate sources
  * (their git tree), checks its SHA-256 against the release's manifest and that it runs here, and
  * moves it into place in one rename. Without one, it says why and exits 0: the server then runs
- * the Node sidecar, as before. `--strict` exits 1 instead.
+ * the Node sidecar where the PC has Node, or mirrors its panes. `--strict` exits 1 instead.
  */
 import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -252,7 +252,7 @@ if (import.meta.main) {
   else if (verb === "install" && (rest.length === 0 || (rest.length === 1 && rest[0] === "--strict"))) {
     const result = await install();
     if (result.ok) console.log(`Ovis: ${result.message}`);
-    else console.log(`Ovis: ${result.message}; terminals use the Node PTY sidecar`);
+    else console.log(`Ovis: ${result.message}; terminals use the Node PTY sidecar where this PC has Node, or are mirrored`);
     if (!result.ok && rest[0] === "--strict") process.exit(1);
   } else {
     console.error("Usage: bun scripts/pty-sidecar.ts build <linux-x64|linux-arm64|darwin-universal> <dir> | manifest <dir> | install [--strict]");

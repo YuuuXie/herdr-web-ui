@@ -132,8 +132,8 @@ jobs:
       - run: bun test ./server/claude-store.test.ts ./server/process-start.test.ts
         if: needs.changes.outputs.draft != 'true'
   rust-pty-host:
-    # The Rust PTY host (crates/pty-sidecar) is opt-in (OVIS_PTY_SIDECAR=rust) and its PtySession checks
-    # skip without a build. The self-hosted runners have no Rust toolchain, so this job always runs on
+    # The Rust PTY host (crates/pty-sidecar) is the default where it is installed or built, and its
+    # PtySession checks skip without a build. The self-hosted runners have no Rust toolchain, so this job always runs on
     # GitHub's image, which has one: it builds the host and runs the same checks on it as on Node.
     name: Rust PTY host
     needs: changes

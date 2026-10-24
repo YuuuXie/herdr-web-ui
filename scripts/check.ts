@@ -118,8 +118,11 @@ const ACTIONLINT = { version: "1.7.12", sha256: "8aca8db96f1b94770f1b0d72b6dddcb
 /** A unix socket's path holds about 104 bytes on macOS and 108 on Linux. */
 export const SOCKET_PATH_MAX = 100;
 
-/** What a shell inside a herdr pane carries of that herdr: nothing in a run may reach it by these. */
-const LIVE_HERDR = ["HERDR_SOCKET", "HERDR_SOCKET_PATH", "HERDR_ENV", "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID"];
+/**
+ * What a shell inside a herdr pane carries of that herdr, and what names the user's own herdr
+ * config: nothing in a run may reach either by these.
+ */
+const LIVE_HERDR = ["HERDR_SOCKET", "HERDR_SOCKET_PATH", "HERDR_ENV", "HERDR_PANE_ID", "HERDR_TAB_ID", "HERDR_WORKSPACE_ID", "HERDR_CONFIG_PATH"];
 
 export interface Isolation {
   env: Record<string, string>;
@@ -157,7 +160,8 @@ export function isolate(base: Record<string, string | undefined>, kept: string |
     throw new Error(`${socket} is too long for a unix socket (${socket.length} > ${SOCKET_PATH_MAX}); set CHECK_DIR to a shorter path`);
   }
   const env: Record<string, string> = {};
-  // not what names the herdr this was started from (a pane of the user's): its socket, its pane
+  // not what names the herdr this was started from (a pane of the user's): its socket, its pane,
+  // and the user's own herdr config
   for (const [name, value] of Object.entries(base)) if (value !== undefined && !LIVE_HERDR.includes(name)) env[name] = value;
   Object.assign(env, {
     ...testShellEnv(dir),

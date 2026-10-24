@@ -108,6 +108,7 @@ run_script scripts/droplet-demo-regression.ts
 run_script scripts/phone-glass-header-demo-regression.ts
 run_script scripts/chat-greeting-demo-regression.ts
 run_script scripts/restored-draft-demo-regression.ts
+run_script scripts/chat-local-send-follow-demo-regression.ts
 run_script scripts/composer-fit-demo-regression.ts
 run_script scripts/held-rows-demo-regression.ts
 run_script scripts/replay-clipboard-demo-regression.ts

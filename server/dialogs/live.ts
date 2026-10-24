@@ -212,9 +212,13 @@ function hintAtEnd(shown: string[], atEnd: RegExp, footerLines: number, span = 3
 
 export function parsePrompt(agent: string, screen: string, omoAsk: OmoAsk | null = null, omoTrusted = true, omoOpen: OmoAsk[] = [], sent: string | null = null, working = false): ParsedPrompt | null {
   const ctx = { agent, omoAsk, omoTrusted, omoOpen, sent, working };
-  // a result reader reads only below a send's own echo (outcome.ts), never a card on the whole screen
-  const candidates = registry.readersFor(agent).filter((reader) => reader.kind !== "result").map((reader) => reader.parse(screen, ctx));
-  return candidates.find((candidate): candidate is ParsedPrompt => candidate !== null && promptTailIsActive(candidate, screen)) ?? null;
+  for (const reader of registry.readersFor(agent)) {
+    // a result reader reads only below a send's own echo (outcome.ts), never a card on the whole screen
+    if (reader.kind === "result") continue;
+    const candidate = reader.parse(screen, ctx);
+    if (candidate !== null && promptTailIsActive(candidate, screen)) return candidate;
+  }
+  return null;
 }
 
 /**
