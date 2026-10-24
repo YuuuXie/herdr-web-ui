@@ -45,6 +45,12 @@ links. The marker-and-report fallback cannot detect an unobserved switch away an
 The reader scans at most 16 MiB of lifecycle-log catch-up per lookup and checkpoints
 complete reads, including unavailable selections. Ambiguity remains unavailable until a
 fresh registration; it does not permanently block later registrations.
+An incomplete trailing line temporarily blocks Chat. If log continuity remains intact,
+the reader processes that line once it is complete; it never serves the older binding
+while the line could contain an unfinished foreground switch.
+Observation state is bounded to 256 live process identities. Exited or replaced processes
+release slots; at capacity, untracked processes use Terminal rather than forgetting a live
+process's invalid evidence.
 Transcript pages use the shared bounded pager, and ownership is checked again after reading.
 
 ## Verification

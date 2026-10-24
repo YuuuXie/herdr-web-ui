@@ -561,6 +561,10 @@ it.skipIf(process.platform !== "linux")("follows process-owned foreground eviden
     expect(copilotTranscriptFile(other, options, args, child.pid)).toBe(join(home, "session-state", other, "events.jsonl"));
     await command("back");
     expect(copilotLoggedSession(options, args, child.pid)).toBe(session);
+    appendFileSync(log, "ordinary partial line");
+    expect(copilotLoggedSession(options, args, child.pid)).toBeNull();
+    appendFileSync(log, "\n");
+    expect(copilotLoggedSession(options, args, child.pid)).toBe(session);
     await command("incomplete");
     expect(copilotLoggedSession(options, args, child.pid)).toBeNull();
     expect(copilotTranscriptFile(session, options, args, child.pid)).toBeNull();

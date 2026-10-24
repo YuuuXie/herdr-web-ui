@@ -1,6 +1,7 @@
 import { constants, closeSync, fstatSync, lstatSync, openSync, opendirSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
+import { processAlive, processStartedAt } from "./process-start.ts";
 
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const HEADER_BYTES = 64 * 1024;
@@ -14,7 +15,7 @@ interface ForegroundCheckpoint {
   boundary: string; epoch: string; binding: ForegroundBinding | null | undefined;
 }
 const foregroundCheckpoints = new Map<number, ForegroundCheckpoint>();
-const observedForegroundLogs = new Set<number>();
+const foregroundLogProcesses = new Map<number, { started: number; observed: boolean }>();
 
 /** Check consumed content at both ends before treating the next read as an append. */
 function logBoundary(fd: number, size: number): string | null {
@@ -30,14 +31,32 @@ function logBoundary(fd: number, size: number): string | null {
 
 /** The latest complete lifecycle event in the CLI's own open log, never the newest transcript. */
 function loggedForeground(pid: number, logDirectories: readonly string[]): ForegroundBinding | null | undefined {
-  const observedBefore = observedForegroundLogs.has(pid);
-  const observe = (): void => {
-    if (observedForegroundLogs.size >= 256 && !observedForegroundLogs.has(pid)) {
-      const oldest = observedForegroundLogs.values().next().value!;
-      observedForegroundLogs.delete(oldest);
-      foregroundCheckpoints.delete(oldest);
+  const started = processStartedAt(pid);
+  if (started === null) return undefined;
+  let owner = foregroundLogProcesses.get(pid);
+  if (owner?.started !== started) {
+    foregroundLogProcesses.delete(pid);
+    foregroundCheckpoints.delete(pid);
+    owner = undefined;
+  }
+  if (owner === undefined) {
+    if (foregroundLogProcesses.size >= 256) {
+      for (const [previousPid, previous] of foregroundLogProcesses) {
+        const current = processStartedAt(previousPid);
+        if ((current !== null && current !== previous.started) || !processAlive(previousPid)) {
+          foregroundLogProcesses.delete(previousPid);
+          foregroundCheckpoints.delete(previousPid);
+        }
+      }
     }
-    observedForegroundLogs.add(pid);
+    // Dropping live denial state would make stale report/marker fallback eligible again.
+    if (foregroundLogProcesses.size >= 256) return undefined;
+    owner = { started, observed: false };
+    foregroundLogProcesses.set(pid, owner);
+  }
+  const observedBefore = owner.observed;
+  const observe = (): void => {
+    owner.observed = true;
   };
   const unavailable = (): undefined => {
     const checkpoint = foregroundCheckpoints.get(pid);
@@ -86,7 +105,7 @@ function loggedForeground(pid: number, logDirectories: readonly string[]): Foreg
           if (read !== bytes.length || boundary === null || after.size !== stat.size
             || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs) return unavailable();
           const text = bytes.subarray(0, read).toString("utf8");
-          if (text && !text.endsWith("\n")) return unavailable();
+          if (text && !text.endsWith("\n")) return undefined;
           const skip = start === 0 || same ? 0 : text.indexOf("\n") + 1;
           const complete = text.slice(skip, text.lastIndexOf("\n") + 1);
           if (start > 0 && !complete && !same) return unavailable();
@@ -111,7 +130,7 @@ function loggedForeground(pid: number, logDirectories: readonly string[]): Foreg
       } catch { return unavailable(); }
     }
   } finally { directory.closeSync(); }
-  return !logFound && observedForegroundLogs.has(pid) ? unavailable() : found;
+  return !logFound && owner.observed ? unavailable() : found;
 }
 
 /** Pin one regular canonical file; callers must close the descriptor after reading. */
