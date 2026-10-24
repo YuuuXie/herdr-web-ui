@@ -1217,9 +1217,7 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   shell's exit); a run that finds no PATH is a miss, and the server logs why once each time the
   reason changes. A server run as a service with a bare PATH therefore still offers an agent
   installed under `~/.local/bin` or a version manager. The agents herdr starts keep their own
-  environment's answer. The selected PC's installed, supported agents share this picker.
-  GitHub Copilot uses the existing launch path without new permission defaults. The picker itself
-  is unchanged. Directory defaults to
+  environment's answer. The picker itself is unchanged. Directory defaults to
   the selected pane cwd and name is an optional workspace label. **Browse** updates Directory as
   each folder opens (`onFolder`), so **Start** uses the path shown in the browser even when
   **Use this folder** was not pressed; Directory keeps the `~/…` form for a folder under home, as
