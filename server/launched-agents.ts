@@ -14,7 +14,6 @@ import type { RecognizedConversation } from "./conversation.ts";
  */
 const SOURCES: Record<string, RecognizedConversation["source"]> = {
   agy: "agy-transcript", claude: "claude-transcript", codex: "codex-transcript", devin: "devin-transcript",
-  copilot: "copilot-transcript",
   gjc: "gjc-transcript", grok: "grok-transcript", hermes: "hermes-transcript", omo: "omo-transcript",
   omp: "omp-transcript", opencode: "opencode-transcript", pi: "pi-transcript",
 };

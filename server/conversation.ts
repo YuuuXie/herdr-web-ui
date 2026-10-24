@@ -1235,12 +1235,7 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
     const pane = snapshot.panes.find((candidate) => candidate.pane_id === paneId);
     if (pane === undefined) { launchedAgents.forget(paneId); throw error; }
     if (pane.agent === "copilot" && (page.before !== undefined || page.since !== undefined || page.from !== undefined)) throw new HistoryChanged();
-    if (pane.agent === "copilot" && error.message === "copilot_resume_unknown") throw error;
-    if (pane.agent === "copilot") {
-      const info = await paneProcessInfo(paneId).catch(() => null);
-      const processes = agentProcesses(info?.foreground_processes ?? [], "copilot");
-      if (processes.length !== 1 || copilotExplicitResume(processes[0]?.argv ?? [])) throw error;
-    }
+    if (pane.agent === "copilot") throw error;
     // an agent this server started writes no session before its first message (launched-agents.ts)
     const launch = launchedAgents.notBegun(paneId, pane.agent_status);
     if (launch === null) {
