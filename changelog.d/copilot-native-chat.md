@@ -1,15 +1,7 @@
 ### Added
 - Copilot CLI conversations can show native text, tool activity, recorded model, question choices
   and Autopilot completion summaries in chat on Linux when the foreground session is verified.
-  Answer interactive questions in Terminal.
-### Fixed
-- Resumed Copilot conversations show their history and follow in-process session switches when
-  the foreground process's lifecycle log proves the selection, even with older sessions open.
-  Unverifiable sessions fall back to Terminal instead of showing another session's history.
-- Copilot pagination and tool-output links from a prior foreground selection no longer
-  become valid again after switching back; an unregister without a new registration
-  also stops serving the old conversation.
-- Copilot foreground discovery revalidates log checkpoints after rewrites and recovers
-  from large polling gaps using bounded lifecycle-log reads.
-- Copilot sessions with a complete CLI log containing no lifecycle events still use
-  the verified Herdr report and unique process-held marker to read existing history.
+  Verified new sessions can show an empty chat before the first message; resumed sessions
+  follow process-owned foreground lifecycle records with bounded, revalidated log reads.
+  A trusted Herdr report and unique held marker can identify history only without conflicting
+  lifecycle evidence. Unverifiable sessions use Terminal; interactive answers stay there too.

@@ -38,9 +38,12 @@ export function parseCopilotTranscript(jsonl: string, maxTurns = MAX_TURNS): Con
   let completion: string | null = null;
   const flushCompletion = (): void => {
     const last = turns.at(-1);
-    if (completion !== null && last?.role === "assistant"
-      && !last.parts.some((part) => part.kind === "text" && part.phase === "final_answer")) {
-      last.parts.push({ kind: "text", text: completion, phase: "final_answer" });
+    const lastText = last?.parts.filter((part) => part.kind === "text").at(-1);
+    if (completion !== null && last?.role === "assistant") {
+      if (lastText?.kind === "text" && lastText.text === completion) lastText.phase = "final_answer";
+      else if (!last.parts.some((part) => part.kind === "text" && part.phase === "final_answer")) {
+        last.parts.push({ kind: "text", text: completion, phase: "final_answer" });
+      }
     }
     completion = null;
   };
