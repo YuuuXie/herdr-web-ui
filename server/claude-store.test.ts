@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import * as fsPromises from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
-import { AmbiguousClaudeStore, claudeForegroundSession, claudeProcessSession, claudeSessionTempDir, claudeStoreKey, claudeStoreOf, claudeProjectDir, claudeTranscriptFile, claudeRecordOnlyIn, configDirInPsLine, darwinProcess, forgetClaudeSessions, herdrLaunchSource, isClaudeProcess, paneClaudeSource, processClaudeConfigDir, processClaudeSource, procArgsEnvironment } from "./claude-store.ts";
+import { AmbiguousClaudeStore, attachedJob, claudeForegroundSession, claudeJobSession, claudeProcessSession, claudeSessionTempDir, claudeStoreKey, claudeStoreOf, claudeProjectDir, claudeTranscriptFile, claudeRecordOnlyIn, configDirInPsLine, darwinProcess, forgetClaudeSessions, herdrLaunchSource, isClaudeProcess, paneClaudeSource, processClaudeConfigDir, processClaudeSource, procArgsEnvironment } from "./claude-store.ts";
 import type { ProcessRow } from "./windows-processes.ts";
 
 const NATIVE = process.platform === "linux" || process.platform === "darwin";
@@ -115,6 +116,84 @@ describe("claudeProcessSession", () => {
     const started = Date.now();
     expect(await claudeProcessSession(home, process.pid)).toBeNull();
     expect(Date.now() - started).toBeLessThan(2000);
+  });
+});
+
+describe("a claude attach pane's job (#1645)", () => {
+  const JOB = "dc5643bd";
+  const roots: string[] = [];
+  afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
+  function store(): string {
+    const root = mkdtempSync(join(tmpdir(), "ovis-claude-job-"));
+    roots.push(root);
+    mkdirSync(join(root, "jobs", JOB), { recursive: true });
+    return root;
+  }
+  const statePath = (dir: string): string => join(dir, "jobs", JOB, "state.json");
+
+  it("takes `attach` only as the first argument after the program", () => {
+    expect(attachedJob(["claude", "attach", JOB])).toBe(JOB);
+    expect(attachedJob(["/home/me/.local/bin/claude", "attach", JOB])).toBe(JOB);
+    expect(attachedJob(["node", "/usr/lib/node_modules/@anthropic-ai/claude-code/cli.js", "attach", JOB])).toBe(JOB);
+    expect(attachedJob(["C:\\Program Files\\nodejs\\node.exe", "C:\\npm\\cli.js", "attach", JOB])).toBe(JOB);
+    // a prompt or an option's value that reads `attach` is no attach
+    expect(attachedJob(["claude", "-p", "attach", JOB])).toBeNull();
+    expect(attachedJob(["claude", "--append-system-prompt", "attach", "deadbeef"])).toBeNull();
+    // a name or an id prefix is not resolved here: such a pane keeps the terminal
+    expect(attachedJob(["claude", "attach", "release notes"])).toBeNull();
+    expect(attachedJob(["claude", "attach", "dc5643"])).toBeNull();
+    expect(attachedJob(["claude", "attach"])).toBeNull();
+    expect(attachedJob(["claude", "--resume", SESSION])).toBeNull();
+    expect(attachedJob([])).toBeNull();
+    expect(attachedJob(null)).toBeNull();
+  });
+
+  it("reads the session the job shows now, else the one it started with", async () => {
+    const dir = store();
+    const started = `${JOB}-6228-4376-a66c-ad9820b26f37`;
+    writeFileSync(statePath(dir), JSON.stringify({ sessionId: started, resumeSessionId: SESSION, state: "running" }));
+    expect(await claudeJobSession(dir, JOB)).toBe(SESSION);
+    writeFileSync(statePath(dir), JSON.stringify({ sessionId: started }));
+    expect(await claudeJobSession(dir, JOB)).toBe(started);
+  });
+
+  it("names no session for a shell-command job, an unusable state or none", async () => {
+    const dir = store();
+    for (const state of [{ state: "running" }, { sessionId: "not-a-session" }, { resumeSessionId: "x", sessionId: SESSION }, null, []]) {
+      writeFileSync(statePath(dir), JSON.stringify(state));
+      expect(await claudeJobSession(dir, JOB)).toBeNull();
+    }
+    writeFileSync(statePath(dir), "{");
+    expect(await claudeJobSession(dir, JOB)).toBeNull();
+    // too large to be a job's state, even when its session comes first
+    writeFileSync(statePath(dir), JSON.stringify({ sessionId: SESSION, output: "x".repeat(256 * 1024) }));
+    expect(await claudeJobSession(dir, JOB)).toBeNull();
+    expect(await claudeJobSession(dir, "0badc0de")).toBeNull();
+  });
+
+  it("names no session when the state cannot be read off the disk", async () => {
+    const dir = store();
+    writeFileSync(statePath(dir), JSON.stringify({ sessionId: SESSION }));
+    const opened = spyOn(fsPromises, "open").mockImplementation(async () => { throw Object.assign(new Error("EIO: i/o error, open"), { code: "EIO" }); });
+    try {
+      // the pane keeps its terminal rather than the conversation route answering an error
+      expect(await claudeJobSession(dir, JOB)).toBeNull();
+      expect(opened).toHaveBeenCalled();
+    } finally { opened.mockRestore(); }
+  });
+
+  it.skipIf(!NATIVE)("reads no link, directory or FIFO in the state's place, without blocking", async () => {
+    const dir = store();
+    const target = join(dir, "elsewhere.json");
+    writeFileSync(target, JSON.stringify({ sessionId: SESSION }));
+    symlinkSync(target, statePath(dir));
+    expect(await claudeJobSession(dir, JOB)).toBeNull();
+    rmSync(statePath(dir));
+    mkdirSync(statePath(dir));
+    expect(await claudeJobSession(dir, JOB)).toBeNull();
+    rmSync(statePath(dir), { recursive: true });
+    expect(Bun.spawnSync(["mkfifo", statePath(dir)]).exitCode).toBe(0);
+    expect(await claudeJobSession(dir, JOB)).toBeNull();
   });
 });
 

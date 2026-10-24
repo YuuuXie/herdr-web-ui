@@ -350,6 +350,12 @@ main() {
     herdr plugin uninstall "$LEGACY_PLUGIN" </dev/null >/dev/null || fail "could not remove the plugin's old id; run: herdr plugin uninstall $LEGACY_PLUGIN"
   fi
 
+  # the Rust PTY host of the release that runs, checked against its SHA-256: herdr's build step and
+  # Settings → Updates fetch it too, so this is for an install from before it shipped, or one whose
+  # download failed. Without it, terminals use the Node sidecar.
+  code=$(running_code "$root")
+  [ ! -f "$code/scripts/pty-sidecar.ts" ] || (cd "$code" && bun scripts/pty-sidecar.ts install </dev/null) || true
+
   if herdr status server --json 2>/dev/null | grep -q '"running":true'; then
     # the action only queues the start (its output goes to herdr's plugin log), so wait for it here
     herdr plugin action invoke "$PLUGIN.start" >/dev/null </dev/null
@@ -370,7 +376,6 @@ main() {
   fi
 
   echo
-  code=$(running_code "$root")
   if grep -q '"phone"' "$code/scripts/plugin.ts" 2>/dev/null; then
     bun "$code/scripts/plugin.ts" phone </dev/null || true
   else

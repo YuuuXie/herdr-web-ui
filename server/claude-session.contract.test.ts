@@ -1,9 +1,9 @@
 import { afterAll, beforeAll, expect, it } from "bun:test";
-import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "./index.ts";
-import { forgetTranscriptState } from "./conversation.ts";
+import { claudePaneSession, forgetTranscriptState } from "./conversation.ts";
 import { claudeProjectDir } from "./claude-store.ts";
 import { startFakePushService } from "./push.fake.ts";
 import { herdrRpc, workspaceClose, workspaceCreate } from "./herdr/client.ts";
@@ -442,4 +442,93 @@ it.skipIf(!NATIVE)("uses each process's config dir before the server's store, wi
     });
     expect((await read(fallback.pane)).turns.at(-1)?.parts[0]).toMatchObject({ text: "Server's other answer" });
   } finally { delete process.env["CLAUDE_CONFIG_DIR"]; }
+});
+
+/**
+ * A pane whose foreground runs `claude attach <job>` with the native build's argv, and no PID record:
+ * the renamed Node runs `attach` in the workspace folder as its script, so the arguments stay as typed.
+ */
+async function attachPane(job: string, before?: (pane: string) => Promise<void>): Promise<{ pane: string; pid: number }> {
+  const created = await herdrRpc<Awaited<ReturnType<typeof workspaceCreate>>>("workspace.create", { cwd: root, label: "ovis-test-claude-attach", focus: false });
+  workspaces.push(created.workspace.workspace_id);
+  const paneId = created.root_pane.pane_id;
+  await before?.(paneId);
+  writeFileSync(join(root, "attach"), `require("node:net").connect(Number(process.env.ATTACH_READY), "127.0.0.1", function () { this.end(String(process.pid)); });
+process.stdin.resume();
+`);
+  let ready: (pid: number) => void = () => {};
+  const signal = new Promise<number>((resolve) => { ready = resolve; });
+  const listener = Bun.listen({
+    hostname: "127.0.0.1", port: 0,
+    socket: { data(socket, data) { ready(Number(data.toString())); socket.end(); } },
+  });
+  const timeout = setTimeout(() => ready(0), 10_000);
+  try {
+    await herdrRpc("pane.send_text", {
+      pane_id: paneId, text: `cd ${JSON.stringify(root)} && exec env -u CLAUDE_CONFIG_DIR ATTACH_READY=${listener.port} ${JSON.stringify(join(root, "claude"))} attach ${job}\n`,
+    });
+    const pid = await signal;
+    if (!pid) throw new Error("claude attach stand-in did not signal readiness");
+    await herdrRpc("pane.report_agent", { pane_id: paneId, source: "manual", agent: "claude", state: "idle" });
+    return { pane: paneId, pid };
+  } finally { clearTimeout(timeout); listener.stop(true); }
+}
+
+// The stand-in is the renamed Node, which takes `attach` for its script; the macOS one above is Bun.
+it.skipIf(process.platform !== "linux")("follows a `claude attach <job>` pane to the job's conversation, with no start time of its own (#1645)", async () => {
+  // the job's state names the session it started with and the one /clear moved it on to
+  const job = "4c1d2e3f";
+  const started = `${job}-0000-4000-8000-000000000001`;
+  const resumed = "6e5d4c3b-2a19-4807-b6a5-948372615f0e";
+  transcript(started);
+  transcript(resumed);
+  mkdirSync(join(root, ".claude", "jobs", job), { recursive: true });
+  writeFileSync(join(root, ".claude", "jobs", job, "state.json"), JSON.stringify({ sessionId: started, resumeSessionId: resumed, state: "running" }));
+  const attach = await attachPane(job);
+  // an attach client keeps no PID record of its own: only the job's state names what it shows
+  expect(existsSync(join(root, ".claude", "sessions", `${attach.pid}.json`))).toBe(false);
+  const conversation = await read(attach.pane);
+  expect(conversation.source).toBe("claude-transcript");
+  expect(conversation.turns.at(-1)?.parts[0]).toMatchObject({ text: `Answer ${resumed}` });
+  // the job ran before the client attached: the client's start would leave the job's earlier background work lost
+  expect(await claudePaneSession({ pane_id: attach.pane, cwd: root, foreground_cwd: root } as HerdrPane))
+    .toEqual({ path: join(project, `${resumed}.jsonl`), startedAt: null, pid: attach.pid });
+});
+
+it.skipIf(process.platform !== "linux")("shows the attached job's conversation, not a session an earlier Claude in the pane reported (#1645)", async () => {
+  const job = "7a8b9c0d";
+  const shown = "1f2e3d4c-5b6a-4798-8a7b-6c5d4e3f2a1b";
+  transcript(shown);
+  mkdirSync(join(root, ".claude", "jobs", job), { recursive: true });
+  writeFileSync(join(root, ".claude", "jobs", job, "state.json"), JSON.stringify({ sessionId: shown, state: "running" }));
+  // a reused pane: the Claude that ran here before reported its session through the hook
+  const attach = await attachPane(job, async (paneId) => {
+    await herdrRpc("pane.report_agent", { pane_id: paneId, source: "manual", agent: "claude", state: "idle" });
+    await herdrRpc("pane.report_agent_session", {
+      pane_id: paneId, source: "herdr:claude", agent: "claude", seq: 1, agent_session_id: FIRST,
+    });
+  });
+  // herdr still reports that earlier session once `claude attach` is the foreground process
+  const info = await herdrRpc<{ agent: { agent_session?: { value?: unknown } } }>("agent.get", { target: attach.pane });
+  expect(info.agent.agent_session?.value).toBe(FIRST);
+  const conversation = await read(attach.pane);
+  expect(conversation.source).toBe("claude-transcript");
+  expect(conversation.turns.at(-1)?.parts[0]).toMatchObject({ text: `Answer ${shown}` });
+});
+
+it.skipIf(process.platform !== "linux")("keeps the terminal of a reused pane attached to a shell-command job, which has no session (#1645)", async () => {
+  const job = "5e6f7a8b";
+  mkdirSync(join(root, ".claude", "jobs", job), { recursive: true });
+  writeFileSync(join(root, ".claude", "jobs", job, "state.json"), JSON.stringify({ command: "sleep 100", state: "running" }));
+  // the Claude that ran here before reported its session through the hook, and herdr still has it
+  const attach = await attachPane(job, async (paneId) => {
+    await herdrRpc("pane.report_agent", { pane_id: paneId, source: "manual", agent: "claude", state: "idle" });
+    await herdrRpc("pane.report_agent_session", {
+      pane_id: paneId, source: "herdr:claude", agent: "claude", seq: 1, agent_session_id: FIRST,
+    });
+  });
+  const info = await herdrRpc<{ agent: { agent_session?: { value?: unknown } } }>("agent.get", { target: attach.pane });
+  expect(info.agent.agent_session?.value).toBe(FIRST);
+  // the job shows no conversation: the earlier Claude's would be another session's
+  expect((await read(attach.pane)).source).toBe("scrollback");
 });

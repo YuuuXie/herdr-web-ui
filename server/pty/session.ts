@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { disableRustHost, rustSidecar, spawnErrorReason } from "./host.ts";
 
 const HOST_SCRIPT = join(import.meta.dir, "pty-host.mjs");
 
@@ -26,11 +27,12 @@ export function writeLine(sink: import("bun").FileSink, line: string): boolean {
 }
 
 /**
- * A command running on a real PTY, hosted by a Node sidecar (see pty-host.mjs for
+ * A command running on a real PTY, hosted by the Node sidecar or, opted in, the Rust host (see pty-host.mjs for
  * why output flow control currently needs node-pty, and why it is the prebuilt
  * @lydell/node-pty distribution of it).
  */
 export class PtySession {
+  readonly host: "node" | "rust";
   readonly exited: Promise<void>;
   private readonly proc: ReturnType<typeof Bun.spawn>;
   private closed = false;
@@ -41,14 +43,27 @@ export class PtySession {
     const env = { ...process.env, ...options.env };
     delete env["OVIS_TOKEN"];
     delete env["HERDR_WEB_TOKEN"];
-    this.proc = Bun.spawn(
-      ["node", HOST_SCRIPT, String(options.cols), String(options.rows), options.command, ...options.args],
-      { stdin: "pipe", stdout: "pipe", stderr: "inherit", env },
-    );
+    const args = [String(options.cols), String(options.rows), options.command, ...options.args];
+    const spawnOptions = { stdin: "pipe", stdout: "pipe", stderr: "inherit", env } as const;
+    const rust = rustSidecar();
+    if (rust) {
+      try {
+        this.proc = Bun.spawn([rust, ...args], spawnOptions);
+        this.host = "rust";
+      } catch (error) {
+        this.proc = Bun.spawn(["node", HOST_SCRIPT, ...args], spawnOptions);
+        this.host = "node";
+        disableRustHost(`${rust} could not be started (${spawnErrorReason(error)})`);
+      }
+    } else {
+      this.proc = Bun.spawn(["node", HOST_SCRIPT, ...args], spawnOptions);
+      this.host = "node";
+    }
 
     // Process exit can precede the final stdout read. Deliver every byte before
     // onExit lets the server remove the attachment.
     this.exited = Promise.all([this.proc.exited, this.pump()]).then(([code]) => {
+      if (this.host === "rust" && !this.closed && this.proc.signalCode !== null) disableRustHost(`the Rust PTY host ended by ${this.proc.signalCode}`);
       if (this.closed) return;
       this.closed = true;
       options.onExit(code ?? null);

@@ -603,27 +603,14 @@ export async function claudeProcessSession(
   if ((platform !== "linux" && platform !== "darwin" && platform !== "win32") || !Number.isSafeInteger(pid) || pid <= 0) return null;
   try {
     const path = join(configDir, "sessions", `${pid}.json`);
-    let text: string;
+    let text: string | null;
     try {
-      // Non-blocking and no symlinks: a FIFO or a link in the record's place must not hang the read.
-      const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
-      try {
-        if (!(await file.stat()).isFile()) return null;
-        const bytes = Buffer.alloc(16 * 1024 + 1);
-        let length = 0;
-        // One read may return less than the file holds; only a read of nothing is its end.
-        for (;;) {
-          const { bytesRead } = await file.read(bytes, length, bytes.length - length, length);
-          if (bytesRead === 0) break;
-          length += bytesRead;
-          if (length === bytes.length) return null;
-        }
-        text = bytes.subarray(0, length).toString("utf8");
-      } finally { await file.close(); }
+      text = await readSmallFile(path, 16 * 1024);
     } catch (error) {
       if (unreadable === "throw" && !absent(error)) throw new UnreadableClaudeRecord(path, { cause: error });
       throw error;
     }
+    if (text === null) return null;
     const record: unknown = JSON.parse(text);
     if (record === null || typeof record !== "object" ||
       !("pid" in record) || record.pid !== pid ||
@@ -647,6 +634,67 @@ export async function claudeProcessSession(
     // A closed process, absent/older native store or a torn write gives no identity.
     if (error instanceof SyntaxError || absent(error) ||
       (error !== null && typeof error === "object" && "code" in error && ["EACCES", "EPERM", "ESRCH", "ELOOP", "ENXIO"].includes(String(error.code)))) return null;
+    throw error;
+  }
+}
+
+/**
+ * A small file Claude Code keeps (a PID record, a job's state), or null when it is no regular file or
+ * holds more than `max` bytes. Non-blocking and no symlinks: a FIFO or a link in its place must not
+ * hang the read. The cap holds on the read itself, which a file growing after its stat cannot pass.
+ */
+async function readSmallFile(path: string, max: number): Promise<string | null> {
+  const file = await open(path, constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW);
+  try {
+    if (!(await file.stat()).isFile()) return null;
+    const bytes = Buffer.alloc(max + 1);
+    let length = 0;
+    // One read may return less than the file holds; only a read of nothing is its end.
+    for (;;) {
+      const { bytesRead } = await file.read(bytes, length, bytes.length - length, length);
+      if (bytesRead === 0) break;
+      length += bytesRead;
+      if (length === bytes.length) return null;
+    }
+    return bytes.subarray(0, length).toString("utf8");
+  } finally { await file.close(); }
+}
+
+/**
+ * The background job a `claude attach <job>` process shows, by its eight-digit id; null for any other
+ * Claude. `attach` must be the first argument after the program (after `node <script>` for an npm
+ * install). Options before it, an id prefix or a job's name are not read, so such a pane keeps the
+ * terminal (#1645).
+ */
+export function attachedJob(argv: readonly string[] | null | undefined): string | null {
+  const program = argv?.[0];
+  if (program === undefined) return null;
+  const at = /(?:^|[\\/])(?:node|bun)(?:\.exe)?$/i.test(program) ? 2 : 1;
+  const id = argv?.[at + 1];
+  return argv?.[at] === "attach" && id !== undefined && /^[0-9a-f]{8}$/.test(id) ? id : null;
+}
+
+/** A background job's state is a short JSON document. */
+const MAX_JOB_STATE_BYTES = 256 * 1024;
+
+/**
+ * The session background job `job` (validated by attachedJob) shows, from the state Claude Code keeps
+ * for it in `<config dir>/jobs/<job>/state.json`: `resumeSessionId`, which /clear and a respawn move
+ * on, else the `sessionId` it started with. Null when the job has no readable state, or no session
+ * (a shell-command job), so its pane keeps the terminal.
+ */
+export async function claudeJobSession(configDir: string, job: string): Promise<string | null> {
+  try {
+    const text = await readSmallFile(join(configDir, "jobs", job, "state.json"), MAX_JOB_STATE_BYTES);
+    if (text === null) return null;
+    const state: unknown = JSON.parse(text);
+    if (state === null || typeof state !== "object") return null;
+    const { resumeSessionId, sessionId } = state as { resumeSessionId?: unknown; sessionId?: unknown };
+    const session = resumeSessionId ?? sessionId;
+    return typeof session === "string" && SESSION_ID.test(session) ? session : null;
+  } catch (error) {
+    if (error instanceof SyntaxError || absent(error) ||
+      (error !== null && typeof error === "object" && "code" in error && ["EACCES", "EIO", "EPERM", "ELOOP", "ENXIO", "EISDIR"].includes(String(error.code)))) return null;
     throw error;
   }
 }

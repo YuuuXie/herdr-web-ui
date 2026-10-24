@@ -471,8 +471,12 @@ export async function stop(dependencies: StopDependencies = stopDependencies): P
     const deadline = Date.now() + 10_000;
     let exited = false;
     while (Date.now() < deadline) {
+      // the process table (a PowerShell query, seconds on a busy PC) only tells a reused number from
+      // a member still running: once every number is free, the tree is gone without asking it
+      const alive = tree.filter(member => dependencies.isAlive(member.pid));
+      if (alive.length === 0) { exited = true; break; }
       const currentProcesses = await dependencies.processTable(Math.max(1, deadline - Date.now()));
-      const running = tree.some(member => {
+      const running = alive.some(member => {
         if (!dependencies.isAlive(member.pid)) return false;
         const current = currentProcesses.find(row => row.pid === member.pid);
         return !(member.started !== undefined && current?.started !== undefined && current.started !== member.started);

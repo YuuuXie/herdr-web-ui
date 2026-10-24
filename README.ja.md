@@ -27,15 +27,13 @@ Ovis は herdr のためのブラウザとスマートフォンのクライア�
   <a href="docs/guide.md#on-your-phone"><img src="https://img.shields.io/badge/PWA-installable-666666?labelColor=333333" alt="インストール可能な PWA"></a>
 </p>
 
+**Claude Code と Codex を、スマートフォンから。** 自分のコンピューターで実行中のエージェントセッションをチャットで読んで返答でき、必要なときは本物のターミナルも使えます。旧称 herdr web UI。
+
 ---
 
 https://github.com/user-attachments/assets/d854dbb6-64bd-4eba-81c7-fbd3f525726b
 
 <p align="center"><sub>1 つの Claude Code セッションを、herdr のターミナルからブラウザのターミナルとチャットへ、そしてスマートフォンへ。スマートフォンでは新しい worktree をすぐ隣に起動 · 実際の動作を収録、カットなし</sub></p>
-
-**Claude Code と Codex を、スマートフォンから。**
-
-[herdr](https://github.com/herdrdev/herdr) のブラウザ・スマートフォン向けクライアントです。自分のコンピューターで実行中の同じエージェントセッションを、パソコンでもスマートフォンでもチャットで読んで返答できます。必要なときはターミナルも使えます。
 
 <table>
   <tr>

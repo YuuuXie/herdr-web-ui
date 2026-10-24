@@ -30,6 +30,11 @@ platforms = ["linux", "macos"]
 command = ["bun", "run", "build"]
 platforms = ["windows"]
 
+# the release's Rust PTY host, checked against its SHA-256; without one, terminals use the Node sidecar
+[[build]]
+command = ["sh", "scripts/with-bun.sh", "scripts/pty-sidecar.ts", "install"]
+platforms = ["linux", "macos"]
+
 # One-shot per herdr start: brings the bridge up if it is not already answering.
 [[startup]]
 command = ["sh", "scripts/with-bun.sh", "scripts/plugin.ts", "start"]

@@ -27,15 +27,13 @@ Ovis, the browser and phone client for herdr.
   <a href="docs/guide.md#on-your-phone"><img src="https://img.shields.io/badge/PWA-installable-666666?labelColor=333333" alt="Installable PWA"></a>
 </p>
 
+**Claude Code and Codex, from your phone.** Read and reply to the agent sessions running on your computer as a chat, with the live terminal when you need it. Formerly herdr web UI.
+
 ---
 
 https://github.com/user-attachments/assets/d854dbb6-64bd-4eba-81c7-fbd3f525726b
 
 <p align="center"><sub>One Claude Code session: in herdr's terminal, then the browser's Terminal and Chat, then the phone, where a new worktree starts beside it · recorded live, no cuts</sub></p>
-
-**Claude Code and Codex, from your phone.**
-
-A browser and phone client for [herdr](https://github.com/herdrdev/herdr). Read and reply to the same agent sessions running on your computer — on desktop or phone, as chat, with the terminal when you need it.
 
 <table>
   <tr>
@@ -130,7 +128,7 @@ Yes. Run the agent in a [herdr](https://github.com/herdrdev/herdr) pane on your 
 
 **Which agents does the chat view support?**
 
-Claude Code, Codex, omp, omo, gjc, pi and Hermes are read from their own session stores. GJC chat and done alerts use the web UI's native GJC extension to identify the active session, without an SDK broker or CLI lookup. [Install the extension](docs/guide.md#supported-agents) and restart GJC to enable them; missing or ambiguous session identity uses Terminal and herdr's own status. For OpenCode, chat reads the session herdr reports from its SQLite database, including supported 2.x and 1.x schemas. The home screen, missing session identity or an unsupported, unreadable or over-limit store uses the terminal instead. Devin CLI is a chat when herdr or the running process names its session, as `devin --resume <id>` does; a plain `devin` shows the live terminal.
+Claude Code, Codex, omp, omo, gjc, pi and Hermes are read from their own session stores. GJC chat and done alerts use Ovis's native GJC extension to identify the active session, without an SDK broker or CLI lookup. [Install the extension](docs/guide.md#supported-agents) and restart GJC to enable them; missing or ambiguous session identity uses Terminal and herdr's own status. For OpenCode, chat reads the session herdr reports from its SQLite database, including supported 2.x and 1.x schemas. The home screen, missing session identity or an unsupported, unreadable or over-limit store uses the terminal instead. Devin CLI is a chat when herdr or the running process names its session, as `devin --resume <id>` does; a plain `devin` shows the live terminal.
 
 Grok chat is Linux-only and requires one process-held session matching herdr's session identity; macOS, Windows or ambiguous identity use Terminal. Antigravity (agy) chat is experimental: Linux native-tested, macOS untested, Windows terminal-only. It follows the running process's held conversation lock rather than guessing a session. Any unsupported or unresolved transcript uses the terminal instead. [Supported agents →](docs/guide.md#supported-agents)
 

@@ -463,6 +463,50 @@ it.skipIf(process.platform !== "linux")("recovers from an ambiguous unregister o
   }
 });
 
+it.skipIf(process.platform !== "linux")("keeps an initially incomplete log unavailable after its descriptor closes", async () => {
+  const root = mkdtempSync(join(tmpdir(), "copilot-log-closed-"));
+  const directory = join(root, "session-state", session);
+  mkdirSync(directory, { recursive: true });
+  mkdirSync(join(root, "logs"));
+  const path = join(directory, "events.jsonl");
+  writeFileSync(path, start + prompt("existing conversation"));
+  const child = Bun.spawn(["node", "-e", `
+    const {openSync, closeSync} = require("node:fs");
+    const root = process.argv[1];
+    const log = root + "/logs/process-100-" + process.pid + ".log";
+    openSync(root + "/session-state/${session}/inuse." + process.pid + ".hold", "w");
+    let fd = openSync(log, "w");
+    console.log("ready");
+    process.stdin.on("data", (input) => {
+      if (input.toString().trim() === "close") closeSync(fd);
+      else fd = openSync(log, "a");
+      console.log("ok");
+    });
+  `, root], { stdin: "pipe", stdout: "pipe", stderr: "inherit" });
+  const reader = child.stdout.getReader();
+  try {
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain("ready");
+    const log = join(root, "logs", `process-100-${child.pid}.log`);
+    const read = () => copilotTranscriptFile(session, [`COPILOT_HOME=${root}`], ["copilot"], child.pid);
+    writeFileSync(log, `2026-10-24T00:00:00.000Z [INFO] Unregistering foreground session: ${session}`);
+    expect(read()).toBeNull();
+    child.stdin.write("close\n");
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain("ok");
+    expect(read()).toBeNull();
+    child.stdin.write("open\n");
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain("ok");
+    writeFileSync(log, "ordinary complete line\n");
+    expect(read()).toBeNull();
+    expect(read()).toBeNull();
+    appendFileSync(log, `2026-10-24T00:00:00.000Z [INFO] Registering foreground session: ${session}\n`);
+    expect(read()).toBe(path);
+  } finally {
+    child.kill();
+    await child.exited;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 it.skipIf(process.platform !== "linux")("follows process-owned foreground evidence through fork and switch-back with multiple holds", async () => {
   const root = mkdtempSync(join(tmpdir(), "copilot-foreground-"));
   const home = join(root, "home");

@@ -1035,10 +1035,11 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
   // a phone opens on the list of pages; a wider dialog shows the list beside the first page. A
   // button that points at Updates opens on About whatever an entry still landing would restore
   const linked = PAGES.find((candidate) => candidate.id === linkPage)?.id ?? null;
-  // a page the command palette named opens first; the request is read, not taken, so a remount in development finds it again
+  // a page the command palette named opens first, on the group it named; the request is read, not
+  // taken, so a remount in development finds it again
   const [asked] = useState(requestedSettingsPage);
   useEffect(() => requestSettingsPage(null), []);
-  const [chosen, setChosen] = useState<SettingsPage | null>(section === "updates" ? "about" : asked ?? (restored ? restored.page : linked));
+  const [chosen, setChosen] = useState<SettingsPage | null>(section === "updates" ? "about" : asked?.page ?? (restored ? restored.page : linked));
   const page = chosen ?? (narrow ? null : PAGES[0]!.id);
   const [keyBarOpen, setKeyBarOpen] = useState(section === "updates" ? false : restored?.keyBar ?? false);
   // every step in is an entry of the history, so the system Back button takes one step out
@@ -1060,6 +1061,8 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
   const surface = useFocusTrap<HTMLElement>(true, { initialFocus: backRef });
   useSheetSwipe(surface, onClose);
   const shown = useRef<{ page: SettingsPage | null; keyBar: boolean } | null>(null);
+  // the group a landing named, followed into view until the reader moves the page
+  const following = useRef<{ group: HTMLElement; page: SettingsPage | null } | null>(null);
   const label = (id: SettingsPage): string => t(id === "appearance" ? "Appearance" : id === "chat" ? "Chat" : id === "terminal" ? "Terminal" : id === "alerts" ? "Alerts" : id === "voice" ? "Voice input"
     : id === "usage" ? "Subscription usage" : id === "shortcuts" ? "Shortcuts" : id === "devices" ? "Phone & devices" : id === "remote" ? "Remote PCs" : id === "integrations" ? "Agent integrations" : "About");
   const openPage = (id: SettingsPage): void => { setKeyBarOpen(false); setChosen(id); };
@@ -1080,16 +1083,37 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
       if (settingsBodyRef.current) settingsBodyRef.current.scrollTop = settingsScrollRef.current;
       keyBarButtonRef.current?.focus({ preventScroll: true });
     } else if (before === null) {
-      // a button that points at Updates opens on it, and the focus goes there too; so does a link to a group
-      const named = section === "updates" ? "updates" : linked && linkSection ? linkSection : null;
+      // a button that points at Updates opens on it, and the focus goes there too; so does a link
+      // to a group, and a group the palette named
+      const named = section === "updates" ? "updates" : asked?.section ?? (linked && linkSection ? linkSection : null);
       const pointed = named ? settingsBodyRef.current?.querySelector<HTMLElement>(`[data-section="${CSS.escape(named)}"]`) : null;
-      if (pointed) { pointed.focus({ preventScroll: true }); pointed.scrollIntoView(); }
-      else tab(page)?.focus();
+      if (pointed) {
+        pointed.focus({ preventScroll: true });
+        pointed.scrollIntoView();
+        following.current = { group: pointed, page };
+      } else tab(page)?.focus();
     } else if (before.page !== page && narrow) {
       // a phone shows one of the two: the focus follows into the page, and back onto its row
       if (page !== null) backRef.current?.focus();
       else tab(before.page)?.focus();
     }
+    // a group filled in after it opens (the OpenAI key's form waits for the server's answer) grows
+    // past the fold: it is brought back into view until the reader moves the page or leaves it.
+    // The subscription is made again whenever this runs, so development's replay of the effect
+    // keeps following; the reader's move or another page ends it for good
+    const follow = following.current;
+    if (follow === null || follow.page !== page || keyBarOpen) { following.current = null; return; }
+    const body = settingsBodyRef.current;
+    const observer = new ResizeObserver(() => follow.group.scrollIntoView());
+    const moves = ["wheel", "touchstart", "pointerdown", "keydown"] as const;
+    const unsubscribe = (): void => {
+      observer.disconnect();
+      for (const move of moves) body?.removeEventListener(move, stop);
+    };
+    const stop = (): void => { following.current = null; unsubscribe(); };
+    observer.observe(follow.group);
+    for (const move of moves) body?.addEventListener(move, stop, { passive: true });
+    return unsubscribe;
   }, [page, keyBarOpen, narrow, section]);
   // server-side: the web server updates PC bridges, so it keeps this choice
   const [pcSettings, setPcSettings] = useState<MachineSettings | null>(null);

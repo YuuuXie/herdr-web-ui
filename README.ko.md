@@ -27,15 +27,13 @@ Ovis는 herdr를 위한 브라우저·휴대폰 클라이언트입니다.
   <a href="docs/guide.md#on-your-phone"><img src="https://img.shields.io/badge/PWA-installable-666666?labelColor=333333" alt="Installable PWA"></a>
 </p>
 
+**Claude Code와 Codex를 폰에서.** 컴퓨터에서 돌아가는 에이전트 세션을 채팅으로 읽고 답하고, 필요할 때는 실제 터미널로 넘어갑니다. 이전 이름은 herdr web UI입니다.
+
 ---
 
 https://github.com/user-attachments/assets/d854dbb6-64bd-4eba-81c7-fbd3f525726b
 
 <p align="center"><sub>하나의 Claude Code 세션을 herdr 터미널에서 브라우저의 터미널과 채팅으로, 이어서 폰으로. 폰에서는 새 워크트리를 바로 옆에 띄웁니다 · 실제 화면 녹화, 컷 없음</sub></p>
-
-**Claude Code와 Codex를 폰에서.**
-
-[herdr](https://github.com/herdrdev/herdr)를 브라우저와 폰에서 쓰는 클라이언트입니다. 컴퓨터에서 돌아가는 에이전트 세션을 그대로, 데스크톱에서든 폰에서든 채팅으로 읽고 답합니다. 필요할 때는 터미널로 넘어갑니다.
 
 <table>
   <tr>

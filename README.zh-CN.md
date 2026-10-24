@@ -27,15 +27,13 @@ Ovis，herdr 的浏览器和手机客户端。
   <a href="docs/guide.md#on-your-phone"><img src="https://img.shields.io/badge/PWA-installable-666666?labelColor=333333" alt="可安装的 PWA"></a>
 </p>
 
+**在手机上使用 Claude Code 和 Codex。** 以聊天方式阅读并回复你电脑上正在运行的智能体会话，需要时可切换到真正的终端。原名 herdr web UI。
+
 ---
 
 https://github.com/user-attachments/assets/d854dbb6-64bd-4eba-81c7-fbd3f525726b
 
 <p align="center"><sub>同一个 Claude Code 会话：从 herdr 终端到浏览器的终端和聊天，再到手机，在手机上紧挨着它启动一个新的 worktree · 实机录制，无剪辑</sub></p>
-
-**在手机上使用 Claude Code 和 Codex。**
-
-[herdr](https://github.com/herdrdev/herdr) 的浏览器与手机客户端。无论在电脑还是手机上，都能以聊天方式阅读并回复你电脑上正在运行的同一批智能体会话，需要时可切换到终端。
 
 <table>
   <tr>

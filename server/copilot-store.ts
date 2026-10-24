@@ -14,6 +14,7 @@ interface ForegroundCheckpoint {
   boundary: string; epoch: string; binding: ForegroundBinding | null | undefined;
 }
 const foregroundCheckpoints = new Map<number, ForegroundCheckpoint>();
+const observedForegroundLogs = new Set<number>();
 
 /** Check consumed content at both ends before treating the next read as an append. */
 function logBoundary(fd: number, size: number): string | null {
@@ -29,30 +30,48 @@ function logBoundary(fd: number, size: number): string | null {
 
 /** The latest complete lifecycle event in the CLI's own open log, never the newest transcript. */
 function loggedForeground(pid: number, logDirectories: readonly string[]): ForegroundBinding | null | undefined {
+  const observedBefore = observedForegroundLogs.has(pid);
+  const observe = (): void => {
+    if (observedForegroundLogs.size >= 256 && !observedForegroundLogs.has(pid)) {
+      const oldest = observedForegroundLogs.values().next().value!;
+      observedForegroundLogs.delete(oldest);
+      foregroundCheckpoints.delete(oldest);
+    }
+    observedForegroundLogs.add(pid);
+  };
+  const unavailable = (): undefined => {
+    const checkpoint = foregroundCheckpoints.get(pid);
+    if (checkpoint) checkpoint.binding = undefined;
+    return undefined;
+  };
   const directory = opendirSync(`/proc/${pid}/fd`);
   let found: ForegroundBinding | null | undefined = null;
   let logFound = false;
   let count = 0;
   try {
     for (let descriptor = directory.readSync(); descriptor; descriptor = directory.readSync()) {
-      if (++count > MAX_DESCRIPTORS) return undefined;
+      if (++count > MAX_DESCRIPTORS) return unavailable();
       let target: string;
       try { target = readlinkSync(`/proc/${pid}/fd/${descriptor.name}`); }
       catch (error) {
         if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-        return undefined;
+        return unavailable();
       }
-      if (target.endsWith(" (deleted)") && LOG_NAME.test(basename(target.slice(0, -10)))) return undefined;
+      if (target.endsWith(" (deleted)") && LOG_NAME.test(basename(target.slice(0, -10)))) {
+        observe();
+        return unavailable();
+      }
       if (!logDirectories.some((path) => dirname(target) === path) || LOG_NAME.exec(basename(target))?.[1] !== String(pid)) continue;
-      if (logFound) return undefined;
+      observe();
+      if (logFound) return unavailable();
       logFound = true;
       try {
-        if (realpathSync(target) !== target) return undefined;
+        if (realpathSync(target) !== target) return unavailable();
         const fd = openSync(`/proc/${pid}/fd/${descriptor.name}`, constants.O_RDONLY | constants.O_NONBLOCK);
         try {
           const stat = fstatSync(fd);
           const named = statSync(target);
-          if (!stat.isFile() || stat.dev !== named.dev || stat.ino !== named.ino) return undefined;
+          if (!stat.isFile() || stat.dev !== named.dev || stat.ino !== named.ino) return unavailable();
           const cached = foregroundCheckpoints.get(pid);
           const same = cached?.dev === stat.dev && cached.ino === stat.ino && cached.path === target
             && stat.size >= cached.size && stat.size - cached.size <= LOG_WINDOW_BYTES
@@ -65,35 +84,34 @@ function loggedForeground(pid: number, logDirectories: readonly string[]): Foreg
           const boundary = logBoundary(fd, stat.size);
           const after = fstatSync(fd);
           if (read !== bytes.length || boundary === null || after.size !== stat.size
-            || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs) return undefined;
+            || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs) return unavailable();
           const text = bytes.subarray(0, read).toString("utf8");
-          if (text && !text.endsWith("\n")) return undefined;
+          if (text && !text.endsWith("\n")) return unavailable();
           const skip = start === 0 || same ? 0 : text.indexOf("\n") + 1;
           const complete = text.slice(skip, text.lastIndexOf("\n") + 1);
-          if (start > 0 && !complete && !same) return undefined;
+          if (start > 0 && !complete && !same) return unavailable();
           // Only a complete initial log without lifecycle evidence permits marker/report fallback.
-          let selected = same ? cached.binding : start === 0 && cached === undefined ? null : undefined;
+          let selected = same ? cached.binding : start === 0 && !observedBefore ? null : undefined;
           let position = start + Buffer.byteLength(text.slice(0, skip));
           for (const line of complete.split("\n")) {
             const match = FOREGROUND_EVENT.exec(line);
             if (match) {
-              if (!SESSION_ID.test(match[2]!)) return undefined;
+              if (!SESSION_ID.test(match[2]!)) return unavailable();
               if (match[1] === "Registering") selected = { sessionId: match[2]!, generation: `${pid}:${stat.dev}:${stat.ino}:${epoch}:${position}` };
               else selected = undefined;
             }
             position += Buffer.byteLength(line) + 1;
           }
-          if (foregroundCheckpoints.size >= 256 && !foregroundCheckpoints.has(pid)) foregroundCheckpoints.delete(foregroundCheckpoints.keys().next().value!);
           foregroundCheckpoints.set(pid, {
             dev: stat.dev, ino: stat.ino, path: target, size: stat.size,
             mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, boundary, epoch, binding: selected,
           });
           found = selected;
         } finally { closeSync(fd); }
-      } catch { return undefined; }
+      } catch { return unavailable(); }
     }
   } finally { directory.closeSync(); }
-  return !logFound && foregroundCheckpoints.has(pid) ? undefined : found;
+  return !logFound && observedForegroundLogs.has(pid) ? unavailable() : found;
 }
 
 /** Pin one regular canonical file; callers must close the descriptor after reading. */
