@@ -1,0 +1,61 @@
+# Copilot chat
+
+On Linux, Chat reads Copilot CLI's native `events.jsonl`: user and assistant text,
+tool activity, recorded model/effort, recorded `ask_user` choices and Autopilot completion
+summaries. Reading Chat makes no model calls. Live questions and approvals stay in Terminal;
+the bridge never sends guessed selection keys. macOS and Windows use Terminal.
+This reader supports existing panes; it does not add Copilot to the launch picker.
+
+## Setup and session identity
+
+Run `herdr integration install copilot` in the effective Copilot home before starting a
+pane to enable Herdr's session report. Ovis never changes the CLI configuration.
+The reader uses the foreground process's `--config-dir`, then `COPILOT_HOME`, otherwise
+`HOME/.copilot`; an explicit `--log-dir` selects its log directory.
+
+The foreground process's own open CLI log can identify its current session through
+`Registering foreground session` and `Unregistering foreground session` records.
+Copilot CLI 1.0.103 was observed emitting these records; this is not a guarantee for every
+CLI version. A fresh registration can follow `/resume`, `/fork` and switch-back even
+when older sessions remain open. File recency never selects a session.
+
+Without a selected lifecycle registration, reading history requires both a trusted Herdr
+report and exactly one canonical session marker held by that foreground process.
+This fallback is allowed when no process log has been observed, or when the complete initial
+log contains no lifecycle events. It does **not** recover from an unregister, ambiguous
+lifecycle records, incomplete log lines, lost/rewritten log continuity, a deleted or unreadable
+log, or a catch-up gap beyond the 16 MiB scan window without a fresh registration.
+These cases use Terminal until current foreground evidence is available; repeated polling
+does not turn invalid evidence into permission to read old history.
+
+Existing panes with neither proof cannot be recovered by restarting the web server.
+Resume the intended session in the CLI to establish fresh foreground evidence.
+
+## History and limits
+
+Before its first message, a genuinely new process can show an empty Chat when its
+process-owned log or unique held marker identifies an unwritten session.
+An explicit resume/continue without current foreground proof never gets a
+fresh-session placeholder.
+
+A recorded foreground switch invalidates pagination cursors and tool-output links,
+including after switching back to the same session. Reload the current page for fresh
+links. The marker-and-report fallback cannot detect an unobserved switch away and back.
+
+The reader scans at most 16 MiB of lifecycle-log catch-up per lookup and checkpoints
+complete reads, including unavailable selections. Ambiguity remains unavailable until a
+fresh registration; it does not permanently block later registrations.
+Transcript pages use the shared bounded pager, and ownership is checked again after reading.
+
+## Verification
+
+```sh
+HERDR_TEST_MODE=unit bun test server/copilot.test.ts
+bun run check run bun test --timeout 20000 server/copilot.contract.test.ts
+bun run check run --build bun scripts/copilot-chat-browser-qa.ts
+bun run check fast
+```
+
+The unit, HTTP contract and browser fixtures use fictional transcripts and disposable
+processes. They establish reader behavior, not a live model run or compatibility with every
+Copilot CLI release. Private transcripts and process logs are not published as fixtures.

@@ -1603,7 +1603,7 @@ async function ompTranscriptPath(paneId: string, cwd: string): Promise<string> {
   return inStore;
 }
 
-/** History requires Herdr's hook; a process-held unwritten session can show an empty chat. */
+/** A process-owned lifecycle registration, or a trusted report plus a unique held marker. */
 async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[]): Promise<{ path: string; binding: string }> {
   const report = pane.agent_session;
   const claimedByPeer = async (session: string): Promise<boolean> => {

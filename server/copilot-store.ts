@@ -11,7 +11,7 @@ const FOREGROUND_EVENT = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z \[INFO\] (Regist
 interface ForegroundBinding { sessionId: string; generation: string }
 interface ForegroundCheckpoint {
   dev: number; ino: number; path: string; size: number; mtimeMs: number; ctimeMs: number;
-  boundary: string; epoch: string; binding: ForegroundBinding;
+  boundary: string; epoch: string; binding: ForegroundBinding | null | undefined;
 }
 const foregroundCheckpoints = new Map<number, ForegroundCheckpoint>();
 
@@ -30,7 +30,7 @@ function logBoundary(fd: number, size: number): string | null {
 /** The latest complete lifecycle event in the CLI's own open log, never the newest transcript. */
 function loggedForeground(pid: number, logDirectories: readonly string[]): ForegroundBinding | null | undefined {
   const directory = opendirSync(`/proc/${pid}/fd`);
-  let found: ForegroundBinding | null = null;
+  let found: ForegroundBinding | null | undefined = null;
   let logFound = false;
   let count = 0;
   try {
@@ -38,7 +38,10 @@ function loggedForeground(pid: number, logDirectories: readonly string[]): Foreg
       if (++count > MAX_DESCRIPTORS) return undefined;
       let target: string;
       try { target = readlinkSync(`/proc/${pid}/fd/${descriptor.name}`); }
-      catch { return undefined; }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        return undefined;
+      }
       if (target.endsWith(" (deleted)") && LOG_NAME.test(basename(target.slice(0, -10)))) return undefined;
       if (!logDirectories.some((path) => dirname(target) === path) || LOG_NAME.exec(basename(target))?.[1] !== String(pid)) continue;
       if (logFound) return undefined;
@@ -68,26 +71,18 @@ function loggedForeground(pid: number, logDirectories: readonly string[]): Foreg
           const skip = start === 0 || same ? 0 : text.indexOf("\n") + 1;
           const complete = text.slice(skip, text.lastIndexOf("\n") + 1);
           if (start > 0 && !complete && !same) return undefined;
-          let selected: ForegroundBinding | null = same ? cached.binding : null;
-          let observed = false;
+          // Only a complete initial log without lifecycle evidence permits marker/report fallback.
+          let selected = same ? cached.binding : start === 0 && cached === undefined ? null : undefined;
           let position = start + Buffer.byteLength(text.slice(0, skip));
           for (const line of complete.split("\n")) {
             const match = FOREGROUND_EVENT.exec(line);
             if (match) {
-              observed = true;
               if (!SESSION_ID.test(match[2]!)) return undefined;
               if (match[1] === "Registering") selected = { sessionId: match[2]!, generation: `${pid}:${stat.dev}:${stat.ino}:${epoch}:${position}` };
-              else if (selected?.sessionId === match[2]) selected = null;
-              else if (selected !== null) return undefined;
+              else selected = undefined;
             }
             position += Buffer.byteLength(line) + 1;
           }
-          if (!observed && !same) {
-            // A complete non-lifecycle log adds no identity; the report and held marker still must agree.
-            if (start === 0 && cached === undefined) continue;
-            return undefined;
-          }
-          if (selected === null) return undefined;
           if (foregroundCheckpoints.size >= 256 && !foregroundCheckpoints.has(pid)) foregroundCheckpoints.delete(foregroundCheckpoints.keys().next().value!);
           foregroundCheckpoints.set(pid, {
             dev: stat.dev, ino: stat.ino, path: target, size: stat.size,
@@ -98,7 +93,7 @@ function loggedForeground(pid: number, logDirectories: readonly string[]): Foreg
       } catch { return undefined; }
     }
   } finally { directory.closeSync(); }
-  return found;
+  return !logFound && foregroundCheckpoints.has(pid) ? undefined : found;
 }
 
 /** Pin one regular canonical file; callers must close the descriptor after reading. */

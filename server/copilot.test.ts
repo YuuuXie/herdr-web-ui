@@ -103,6 +103,21 @@ it.each(["commentary", "final_answer", undefined])("tracks the latest assistant 
   expect(parseCopilotTranscript(transcript + missingTimestamp).at(-1)?.end_ts).toBe(stamp);
 });
 
+it("does not repeat a completion summary already present in the last unphased reply", () => {
+  for (const phase of [undefined, "commentary"]) {
+    for (const ending of ["", prompt("next question")]) {
+      const turns = parseCopilotTranscript(start + prompt("finish")
+        + line("assistant.message", { content: "All done.", phase })
+        + line("session.task_complete", { summary: "All done." }) + ending);
+      expect(turns[1]?.parts).toEqual([{ kind: "text", text: "All done.", phase: "final_answer" }]);
+    }
+  }
+  const distinct = parseCopilotTranscript(start + prompt("finish")
+    + line("assistant.message", { content: "Working." })
+    + line("session.task_complete", { summary: "All done." }));
+  expect(distinct[1]?.parts).toHaveLength(2);
+});
+
 it("advances activity time past intermediate tool rounds and the final answer without changing turn boundaries", () => {
   const at = (type: string, data: object, second: number) =>
     JSON.stringify({ type, data, timestamp: `2026-10-21T00:00:0${second}Z` }) + "\n";
@@ -414,6 +429,39 @@ for (const scenario of ["rewrite", "gap"] as const) {
     }
   });
 }
+
+it.skipIf(process.platform !== "linux")("recovers from an ambiguous unregister only after a fresh registration", async () => {
+  const root = mkdtempSync(join(tmpdir(), "copilot-log-unregister-"));
+  const other = "12aa83d8-48bc-41f2-a498-7055c5c44a02";
+  for (const id of [session, other]) mkdirSync(join(root, "session-state", id), { recursive: true });
+  mkdirSync(join(root, "logs"));
+  const child = Bun.spawn(["node", "-e", `
+    require("node:fs").openSync(process.argv[1] + "/logs/process-100-" + process.pid + ".log", "w");
+    console.log("ready");
+    process.stdin.resume();
+  `, root], { stdin: "pipe", stdout: "pipe", stderr: "inherit" });
+  try {
+    expect(new TextDecoder().decode((await child.stdout.getReader().read()).value)).toContain("ready");
+    const log = join(root, "logs", `process-100-${child.pid}.log`);
+    const event = (action: string, id: string) => `2026-10-24T00:00:00.000Z [INFO] ${action} foreground session: ${id}\n`;
+    const binding = () => copilotLoggedBinding([`COPILOT_HOME=${root}`], ["copilot"], child.pid);
+    appendFileSync(log, event("Registering", session) + event("Registering", other) + event("Unregistering", session));
+    expect(binding()).toBeNull();
+    expect(binding()).toBeNull();
+    appendFileSync(log, "ordinary append\n");
+    expect(binding()).toBeNull();
+    appendFileSync(log, event("Registering", session));
+    expect(binding()?.sessionId).toBe(session);
+    appendFileSync(log, event("Unregistering", session));
+    expect(binding()).toBeNull();
+    appendFileSync(log, event("Registering", other));
+    expect(binding()?.sessionId).toBe(other);
+  } finally {
+    child.kill();
+    await child.exited;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 it.skipIf(process.platform !== "linux")("follows process-owned foreground evidence through fork and switch-back with multiple holds", async () => {
   const root = mkdtempSync(join(tmpdir(), "copilot-foreground-"));
