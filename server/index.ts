@@ -8,7 +8,7 @@ import { handleIntegrationsRequest } from "./integrations-routes.ts";
 import { randomBytes, randomUUID } from "node:crypto";
 import { OrderSequence } from "./order-sequence.ts";
 import { readHerdrProfiles, type HerdrMachineProfile } from "./herdr-profiles.ts";
-import { accessSync, constants, readFileSync } from "node:fs";
+import { accessSync, constants, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import type { HealthAuth, PendingMessage } from "../shared/protocol.ts";
@@ -51,6 +51,7 @@ import { bridgeIdentity, registerBridge } from "./bridge.ts";
 import { handleMachineRequest, nonCanonicalPath, slowMachinePath } from "./machine-api.ts";
 import { handleSessionHistoryRequest, handleSessionResumeRequest, SESSION_HISTORY_PATH, SESSION_RESUME_PATH } from "./session-history-routes.ts";
 import { HerdrSidebarConfig, herdrConfigPath } from "./herdr-sidebar.ts";
+import { readHerdrUi } from "./herdr-ui.ts";
 import { closeCodexDaemonSources } from "./codex-daemon.ts";
 import { MachineRelay } from "./machine-relay.ts";
 import { sameOrigin } from "./machine-security.ts";
@@ -147,7 +148,7 @@ export function createServer(
     machines?: boolean;
     /** Read-only saved profiles from the local herdr client; tests supply their own catalog. */
     herdrProfiles?: () => Promise<HerdrMachineProfile[]>;
-    /** herdr's config.toml, for its sidebar rows (server/herdr-sidebar.ts); unset, where herdr itself reads it. Tests pass a temp file. */
+    /** herdr's config.toml, for its sidebar rows (server/herdr-sidebar.ts) and its copy_on_select (server/herdr-ui.ts); unset, where herdr itself reads it. Tests pass a temp file. */
     herdrConfigPath?: string;
     registerBridge?: boolean;
     /** PLUGIN_ACTION_WAIT_MS in server/plugin-routes.ts; a test shortens it to see a run that outlasts the wait */
@@ -195,6 +196,12 @@ export function createServer(
   const devices = new DeviceStore(options.stateDir ?? defaultStateDir());
   const preferences = new PreferenceStore(options.stateDir ?? defaultStateDir());
   const seen = new SeenStore(options.stateDir ?? defaultStateDir());
+  // Chat's own rewind (#1500, never released) kept its rewinds here; nothing reads them since #1577
+  try {
+    rmSync(join(options.stateDir ?? defaultStateDir(), "claude-rewinds.json"), { force: true });
+  } catch (error) {
+    console.error(`cannot remove the unused claude-rewinds.json: ${error instanceof Error ? error.message : String(error)}`);
+  }
   const herdrSidebar = new HerdrSidebarConfig(options.herdrConfigPath ?? herdrConfigPath());
   const cliProxy = options.cliProxy ?? new CLIProxyService(options.stateDir ?? defaultStateDir());
   const cliProxyRoutes = new CLIProxyRoutes(cliProxy);
@@ -463,6 +470,11 @@ export function createServer(
         }
       }
 
+      if (pathname === "/api/herdr-ui") {
+        if (request.method !== "GET") return badRequest("method_not_allowed", "use GET");
+        return jsonResponse(readHerdrUi(options.herdrConfigPath), 200, { "cache-control": "no-store" });
+      }
+
       if (pathname === "/api/access") {
         setRequestRoute(pathname);
         if (request.method !== "GET") return badRequest("method_not_allowed", "use GET");
@@ -567,7 +579,8 @@ export function createServer(
   return {
     port: server.port ?? 0,
     hostname,
-    statusReady: collector.ready,
+    // both subscriptions live: a test may create a workspace and wait for its session-changed
+    statusReady: Promise.all([collector.ready, collector.structureReady]).then(() => undefined),
     /** a create request's first message for a pane's agent, as the create routes queue it (server/core/pending.ts); for tests that run no agent */
     queueFirstMessage,
     alertsSettled: () => push.settled(),

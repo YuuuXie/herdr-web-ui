@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, jest } from "bun:test";
 import type { HerdrPane } from "../shared/protocol.ts";
 import { HerdrError, type EventFrame } from "./herdr/client.ts";
 import { parseFocusFrame, parseStatusFrame, parseStructureFrame, startStatusCollector, type StatusCollectorDeps, type StatusCollectorHandlers } from "./collector.ts";
@@ -68,6 +68,33 @@ describe("parseFocusFrame", () => {
 });
 
 describe("lifecycle invalidations", () => {
+  it("tells when the lifecycle subscription is live, also when only a reopened one starts", async () => {
+    // a structure change before this is not heard of: a caller that creates a workspace waits for it
+    const herdr = fakeHerdr([]);
+    const collector = startStatusCollector(recorder().handlers, herdr.deps);
+    let live = false;
+    void collector.structureReady.then(() => { live = true; });
+    try {
+      await collector.ready;
+      await tick();
+      expect(live).toBe(false);
+      herdr.lifecycle().start();
+      await collector.structureReady;
+    } finally { collector.stop(); }
+    // the first connection closed before it started: the reopened one's start is what counts
+    const reopened = fakeHerdr([]);
+    const again = startStatusCollector(recorder().handlers, reopened.deps);
+    let reopenedLive = false;
+    void again.structureReady.then(() => { reopenedLive = true; });
+    try {
+      reopened.lifecycle().drop();
+      await until(() => reopened.lifecycles().length === 2, "the reopened lifecycle subscription");
+      expect(reopenedLive).toBe(false);
+      reopened.lifecycle().start();
+      await again.structureReady;
+    } finally { again.stop(); }
+  });
+
   it("reports a tracked pane missing when the first lifecycle subscription starts", async () => {
     // Given: the pane exists when tracked, but the lifecycle stream has not started.
     const herdr = fakeHerdr([]);
@@ -871,27 +898,32 @@ describe("startStatusCollector recovery", () => {
   it("backs off while a subscription keeps closing before it starts, and resets once one starts", async () => {
     const herdr = fakeHerdr([]);
     const { handlers } = recorder();
-    // long enough that a busy runner's timer lateness stays small beside the doubling
-    const collector = startStatusCollector(handlers, { ...herdr.deps, reconnectMinMs: 20, reconnectMaxMs: 160 });
-    const opened: number[] = [];
-    const t0 = Date.now();
-    for (let i = 0; i < 4; i++) {
-      herdr.lifecycle().drop("connect_failed");
+    // the clock is the test's: a busy PC's late timers cannot shift the delays it reads
+    jest.useFakeTimers();
+    let collector: ReturnType<typeof startStatusCollector> | undefined;
+    /** reopens after exactly `delay` ms of the clock, not one ms sooner */
+    const reopensAfter = (delay: number): void => {
       const count = herdr.lifecycles().length;
-      while (herdr.lifecycles().length === count) await tick(1);
-      opened.push(Date.now() - t0);
+      jest.advanceTimersByTime(delay - 1);
+      expect(herdr.lifecycles().length).toBe(count);
+      jest.advanceTimersByTime(1);
+      expect(herdr.lifecycles().length).toBe(count + 1);
+    };
+    try {
+      collector = startStatusCollector(handlers, { ...herdr.deps, reconnectMinMs: 20, reconnectMaxMs: 160 });
+      // doubling from the first delay up to the cap, while none starts
+      for (const delay of [20, 40, 80, 160, 160]) {
+        herdr.lifecycle().drop("connect_failed");
+        reopensAfter(delay);
+      }
+      // back to the first delay once one started
+      herdr.lifecycle().start();
+      herdr.lifecycle().drop();
+      reopensAfter(20);
+    } finally {
+      collector?.stop();
+      jest.useRealTimers();
     }
-    const gaps = opened.map((at, i) => at - (opened[i - 1] ?? 0));
-    // 20, 40, 80, 160 ms
-    expect(gaps[3]!).toBeGreaterThanOrEqual(120);
-    herdr.lifecycle().start();
-    const count = herdr.lifecycles().length;
-    const dropped = Date.now();
-    herdr.lifecycle().drop();
-    while (herdr.lifecycles().length === count) await tick(1);
-    // back to the first delay once one started
-    expect(Date.now() - dropped).toBeLessThan(100);
-    collector.stop();
   });
 
   it("does not let a snapshot asked for a subscription that closed meanwhile end the recovery", async () => {
