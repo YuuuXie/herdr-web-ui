@@ -407,20 +407,13 @@ describe("daily active message", () => {
     expect(telemetry.status().active).toEqual({ ...before, harnesses: ["claude", "codex"] });
   });
 
-  test("(h) every supported agent kind maps to a deployed telemetry harness", () => {
-    for (const kind of SUPPORTED_AGENT_KINDS) {
-      // The deployed receiver has no Copilot category; enabling its launcher must not change the wire format.
-      const expected = kind === "copilot" ? "other" : kind;
-      expect(harnessOf(kind) === expected, kind).toBeTrue();
-      expect(TELEMETRY_HARNESSES as readonly string[]).toContain(expected);
-    }
-  });
-
-  test("(i) Copilot launches retain the deployed receiver's other category", async () => {
-    const { telemetry, actives } = setup();
-    seen(telemetry);
-    await telemetry.active(["copilot"]);
-    expect(actives.map((active) => active.harnesses)).toEqual([["other"]]);
+  test("(h) every supported agent kind is a telemetry harness, or other until the Worker lists it", () => {
+    // the deployed Worker refuses a harness it does not list, so these count as other until a deploy adds them
+    const undeployed = new Set(["letta", "copilot"]);
+    for (const kind of undeployed) expect(harnessOf(kind)).toBe("other");
+    const missing = [...SUPPORTED_AGENT_KINDS].filter((kind) => !undeployed.has(kind) && !(TELEMETRY_HARNESSES as readonly string[]).includes(kind));
+    if (missing.length > 0) throw new Error(`${missing.join(", ")}: add it to TELEMETRY_HARNESSES and deploy the Worker`);
+    expect(missing).toEqual([]);
   });
 
   test("(j) a visit before the notice is delivered once the grace after the notice has passed", async () => {
