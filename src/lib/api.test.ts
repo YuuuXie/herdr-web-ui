@@ -12,6 +12,32 @@ afterEach(() => {
   jest.useRealTimers();
 });
 
+it("offers installed Copilot in agent menus while filtering missing and unsupported agents", async () => {
+  const agents = [
+    { kind: "copilot", label: "GitHub Copilot", installed: true },
+    { kind: "hermes", label: "Hermes", installed: false },
+    { kind: "unknown", label: "Unknown", installed: true },
+    { kind: "claude", label: "Claude Code" },
+  ];
+  globalThis.fetch = (async (_url: string) => Response.json({ agents })) as typeof fetch;
+
+  expect(await fetchAgentKinds()).toEqual([agents[0]!, agents[3]!]);
+  agents[0]!.installed = false;
+  expect(await fetchAgentKinds()).toEqual([agents[3]!]);
+});
+
+it("offers Copilot from an older remote bridge without installation metadata", async () => {
+  const requests: string[] = [];
+  const copilot = { kind: "copilot", label: "GitHub Copilot" };
+  globalThis.fetch = (async (url: string) => {
+    requests.push(url);
+    return Response.json({ agents: [copilot, { kind: "hermes", label: "Hermes", installed: false }] });
+  }) as typeof fetch;
+
+  expect(await fetchAgentKinds("remote-pc")).toEqual([copilot]);
+  expect(requests).toEqual(["/api/machines/remote-pc/agents"]);
+});
+
 it("refuses a file over the attachment limit before any of it is sent, and sends one at the limit", async () => {
   const requests: string[] = [];
   globalThis.fetch = (async (url: string) => {

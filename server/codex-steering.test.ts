@@ -39,6 +39,12 @@ describe("Codex's live steering buffer", () => {
     expect(codexSteeringPending(live("  ↳ send this now\n"), "send this now")).toBe(true);
   });
 
+  it("recognizes the panel above Codex 0.164's Fast-mode footer", () => {
+    const fast = live("  ↳ send this now\n").replace("  gpt-5.1 default · /tmp/work · ⠇", "  gpt-6.1 high fast · ~/work · Fix the flaky test · Main [default]");
+    expect(codexSteeringPending(fast, "send this now")).toBe(true);
+    expect(codexSteeringPending(fast.replace("high fast ·", "high faster ·"), "send this now")).toBe(false);
+  });
+
   it("matches the submitted message however Codex wrapped or cut it", () => {
     expect(codexSteeringPending(live("  ↳ older entry\n  ↳ second message that wraps around\n    the narrow pane\n"), "second message that wraps around the narrow pane")).toBe(true);
     expect(codexSteeringPending(live("  ↳ line one\n    line two\n"), "line one\nline two")).toBe(true);
