@@ -59,7 +59,7 @@ import { resolveAgyStore, sameAgyStore, type AgyStore } from "./agy-store.ts";
 import { withinRetentionBudget } from "./retention-budget.ts";
 import { forgetAllPiIndexes, forgetPiIndex, piAbandonedTurns, piBranchRecords, piBranchSegments } from "./pi-tree.ts";
 import { copilotOutput, copilotRootRecord, parseCopilotTranscript } from "./copilot.ts";
-import { copilotExplicitResume, copilotLoggedBinding, copilotLoggedSession, copilotTranscriptFile, copilotUnwrittenSession, openCopilotFile } from "./copilot-store.ts";
+import { copilotExplicitResume, copilotProcessSession, copilotTranscriptFile, copilotUnwrittenSession, openCopilotFile } from "./copilot-store.ts";
 import { parseConversationMetadata } from "./conversation-metadata.ts";
 import { answerVersion, ConversationNotStarted, ConversationUnavailable, type ConversationPage, HistoryChanged, type RecognizedConversation, type StreamSource, TRANSCRIPT_WINDOW_BYTES } from "./conversation-shared.ts";
 import { forgetHermesTranscriptState, hermesConversationPage, hermesToolOutput, hermesTranscriptForPane } from "./hermes.ts";
@@ -992,9 +992,9 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
       const info = await paneProcessInfo(peer.pane_id).catch(() => null);
       const processes = agentProcesses(info?.foreground_processes ?? [], "copilot");
       if (processes.length === 1 && typeof processes[0]?.pid === "number") {
-        const live = copilotLoggedSession(processEnviron(processes[0].pid), processes[0].argv ?? [], processes[0].pid);
-        if (live !== null) {
-          claims.add(live);
+        const live = copilotProcessSession(processEnviron(processes[0].pid), processes[0].argv ?? [], processes[0].pid);
+        if (live?.logged) {
+          claims.add(live.sessionId);
           continue;
         }
       }
@@ -1015,21 +1015,22 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
   }
   const environment = processEnviron(foreground.pid);
   const argv = foreground.argv ?? [];
-  const logged = copilotLoggedBinding(environment, argv, foreground.pid);
+  const selected = copilotProcessSession(environment, argv, foreground.pid);
+  const logged = selected?.logged ? selected : null;
   if (logged !== null && !(await claimedByPeer(logged.sessionId))) {
-    const path = copilotTranscriptFile(logged.sessionId, environment, argv, foreground.pid);
+    const path = copilotTranscriptFile(logged.sessionId, selected);
     if (path !== null && nodePath.basename(nodePath.dirname(path)) === logged.sessionId)
       return { path, binding: `${foreground.pid}:${logged.generation}` };
   }
   if (report != null) {
     if (await claimedByPeer(report.value)) throw new ConversationUnavailable("no_session_id");
     if (logged === null) {
-      const path = copilotTranscriptFile(report.value, environment, argv, foreground.pid);
+      const path = copilotTranscriptFile(report.value, selected);
       if (path !== null && nodePath.basename(nodePath.dirname(path)) === report.value)
         return { path, binding: `${foreground.pid}:held:${path}` };
     }
   }
-  const pending = copilotUnwrittenSession(environment, argv, foreground.pid);
+  const pending = copilotUnwrittenSession(selected, argv);
   if (pending !== null && (report == null || logged?.sessionId === pending.sessionId || report.value === pending.sessionId)
     && !(await claimedByPeer(pending.sessionId))) {
     throw new ConversationNotStarted(pending.sessionId, "copilot-transcript", pending.path);

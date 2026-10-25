@@ -21,6 +21,15 @@ let app: ReturnType<typeof createServer>;
 let workspace: string;
 let pane: string;
 
+async function startFixture(pane: string, session: string, flags = "") {
+  await herdrRpc("pane.send_text", { pane_id: pane, text: `COPILOT_HOME=${home} node ${executable} ${session}${flags ? ` ${flags}` : ""}\n` });
+  for (const deadline = Date.now() + 10_000;;) {
+    if ((await sessionSnapshot()).panes.find((p) => p.pane_id === pane)?.agent === "copilot") return;
+    if (Date.now() > deadline) throw new Error(`isolated Copilot stand-in not detected in ${pane}`);
+    await Bun.sleep(50);
+  }
+}
+
 beforeAll(async () => {
   if (process.platform !== "linux") return;
   for (const session of [id, other]) mkdirSync(join(home, "session-state", session), { recursive: true });
@@ -65,12 +74,7 @@ console.log("fixture ready");`);
   const created = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-copilot-api" });
   workspace = created.workspace.workspace_id;
   pane = created.root_pane.pane_id;
-  await herdrRpc("pane.send_text", { pane_id: pane, text: `COPILOT_HOME=${home} node ${executable} ${id}\n` });
-  for (const deadline = Date.now() + 10_000;;) {
-    if ((await sessionSnapshot()).panes.find((p) => p.pane_id === pane)?.agent === "copilot") break;
-    if (Date.now() > deadline) throw new Error("isolated Copilot stand-in not detected by Herdr");
-    await Bun.sleep(50);
-  }
+  await startFixture(pane, id);
   app = createServer({ hostname: "127.0.0.1", port: 0, token: "", stateDir: join(root, "state"), tailscaleOwner: null });
 });
 
@@ -122,12 +126,7 @@ it.skipIf(process.platform !== "linux")("binds only the reported UUID to the for
   const second = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-copilot-peer" });
   try {
     const peer = second.root_pane.pane_id;
-    await herdrRpc("pane.send_text", { pane_id: peer, text: `COPILOT_HOME=${home} node ${executable} ${other}\n` });
-    for (const deadline = Date.now() + 10_000;;) {
-      if ((await sessionSnapshot()).panes.find((p) => p.pane_id === peer)?.agent === "copilot") break;
-      if (Date.now() > deadline) throw new Error("peer Copilot process was not detected");
-      await Bun.sleep(50);
-    }
+    await startFixture(peer, other);
     await report(other, 1, "herdr:copilot", peer);
     const peerUrl = `http://127.0.0.1:${app.port}/api/pane/conversation?pane_id=${encodeURIComponent(peer)}`;
     expect((await (await fetch(peerUrl)).json()).turns[0].parts[0].text).toBe("session B");
@@ -135,12 +134,7 @@ it.skipIf(process.platform !== "linux")("binds only the reported UUID to the for
     const duplicate = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-copilot-duplicate" });
     try {
       const claimant = duplicate.root_pane.pane_id;
-      await herdrRpc("pane.send_text", { pane_id: claimant, text: `COPILOT_HOME=${home} node ${executable} ${id}\n` });
-      for (const deadline = Date.now() + 10_000;;) {
-        if ((await sessionSnapshot()).panes.find((p) => p.pane_id === claimant)?.agent === "copilot") break;
-        if (Date.now() > deadline) throw new Error("duplicate claimant was not detected");
-        await Bun.sleep(50);
-      }
+      await startFixture(claimant, id);
       await report(id, 1, "herdr:copilot", claimant);
       expect((await read()).source).toBe("scrollback");
       const claimantUrl = `http://127.0.0.1:${app.port}/api/pane/conversation?pane_id=${encodeURIComponent(claimant)}`;
@@ -168,12 +162,7 @@ it.skipIf(process.platform !== "linux")("binds only the reported UUID to the for
     if (Date.now() > deadline) throw new Error("isolated fixture did not exit");
     await Bun.sleep(50);
   }
-  await herdrRpc("pane.send_text", { pane_id: pane, text: `COPILOT_HOME=${home} node ${executable} ${other}\n` });
-  for (const deadline = Date.now() + 10_000;;) {
-    if ((await sessionSnapshot()).panes.find((p) => p.pane_id === pane)?.agent === "copilot") break;
-    if (Date.now() > deadline) throw new Error("replacement fixture not detected");
-    await Bun.sleep(50);
-  }
+  await startFixture(pane, other);
   await report(other, 4);
   expect((await read()).turns[0]?.parts[0]?.text).toBe("session B");
   expect((await fetch(`${url}&from=${encodeURIComponent(first.cursor!)}`)).status).toBe(409);
@@ -197,12 +186,7 @@ it.skipIf(process.platform !== "linux")("reads a resumed CLI without marker or r
   const created = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-copilot-lifecycle" });
   const current = created.root_pane.pane_id;
   try {
-    await herdrRpc("pane.send_text", { pane_id: current, text: `COPILOT_HOME=${home} node ${executable} ${resumed} --resume=${resumed} --lifecycle\n` });
-    for (const deadline = Date.now() + 10_000;;) {
-      if ((await sessionSnapshot()).panes.find((p) => p.pane_id === current)?.agent === "copilot") break;
-      if (Date.now() > deadline) throw new Error("owned resumed fixture not detected");
-      await Bun.sleep(50);
-    }
+    await startFixture(current, resumed, `--resume=${resumed} --lifecycle`);
     const url = `http://127.0.0.1:${app.port}/api/pane/conversation?pane_id=${encodeURIComponent(current)}`;
     const read = async () => (await fetch(url)).json() as Promise<{
       source: string; turns: { parts: { text?: string; output_ref?: string }[] }[]; cursor?: string; history_id?: string;
@@ -222,12 +206,7 @@ it.skipIf(process.platform !== "linux")("reads a resumed CLI without marker or r
     const duplicate = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-copilot-log-peer" });
     try {
       const peer = duplicate.root_pane.pane_id;
-      await herdrRpc("pane.send_text", { pane_id: peer, text: `COPILOT_HOME=${home} node ${executable} ${resumed} --resume=${resumed} --lifecycle\n` });
-      for (const deadline = Date.now() + 10_000;;) {
-        if ((await sessionSnapshot()).panes.find((p) => p.pane_id === peer)?.agent === "copilot") break;
-        if (Date.now() > deadline) throw new Error("log-only duplicate fixture not detected");
-        await Bun.sleep(50);
-      }
+      await startFixture(peer, resumed, `--resume=${resumed} --lifecycle`);
       expect((await read()).source).toBe("scrollback");
       const peerUrl = `http://127.0.0.1:${app.port}/api/pane/conversation?pane_id=${encodeURIComponent(peer)}`;
       expect((await (await fetch(peerUrl)).json()).source).toBe("scrollback");
@@ -298,12 +277,7 @@ it.skipIf(process.platform !== "linux")("never mistakes an explicitly resumed la
   const created = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-copilot-no-proof" });
   const current = created.root_pane.pane_id;
   try {
-    await herdrRpc("pane.send_text", { pane_id: current, text: `COPILOT_HOME=${home} node ${executable} ${resumed} --resume=${resumed} --no-proof\n` });
-    for (const deadline = Date.now() + 10_000;;) {
-      if ((await sessionSnapshot()).panes.find((p) => p.pane_id === current)?.agent === "copilot") break;
-      if (Date.now() > deadline) throw new Error("owned no-proof fixture not detected");
-      await Bun.sleep(50);
-    }
+    await startFixture(current, resumed, `--resume=${resumed} --no-proof`);
     const url = `http://127.0.0.1:${app.port}/api/pane/conversation?pane_id=${encodeURIComponent(current)}`;
     expect((await (await fetch(url)).json()).source).toBe("scrollback");
     expect((await fetch(`${url}&from=stale`)).status).toBe(409);

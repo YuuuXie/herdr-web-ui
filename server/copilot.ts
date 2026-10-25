@@ -55,6 +55,19 @@ export function parseCopilotTranscript(jsonl: string, maxTurns = MAX_TURNS): Con
     finished = false;
     return turn;
   };
+  const addTool = (data: Row, ts: string | null, name: string, intention: string | null = null): void => {
+    const id = data.toolCallId;
+    if (typeof id !== "string" || !CALL_ID.test(id) || pending.has(id)) return;
+    const args = row(data.arguments) ?? {};
+    const part: Extract<ConversationPart, { kind: "tool" }> = {
+      kind: "tool", name, summary: text(data.toolTitle) ?? intention ?? toolSummary(name, args),
+      input: JSON.stringify(args, null, 2).slice(0, 16_000), output: "",
+    };
+    assistant(ts).parts.push(part);
+    pending.set(id, part);
+    const summary = text(args.summary);
+    if (name === "task_complete" && summary !== null) completionTools.set(id, summary);
+  };
   for (const { type, data, timestamp } of copilotRecords(jsonl)) {
     if (type === "user.message") {
       const content = text(data.content);
@@ -77,31 +90,11 @@ export function parseCopilotTranscript(jsonl: string, maxTurns = MAX_TURNS): Con
       });
       for (const raw of requests) {
         const request = row(raw);
-        if (!request || typeof request.toolCallId !== "string" || !CALL_ID.test(request.toolCallId)
-          || pending.has(request.toolCallId)) continue;
-        const name = text(request.name) ?? "tool";
-        const args = row(request.arguments) ?? {};
-        const part: Extract<ConversationPart, { kind: "tool" }> = {
-          kind: "tool", name, summary: text(request.toolTitle) ?? text(request.intentionSummary) ?? toolSummary(name, args),
-          input: JSON.stringify(args, null, 2).slice(0, 16_000), output: "",
-        };
-        turn.parts.push(part);
-        pending.set(request.toolCallId, part);
-        if (name === "task_complete" && text(args.summary) !== null) completionTools.set(request.toolCallId, text(args.summary)!);
+        if (request) addTool(request, timestamp, text(request.name) ?? "tool", text(request.intentionSummary));
       }
       if (data.phase === "final_answer") finished = true;
     } else if (type === "tool.execution_start") {
-      const id = data.toolCallId;
-      if (typeof id !== "string" || !CALL_ID.test(id) || pending.has(id)) continue;
-      const name = text(data.toolName) ?? "tool";
-      const args = row(data.arguments) ?? {};
-      const part: Extract<ConversationPart, { kind: "tool" }> = {
-        kind: "tool", name, summary: text(data.toolTitle) ?? toolSummary(name, args),
-        input: JSON.stringify(args, null, 2).slice(0, 16_000), output: "",
-      };
-      assistant(timestamp).parts.push(part);
-      pending.set(id, part);
-      if (name === "task_complete" && text(args.summary) !== null) completionTools.set(id, text(args.summary)!);
+      addTool(data, timestamp, text(data.toolName) ?? "tool");
     } else if (type === "tool.execution_complete") {
       const id = data.toolCallId;
       const part = typeof id === "string" ? pending.get(id) : undefined;

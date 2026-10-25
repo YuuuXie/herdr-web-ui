@@ -3,16 +3,64 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileS
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseCopilotTranscript } from "./copilot.ts";
-import { copilotLoggedBinding, copilotLoggedSession, copilotTranscriptFile, copilotUnwrittenSession, heldSessions } from "./copilot-store.ts";
+import { copilotProcessSession, copilotTranscriptFile as selectedTranscriptFile, copilotUnwrittenSession as selectedUnwrittenSession, heldSessions } from "./copilot-store.ts";
 import { ConversationUnavailable, forgetTranscriptState, HistoryChanged, transcriptPage, transcriptToolOutput } from "./conversation.ts";
 import { parseConversationMetadata } from "./conversation-metadata.ts";
 
 const session = "12aa83d8-48bc-41f2-a498-7055c5c44a01";
+const other = "12aa83d8-48bc-41f2-a498-7055c5c44a02";
 const line = (type: string, data: object, agentId?: string) =>
   JSON.stringify({ type, data, id: crypto.randomUUID(), timestamp: "2026-10-21T00:00:00Z", parentId: null, ...(agentId ? { agentId } : {}) }) + "\n";
 const start = line("session.start", { sessionId: session, copilotVersion: "1.0.102-1" });
 const prompt = (text: string) => line("user.message", { content: text, transformedContent: "model-only text", turnId: crypto.randomUUID() });
 const answer = (text: string, phase = "final_answer") => line("assistant.message", { content: text, phase, model: "fixture-model", turnId: crypto.randomUUID() });
+const copilotTranscriptFile = (session: unknown, ...args: Parameters<typeof copilotProcessSession>) =>
+  selectedTranscriptFile(session, copilotProcessSession(...args));
+const copilotUnwrittenSession = (...args: Parameters<typeof copilotProcessSession>) =>
+  selectedUnwrittenSession(copilotProcessSession(...args), args[1]);
+const register = (id: string, action = "Registering") => `2026-10-24T00:00:00.000Z [INFO] ${action} foreground session: ${id}\n`;
+
+async function logFixture(held: readonly string[]) {
+  const root = mkdtempSync(join(tmpdir(), "copilot-log-"));
+  for (const id of [session, other]) mkdirSync(join(root, "session-state", id), { recursive: true });
+  mkdirSync(join(root, "logs"));
+  const child = Bun.spawn(["node", "-e", `
+    const {openSync, closeSync} = require("node:fs");
+    const root = process.argv[1];
+    const log = root + "/logs/process-100-" + process.pid + ".log";
+    for (const id of process.argv.slice(2)) openSync(root + "/session-state/" + id + "/inuse." + process.pid + ".hold", "w");
+    let fd = openSync(log, "w");
+    console.log("ready");
+    require("node:readline").createInterface({input: process.stdin}).on("line", (command) => {
+      if (command === "close") closeSync(fd);
+      else if (command === "open") fd = openSync(log, "a");
+      else if (command === "extra") openSync(root + "/logs/process-200-" + process.pid + ".log", "w");
+      else throw new Error("unexpected fixture command: " + command);
+      console.log("ok");
+    });
+  `, root, ...held], { stdin: "pipe", stdout: "pipe", stderr: "inherit" });
+  const reader = child.stdout.getReader();
+  const close = async () => {
+    child.kill();
+    await child.exited;
+    rmSync(root, { recursive: true, force: true });
+  };
+  try {
+    expect(new TextDecoder().decode((await reader.read()).value)).toContain("ready");
+  } catch (error) { await close(); throw error; }
+  const environment = [`COPILOT_HOME=${root}`];
+  return {
+    root, environment, pid: child.pid, log: join(root, "logs", `process-100-${child.pid}.log`), close,
+    binding: () => {
+      const selected = copilotProcessSession(environment, ["copilot"], child.pid);
+      return selected?.logged ? selected : null;
+    },
+    command: async (value: string) => {
+      child.stdin.write(`${value}\n`);
+      expect(new TextDecoder().decode((await reader.read()).value)).toContain("ok");
+    },
+  };
+}
 
 it("parses persisted Copilot messages and tool rounds once, with failures and recorded metadata", () => {
   const text = start + prompt("Visible prompt")
@@ -65,9 +113,11 @@ it("keeps unphased completed prose available as an answer, and explicit commenta
   expect(turns.at(-1)?.parts).toEqual([{ kind: "text", text: "work", phase: "commentary" }, { kind: "text", text: "unphased answer" }]);
 });
 
-it("renders completed Autopilot summaries as final replies without duplicating an explicit answer or a child completion", () => {
+it.each(["assistant.message", "tool.execution_start"])("renders Autopilot summaries from %s without duplicating an explicit answer or a child completion", (type) => {
   const completion = (id: string, summary: string) =>
-    line("assistant.message", { toolRequests: [{ toolCallId: id, name: "task_complete", arguments: { summary } }] })
+    line(type, type === "assistant.message"
+      ? { toolRequests: [{ toolCallId: id, name: "task_complete", arguments: { summary } }] }
+      : { toolCallId: id, toolName: "task_complete", arguments: { summary } })
     + line("tool.execution_complete", { toolCallId: id, success: true, result: { content: "Task complete." } });
   const transcript = start + prompt("first") + answer("Working", "commentary")
     + completion("done-1", "Completed first task.")
@@ -329,76 +379,40 @@ it.skipIf(process.platform !== "linux")("uses only the process home and a canoni
 });
 
 it.skipIf(process.platform !== "linux")("keeps report-and-marker fallback for a complete CLI log without lifecycle events", async () => {
-  const root = mkdtempSync(join(tmpdir(), "copilot-log-no-lifecycle-"));
-  const directory = join(root, "session-state", session);
-  mkdirSync(directory, { recursive: true });
-  mkdirSync(join(root, "logs"));
-  const path = join(directory, "events.jsonl");
-  writeFileSync(path, start + prompt("existing conversation"));
-  const child = Bun.spawn(["node", "-e", `
-    const {openSync} = require("node:fs");
-    const root = process.argv[1];
-    openSync(root + "/session-state/${session}/inuse." + process.pid + ".hold", "w");
-    openSync(root + "/logs/process-100-" + process.pid + ".log", "w");
-    console.log("ready");
-    process.stdin.on("data", () => {
-      openSync(root + "/logs/process-200-" + process.pid + ".log", "w");
-      console.log("opened");
-    });
-  `, root], { stdin: "pipe", stdout: "pipe", stderr: "inherit" });
-  const reader = child.stdout.getReader();
+  const fixture = await logFixture([session]);
+  const { root, log, pid, environment, binding } = fixture;
+  const path = join(root, "session-state", session, "events.jsonl");
   try {
-    expect(new TextDecoder().decode((await reader.read()).value)).toContain("ready");
-    const log = join(root, "logs", `process-100-${child.pid}.log`);
-    const environment = [`COPILOT_HOME=${root}`];
+    writeFileSync(path, start + prompt("existing conversation"));
     const argv = ["copilot", `--resume=${session}`];
     for (const content of ["", "2026-10-23T00:00:00.000Z [INFO] CLI started\n"]) {
       writeFileSync(log, content);
-      expect(copilotLoggedBinding(environment, argv, child.pid)).toBeNull();
-      expect(copilotTranscriptFile(session, environment, argv, child.pid)).toBe(path);
-      expect(copilotTranscriptFile(null, environment, argv, child.pid)).toBeNull();
-      expect(copilotTranscriptFile(session.slice(0, -2) + "02", environment, argv, child.pid)).toBeNull();
+      expect(binding()).toBeNull();
+      expect(copilotTranscriptFile(session, environment, argv, pid)).toBe(path);
+      expect(copilotTranscriptFile(null, environment, argv, pid)).toBeNull();
+      expect(copilotTranscriptFile(other, environment, argv, pid)).toBeNull();
     }
-    writeFileSync(log, `2026-10-23T00:00:00.000Z [INFO] Unregistering foreground session: ${session}\n`);
-    expect(copilotTranscriptFile(session, environment, argv, child.pid)).toBeNull();
+    writeFileSync(log, register(session, "Unregistering"));
+    expect(copilotTranscriptFile(session, environment, argv, pid)).toBeNull();
     writeFileSync(log, "x".repeat(16 * 1024 * 1024) + "\n");
-    expect(copilotTranscriptFile(session, environment, argv, child.pid)).toBeNull();
+    expect(copilotTranscriptFile(session, environment, argv, pid)).toBeNull();
     writeFileSync(log, "2026-10-23T00:00:00.000Z [INFO] CLI started");
-    expect(copilotTranscriptFile(session, environment, argv, child.pid)).toBeNull();
-    writeFileSync(log, `2026-10-23T00:00:00.000Z [INFO] Registering foreground session: ${session}\n`);
-    expect(copilotLoggedBinding(environment, argv, child.pid)?.sessionId).toBe(session);
+    expect(copilotTranscriptFile(session, environment, argv, pid)).toBeNull();
+    writeFileSync(log, register(session));
+    expect(binding()?.sessionId).toBe(session);
     writeFileSync(log, "2026-10-23T00:00:00.000Z [INFO] CLI restarted\n");
-    expect(copilotTranscriptFile(session, environment, argv, child.pid)).toBeNull();
-    expect(copilotTranscriptFile(session, environment, argv, child.pid)).toBeNull();
-    child.stdin.write("extra\n");
-    expect(new TextDecoder().decode((await reader.read()).value)).toContain("opened");
-    expect(copilotTranscriptFile(session, environment, argv, child.pid)).toBeNull();
-  } finally {
-    child.kill();
-    await child.exited;
-    rmSync(root, { recursive: true, force: true });
-  }
+    expect(copilotTranscriptFile(session, environment, argv, pid)).toBeNull();
+    expect(copilotTranscriptFile(session, environment, argv, pid)).toBeNull();
+    await fixture.command("extra");
+    expect(copilotTranscriptFile(session, environment, argv, pid)).toBeNull();
+  } finally { await fixture.close(); }
 });
 
 for (const scenario of ["rewrite", "gap"] as const) {
   it.skipIf(process.platform !== "linux")(`recovers foreground discovery after a log ${scenario}`, async () => {
-    const root = mkdtempSync(join(tmpdir(), "copilot-log-continuity-"));
-    const other = "12aa83d8-48bc-41f2-a498-7055c5c44a02";
-    for (const id of [session, other]) mkdirSync(join(root, "session-state", id), { recursive: true });
-    mkdirSync(join(root, "logs"));
-    const child = Bun.spawn(["node", "-e", `
-      const {openSync} = require("node:fs");
-      openSync(process.argv[1] + "/logs/process-100-" + process.pid + ".log", "w");
-      console.log("ready");
-      process.stdin.resume();
-    `, root], { stdin: "pipe", stdout: "pipe", stderr: "inherit" });
-    const reader = child.stdout.getReader();
+    const fixture = await logFixture([]);
+    const { log, binding } = fixture;
     try {
-      expect(new TextDecoder().decode((await reader.read()).value)).toContain("ready");
-      const log = join(root, "logs", `process-100-${child.pid}.log`);
-      const register = (id: string) => `2026-10-22T00:00:00.000Z [INFO] Registering foreground session: ${id}\n`;
-      const options = [`COPILOT_HOME=${root}`];
-      const binding = () => copilotLoggedBinding(options, ["copilot"], child.pid);
       appendFileSync(log, register(session));
       const original = binding();
       expect(original?.sessionId).toBe(session);
@@ -422,155 +436,75 @@ for (const scenario of ["rewrite", "gap"] as const) {
         expect(binding()?.sessionId).toBe(session);
         expect(binding()?.generation).not.toBe(original?.generation);
       }
-    } finally {
-      child.kill();
-      await child.exited;
-      rmSync(root, { recursive: true, force: true });
-    }
+    } finally { await fixture.close(); }
   });
 }
 
 it.skipIf(process.platform !== "linux")("recovers from an ambiguous unregister only after a fresh registration", async () => {
-  const root = mkdtempSync(join(tmpdir(), "copilot-log-unregister-"));
-  const other = "12aa83d8-48bc-41f2-a498-7055c5c44a02";
-  for (const id of [session, other]) mkdirSync(join(root, "session-state", id), { recursive: true });
-  mkdirSync(join(root, "logs"));
-  const child = Bun.spawn(["node", "-e", `
-    require("node:fs").openSync(process.argv[1] + "/logs/process-100-" + process.pid + ".log", "w");
-    console.log("ready");
-    process.stdin.resume();
-  `, root], { stdin: "pipe", stdout: "pipe", stderr: "inherit" });
+  const fixture = await logFixture([]);
+  const { log, binding } = fixture;
   try {
-    expect(new TextDecoder().decode((await child.stdout.getReader().read()).value)).toContain("ready");
-    const log = join(root, "logs", `process-100-${child.pid}.log`);
-    const event = (action: string, id: string) => `2026-10-24T00:00:00.000Z [INFO] ${action} foreground session: ${id}\n`;
-    const binding = () => copilotLoggedBinding([`COPILOT_HOME=${root}`], ["copilot"], child.pid);
-    appendFileSync(log, event("Registering", session) + event("Registering", other) + event("Unregistering", session));
+    appendFileSync(log, register(session) + register(other) + register(session, "Unregistering"));
     expect(binding()).toBeNull();
     expect(binding()).toBeNull();
     appendFileSync(log, "ordinary append\n");
     expect(binding()).toBeNull();
-    appendFileSync(log, event("Registering", session));
+    appendFileSync(log, register(session));
     expect(binding()?.sessionId).toBe(session);
-    appendFileSync(log, event("Unregistering", session));
+    appendFileSync(log, register(session, "Unregistering"));
     expect(binding()).toBeNull();
-    appendFileSync(log, event("Registering", other));
+    appendFileSync(log, register(other));
     expect(binding()?.sessionId).toBe(other);
-  } finally {
-    child.kill();
-    await child.exited;
-    rmSync(root, { recursive: true, force: true });
-  }
+  } finally { await fixture.close(); }
 });
 
 it.skipIf(process.platform !== "linux")("keeps an initially incomplete log unavailable after its descriptor closes", async () => {
-  const root = mkdtempSync(join(tmpdir(), "copilot-log-closed-"));
-  const directory = join(root, "session-state", session);
-  mkdirSync(directory, { recursive: true });
-  mkdirSync(join(root, "logs"));
-  const path = join(directory, "events.jsonl");
-  writeFileSync(path, start + prompt("existing conversation"));
-  const child = Bun.spawn(["node", "-e", `
-    const {openSync, closeSync} = require("node:fs");
-    const root = process.argv[1];
-    const log = root + "/logs/process-100-" + process.pid + ".log";
-    openSync(root + "/session-state/${session}/inuse." + process.pid + ".hold", "w");
-    let fd = openSync(log, "w");
-    console.log("ready");
-    process.stdin.on("data", (input) => {
-      if (input.toString().trim() === "close") closeSync(fd);
-      else fd = openSync(log, "a");
-      console.log("ok");
-    });
-  `, root], { stdin: "pipe", stdout: "pipe", stderr: "inherit" });
-  const reader = child.stdout.getReader();
+  const fixture = await logFixture([session]);
+  const { root, log, environment, pid } = fixture;
+  const path = join(root, "session-state", session, "events.jsonl");
   try {
-    expect(new TextDecoder().decode((await reader.read()).value)).toContain("ready");
-    const log = join(root, "logs", `process-100-${child.pid}.log`);
-    const read = () => copilotTranscriptFile(session, [`COPILOT_HOME=${root}`], ["copilot"], child.pid);
-    writeFileSync(log, `2026-10-24T00:00:00.000Z [INFO] Unregistering foreground session: ${session}`);
+    writeFileSync(path, start + prompt("existing conversation"));
+    const read = () => copilotTranscriptFile(session, environment, ["copilot"], pid);
+    writeFileSync(log, register(session, "Unregistering").trimEnd());
     expect(read()).toBeNull();
-    child.stdin.write("close\n");
-    expect(new TextDecoder().decode((await reader.read()).value)).toContain("ok");
+    await fixture.command("close");
     expect(read()).toBeNull();
-    child.stdin.write("open\n");
-    expect(new TextDecoder().decode((await reader.read()).value)).toContain("ok");
+    await fixture.command("open");
     writeFileSync(log, "ordinary complete line\n");
     expect(read()).toBeNull();
     expect(read()).toBeNull();
-    appendFileSync(log, `2026-10-24T00:00:00.000Z [INFO] Registering foreground session: ${session}\n`);
+    appendFileSync(log, register(session));
     expect(read()).toBe(path);
-  } finally {
-    child.kill();
-    await child.exited;
-    rmSync(root, { recursive: true, force: true });
-  }
+  } finally { await fixture.close(); }
 });
 
 it.skipIf(process.platform !== "linux")("follows process-owned foreground evidence through fork and switch-back with multiple holds", async () => {
-  const root = mkdtempSync(join(tmpdir(), "copilot-foreground-"));
-  const home = join(root, "home");
-  const logs = join(home, "logs");
-  const other = "12aa83d8-48bc-41f2-a498-7055c5c44a02";
-  const options = [`COPILOT_HOME=${home}`];
+  const fixture = await logFixture([session, other]);
+  const { root, log, environment: options, pid, binding } = fixture;
   const args = ["copilot", "--resume", session];
-  for (const id of [session, other]) {
-    const directory = join(home, "session-state", id);
-    mkdirSync(directory, { recursive: true });
-    writeFileSync(join(directory, "events.jsonl"), line("session.start", { sessionId: id }) + prompt(id));
-  }
-  mkdirSync(logs);
-  const child = Bun.spawn(["node", "-e", `
-    const { openSync, appendFileSync } = require("node:fs");
-    const { join } = require("node:path");
-    const root = process.argv[1];
-    const ids = process.argv.slice(2);
-    const path = join(root, "logs", "process-100-" + process.pid + ".log");
-    openSync(path, "w");
-    for (const id of ids) openSync(join(root, "session-state", id, "inuse." + process.pid + ".hold"), "w");
-    const event = (action, id) => appendFileSync(path, new Date().toISOString() + " [INFO] " + action + " foreground session: " + id + "\\n");
-    event("Registering", ids[0]);
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (input) => { for (const command of input.trim().split("\\n")) {
-      if (command === "fork") { event("Unregistering", ids[0]); event("Registering", ids[1]); }
-      if (command === "back") { event("Unregistering", ids[1]); event("Registering", ids[0]); }
-      if (command === "incomplete") appendFileSync(path, new Date().toISOString() + " [INFO] Registering foreground session: " + ids[1]);
-      console.log("ok");
-    } });
-    console.log("ready");
-  `, home, session, other], { stdin: "pipe", stdout: "pipe", stderr: "inherit" });
-  const reader = child.stdout.getReader();
   try {
-    expect(new TextDecoder().decode((await reader.read()).value)).toContain("ready");
-    const command = async (value: string) => {
-      child.stdin.write(`${value}\n`);
-      expect(new TextDecoder().decode((await reader.read()).value)).toContain("ok");
-    };
-    expect(heldSessions(child.pid, join(home, "session-state"))?.size).toBe(2);
-    expect(copilotLoggedSession(options, args, child.pid)).toBe(session);
-    expect(copilotTranscriptFile(null, options, args, child.pid)).toBe(join(home, "session-state", session, "events.jsonl"));
-    const log = join(logs, `process-100-${child.pid}.log`);
+    for (const id of [session, other]) writeFileSync(join(root, "session-state", id, "events.jsonl"), line("session.start", { sessionId: id }) + prompt(id));
+    appendFileSync(log, register(session));
+    expect(heldSessions(pid, join(root, "session-state"))?.size).toBe(2);
+    expect(binding()?.sessionId).toBe(session);
+    expect(copilotTranscriptFile(null, options, args, pid)).toBe(join(root, "session-state", session, "events.jsonl"));
     for (let n = 0; n < 17; n++) {
       appendFileSync(log, `unrelated ${".".repeat(1024 * 1024)}\n`);
-      expect(copilotLoggedSession(options, args, child.pid)).toBe(session);
+      expect(binding()?.sessionId).toBe(session);
     }
-    expect(copilotLoggedSession(options, args, child.pid)).toBe(session);
-    await command("fork");
-    expect(copilotLoggedSession(options, args, child.pid)).toBe(other);
-    expect(copilotTranscriptFile(session, options, args, child.pid)).toBeNull();
-    expect(copilotTranscriptFile(other, options, args, child.pid)).toBe(join(home, "session-state", other, "events.jsonl"));
-    await command("back");
-    expect(copilotLoggedSession(options, args, child.pid)).toBe(session);
+    expect(binding()?.sessionId).toBe(session);
+    appendFileSync(log, register(session, "Unregistering") + register(other));
+    expect(binding()?.sessionId).toBe(other);
+    expect(copilotTranscriptFile(session, options, args, pid)).toBeNull();
+    expect(copilotTranscriptFile(other, options, args, pid)).toBe(join(root, "session-state", other, "events.jsonl"));
+    appendFileSync(log, register(other, "Unregistering") + register(session));
+    expect(binding()?.sessionId).toBe(session);
     appendFileSync(log, "ordinary partial line");
-    expect(copilotLoggedSession(options, args, child.pid)).toBeNull();
+    expect(binding()).toBeNull();
     appendFileSync(log, "\n");
-    expect(copilotLoggedSession(options, args, child.pid)).toBe(session);
-    await command("incomplete");
-    expect(copilotLoggedSession(options, args, child.pid)).toBeNull();
-    expect(copilotTranscriptFile(session, options, args, child.pid)).toBeNull();
-  } finally {
-    child.kill();
-    await child.exited;
-    rmSync(root, { recursive: true, force: true });
-  }
+    expect(binding()?.sessionId).toBe(session);
+    appendFileSync(log, register(other).trimEnd());
+    expect(binding()).toBeNull();
+    expect(copilotTranscriptFile(session, options, args, pid)).toBeNull();
+  } finally { await fixture.close(); }
 });

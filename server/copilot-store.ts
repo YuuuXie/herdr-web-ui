@@ -200,7 +200,13 @@ export function heldSessions(pid: number, store: string): Set<string> | null {
   return null;
 }
 
-function processSessionFile(environment: readonly string[] | null, argv: readonly string[], pid: number): { sessionId: string; path: string; logged: boolean; generation?: string } | null {
+type ProcessSession = { sessionId: string; path: string } & (
+  | { logged: true; generation: string }
+  | { logged: false }
+);
+
+/** Resolve once per validation pass; never reuse this evidence across a transcript read. */
+export function copilotProcessSession(environment: readonly string[] | null, argv: readonly string[], pid: number): ProcessSession | null {
   if (environment === null || !Number.isSafeInteger(pid) || pid < 1) return null;
   const values = (key: string) => environment.filter((item) => item.startsWith(`${key}=`)).map((item) => item.slice(key.length + 1));
   const home = values("HOME");
@@ -245,9 +251,8 @@ function processSessionFile(environment: readonly string[] | null, argv: readonl
   } catch { return null; }
 }
 
-/** Only the reported session, beneath the foreground process's own Copilot home. */
-export function copilotTranscriptFile(session: unknown, environment: readonly string[] | null, argv: readonly string[], pid: number): string | null {
-  const held = processSessionFile(environment, argv, pid);
+/** Only the reported session, or the process-owned lifecycle selection. */
+export function copilotTranscriptFile(session: unknown, held: ProcessSession | null): string | null {
   if (held === null || (session === null ? !held.logged : typeof session !== "string" || !SESSION_ID.test(session) || held.sessionId !== session)) return null;
   try {
     const fd = openCopilotFile(held.path);
@@ -257,21 +262,8 @@ export function copilotTranscriptFile(session: unknown, environment: readonly st
   } catch { return null; }
 }
 
-/** A process-owned lifecycle log can supersede herdr's one-time session report. */
-export function copilotLoggedSession(environment: readonly string[] | null, argv: readonly string[], pid: number): string | null {
-  const found = processSessionFile(environment, argv, pid);
-  return found?.logged ? found.sessionId : null;
-}
-
-/** The last process-owned registration identifies this selection, including a switch back to the same session. */
-export function copilotLoggedBinding(environment: readonly string[] | null, argv: readonly string[], pid: number): ForegroundBinding | null {
-  const found = processSessionFile(environment, argv, pid);
-  return found?.logged ? { sessionId: found.sessionId, generation: found.generation! } : null;
-}
-
 /** A process-held session with no transcript yet, never permission to read unreported history. */
-export function copilotUnwrittenSession(environment: readonly string[] | null, argv: readonly string[], pid: number): { sessionId: string; path: string } | null {
-  const held = processSessionFile(environment, argv, pid);
+export function copilotUnwrittenSession(held: ProcessSession | null, argv: readonly string[]): { sessionId: string; path: string } | null {
   if (held === null) return null;
   if (!held.logged && copilotExplicitResume(argv)) return null;
   try {
