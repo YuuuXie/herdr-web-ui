@@ -1,5 +1,5 @@
 import { expect, it, spyOn } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -231,7 +231,10 @@ it("fetches only a bounded complete output for the selected native call ID", () 
       + line("assistant.message", { content: "", toolRequests: [{ toolCallId: "call-1", name: "shell", arguments: {} }] })
       + line("tool.execution_complete", { toolCallId: "call-1", success: true, result: { content: "x".repeat(5000) } })
       + line("tool.execution_complete", { toolCallId: "unrelated", success: true, result: { content: "hidden" } }));
-    expect(transcriptPage("copilot-transcript", path).turns.at(-1)?.parts[0]).toMatchObject({ kind: "tool", output_ref: "call-1" });
+    const part = transcriptPage("copilot-transcript", path).turns.at(-1)?.parts[0];
+    const ref = part?.kind === "tool" ? part.output_ref : undefined;
+    expect(ref).toMatch(/^call-1@[0-9a-z]+@[0-9a-z]+@[0-9a-f]{32}$/);
+    expect(transcriptToolOutput("copilot-transcript", path, ref!)).toBe("x".repeat(5000));
     expect(transcriptToolOutput("copilot-transcript", path, "call-1")).toBe("x".repeat(5000));
     expect(transcriptToolOutput("copilot-transcript", path, "../secret")).toBeNull();
     expect(transcriptToolOutput("copilot-transcript", path, "unrelated")).toBeNull();
@@ -249,7 +252,10 @@ it("reads a complete Copilot tool result at EOF across read chunks, but refuses 
     const request = start + line("assistant.message", { toolRequests: [{ toolCallId: "eof-call", name: "shell" }] });
     const complete = line("tool.execution_complete", { toolCallId: "eof-call", success: true, result: { content: "z".repeat(70_000) } }).trimEnd();
     writeFileSync(path, request + complete);
-    expect(transcriptPage("copilot-transcript", path).turns.at(-1)?.parts[0]).toMatchObject({ kind: "tool", output_ref: "eof-call" });
+    const part = transcriptPage("copilot-transcript", path).turns.at(-1)?.parts[0];
+    const ref = part?.kind === "tool" ? part.output_ref : undefined;
+    expect(ref).toMatch(/^eof-call@[0-9a-z]+@[0-9a-z]+@[0-9a-f]{32}$/);
+    expect(transcriptToolOutput("copilot-transcript", path, ref!)).toBe("z".repeat(70_000));
     expect(transcriptToolOutput("copilot-transcript", path, "eof-call")).toBe("z".repeat(70_000));
     writeFileSync(path, request + complete.slice(0, -1));
     expect(transcriptToolOutput("copilot-transcript", path, "eof-call")).toBeNull();
@@ -311,6 +317,52 @@ it("bounds total tool-output scans even when a reference is missing or beyond th
     writeFileSync(path, start + line("system.message", { content: "padding".repeat(1024 * 1024) }).repeat(6) + request + output);
     expect(transcriptToolOutput("copilot-transcript", path, "chosen")).toBeNull();
     expect(transcriptToolOutput("copilot-transcript", path, "missing")).toBeNull();
+  } finally { forgetTranscriptState(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it("reads old paginated and recent Copilot outputs across a large append without scanning the gap", () => {
+  const dir = mkdtempSync(join(tmpdir(), "copilot-offsets-"));
+  const path = join(dir, "events.jsonl");
+  const request = (id: string) => line("assistant.message", { toolRequests: [{ toolCallId: id, name: "shell" }] });
+  const result = (id: string, content: string) => line("tool.execution_complete", { toolCallId: id, result: { content } });
+  try {
+    writeFileSync(path, start + prompt("old") + request("old-call") + result("old-call", "old ".repeat(1300))
+      + Array.from({ length: 55 }, (_, i) => prompt(`later ${i}`) + answer(`reply ${i}`)).join(""));
+    const latest = transcriptPage("copilot-transcript", path);
+    const older = transcriptPage("copilot-transcript", path, { before: latest.cursor! });
+    const oldRef = older.turns.flatMap((turn) => turn.parts).find((part) => part.kind === "tool")?.output_ref;
+    expect(oldRef).toMatch(/^old-call@[0-9a-z]+@[0-9a-z]+@[0-9a-f]{32}$/);
+    appendFileSync(path, (line("system.message", { content: "f".repeat(32_000) })).repeat(1100)
+      + prompt("recent") + request("recent-call") + result("recent-call", "recent ".repeat(900)));
+    expect(statSync(path).size).toBeGreaterThan(32 * 1024 * 1024);
+    const recent = transcriptPage("copilot-transcript", path);
+    const recentRef = recent.turns.flatMap((turn) => turn.parts).find((part) => part.kind === "tool")?.output_ref;
+    expect(recentRef).toMatch(/^recent-call@[0-9a-z]+@[0-9a-z]+@[0-9a-f]{32}$/);
+    expect(transcriptToolOutput("copilot-transcript", path, oldRef!)).toBe("old ".repeat(1300));
+    expect(transcriptToolOutput("copilot-transcript", path, recentRef!)).toBe("recent ".repeat(900));
+    expect(transcriptToolOutput("copilot-transcript", path, "recent-call")).toBeNull();
+    expect(transcriptPage("copilot-transcript", path, { before: latest.cursor! }).turns).toEqual(older.turns);
+  } finally { forgetTranscriptState(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it("rejects offset refs after rewrite-and-growth, malformed records, and forged or orphan results", () => {
+  const dir = mkdtempSync(join(tmpdir(), "copilot-offset-integrity-"));
+  const path = join(dir, "events.jsonl");
+  const request = line("tool.execution_start", { toolCallId: "picked", toolName: "shell" });
+  const result = (content: string) => line("tool.execution_complete", { toolCallId: "picked", result: { content } });
+  try {
+    writeFileSync(path, start + prompt("request") + request + result("first ".repeat(900)));
+    const part = transcriptPage("copilot-transcript", path).turns.at(-1)?.parts[0];
+    if (part?.kind !== "tool" || !part.output_ref) throw new Error("missing tool ref");
+    const oldRef = part.output_ref;
+    expect(transcriptToolOutput("copilot-transcript", path, oldRef)).toBe("first ".repeat(900));
+    expect(transcriptToolOutput("copilot-transcript", path, oldRef.replace(/.$/, "0"))).toBeNull();
+    writeFileSync(path, start + prompt("request") + request + result("other ".repeat(900)) + prompt("more"));
+    expect(transcriptToolOutput("copilot-transcript", path, oldRef)).toBeNull();
+    writeFileSync(path, start + prompt("request") + request + result("first ".repeat(900)).slice(0, -5) + "\n");
+    expect(transcriptToolOutput("copilot-transcript", path, oldRef)).toBeNull();
+    writeFileSync(path, start + prompt("request") + line("tool.execution_complete", { toolCallId: "picked", result: { content: "hidden".repeat(900) } }));
+    expect(transcriptPage("copilot-transcript", path).turns.some((turn) => turn.parts.some((item) => item.kind === "tool"))).toBe(false);
   } finally { forgetTranscriptState(); rmSync(dir, { recursive: true, force: true }); }
 });
 
