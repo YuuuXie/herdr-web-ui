@@ -1798,23 +1798,6 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   still copy the whole answer. This follows ordinary browser selection and the Claude/ChatGPT
   distinction between selecting text and copying an answer, rather than T3 Code's Markdown-first
   selection behavior. No extra setting is needed.
-- A selection wholly inside one assistant reply's answer (`.chat-reply`, a `display: contents`
-  wrapper, so the turn's column is unchanged) offers **Quote in message**: a pill button in a row
-  of its own over the message box (`.composer-quote-row`, on the card's column, right-aligned),
-  in the stack's flow rather than over the transcript or beside the selection, so it covers no
-  word of the chat wherever the selection was scrolled, and the browser's own handles and copy
-  menu keep their place. Its label is body text (`--fs-md`, `--fs-chat` on touch) and it is a
-  `--control-h` target with a mouse, 44 px on touch. A press that clears the selection on its way
-  down (a phone's tap) keeps the selected rows pinned in the chat's list until it clicks, is
-  cancelled or lifts elsewhere. It appends
-  `From your reply:` and the selected text, as a copy would carry it, in a fence longer than any
-  backtick run inside, to that pane's draft after what is there, and focuses the message box. The
-  draft is ordinary editable text: nothing is sent until Send. A selection reaching a user
-  message, a work block, the copy row or another pane is not offered; a watching connection has no
-  draft to change; a quote that would pass 20 000 characters leaves the draft as it was and says
-  `Too long for the message draft`. This follows Claude's reported quote-into-reply behavior
-  (anthropics/claude-code#55772); it is a quote only, not #511's comment workflow, which stays a
-  separate design decision.
 - Markdown supports headings, lists (a task item `- [x]` / `- [ ]` shows a checked or empty box in
   place of its bullet, not clickable), links, quotes, tables, inline/fenced code and code-copy
   actions.

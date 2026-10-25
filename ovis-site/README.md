@@ -9,12 +9,16 @@ It is plain HTML with no build, so edit the files and the next deploy serves the
   Simplified Chinese, Japanese and Korean come from the `#i18n-data` JSON in the same file, keyed
   by the English HTML of each text block, and the visitor picks one in the header (`?lang=zh`,
   `ja` or `ko` opens it directly; the choice is kept in `localStorage`). `/ko/` redirects to
-  `/?lang=ko`. Change English text and its entry together, or the block stays English.
+  `/?lang=ko`. Change English text and its entry together, or the block stays English. Its links
+  to `/beta/` (and `/beta/#…`) are pointed at `/zh/beta/`, `/ja/beta/` or `/ko/beta/` in the
+  other languages, and those to `/privacy/` and `/support/` at `/ko/…` in Korean.
 - It has a day and a night look (`data-theme` on `<html>`, the visitor's choice or the system
   setting); every screenshot has a `-light` and a `-dark` file, swapped by `data-light` /
   `data-dark`, and the mascot and logo have `-night` versions.
 - The privacy, support, beta and 404 pages use `style.css`, in English at the root and Korean under
-  `/ko/`.
+  `/ko/`. The beta page also has Simplified Chinese (`/zh/beta/`) and Japanese (`/ja/beta/`), with
+  a language picker like the home page's; `_redirects` serves those two before its `/zh/*` and
+  `/ja/*` rules, since Cloudflare follows a rule even where a file matches.
 
 ## Deploy
 
@@ -62,8 +66,11 @@ preview address. Cloudflare serves `404.html` for a missing page and `/privacy` 
   languages when any of those changes, before the release that changes them.
 - The beta page ships its iPhone and Android sections hidden; `assets/beta.js` shows each one once
   its link is set in `BETA_LINKS` there: the TestFlight public link, and the Google Group whose
-  members may join the Google Play closed test. Its Windows line follows the download button in
-  `assets/platform.js`: the install command until a release ships `Ovis.exe`.
+  members may join the Google Play closed test. Its Windows tile downloads `Ovis.exe`, like the
+  Windows download button in `assets/platform.js`, with the install command as a second way.
+  The sections carry `id="iphone"` and `id="android"`: the home page's App Store and Google Play
+  icons, and its download button on a phone (`assets/platform.js`), link to `/beta/#iphone` and
+  `/beta/#android`.
 - The support page names app labels (**Scan QR code**, **Forget**, **Change PC**) and Ovis server
   settings (**Settings → Phone & devices**, **Settings → About**); keep them matching the app.
 - The screenshots in `assets/demo/` come from the demo build (`bun scripts/demo-build.ts <dir>`),

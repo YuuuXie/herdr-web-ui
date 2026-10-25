@@ -211,25 +211,6 @@ export interface ChatViewProps {
   onRewindInTerminal?: () => void;
   /** the pane's folder: a tool card's file reads from it (`app/src/a.ts`), while its title and what it opens stay the path as written */
   cwd?: string | null;
-  /** the text selected inside one assistant reply of this chat, as a copy would carry it; null when the selection is not that */
-  onReplySelection?: (text: string | null) => void;
-  /** a press on the pane's quote action is under way: the rows of the selection it may clear stay pinned */
-  holdReplySelection?: boolean;
-}
-
-/**
- * The selected text when the selection lies wholly in one assistant reply's answer in `root`:
- * never a range reaching a user message, a work block, the reply's own copy row, another pane or
- * a field. Null for an empty selection.
- */
-function selectedReplyText(selection: Selection | null, root: Element): string | null {
-  if (selection === null || selection.isCollapsed || selection.rangeCount !== 1) return null;
-  const range = selection.getRangeAt(0);
-  const reply = (node: Node): Element | null => (node instanceof Element ? node : node.parentElement)?.closest("[data-chat-reply]") ?? null;
-  const owner = reply(range.startContainer);
-  if (owner === null || owner !== reply(range.endContainer) || !root.contains(owner)) return null;
-  const text = selection.toString();
-  return text.trim() === "" ? null : text;
 }
 
 
@@ -974,10 +955,7 @@ const Turn = memo(function Turn({ paneId, turn, rowKey, live, waiting, showThink
     {goal !== null && <GoalActivity goal={goal} />}
     {/* the pending head stands only above no answer: one above words would leave a gap when the turn ends */}
     {(work.length > 0 || (live && answer.length === 0)) && <WorkBlockView paneId={paneId} parts={work} turnParts={turn.parts} rowKey={rowKey} duration={formatWorkDuration(turn.ts, turn.end_ts ?? null)} live={live} waiting={waiting} defaultOpen={workStartsOpen(live, turn.parts)} showThinking={showThinking} pendingHead={answer.length === 0} />}
-    {/* the reply's own words, which a selection may quote into the message box: no layout of its own */}
-    {answer.length > 0 && <div className="chat-reply" data-chat-reply="">
-      {answer.map((part, index) => <Markdown key={index} skills={skills}>{part.text}</Markdown>)}
-    </div>}
+    {answer.map((part, index) => <Markdown key={index} skills={skills}>{part.text}</Markdown>)}
     {answerText.length > 0 && <div className="chat-turn-meta chat-agent-meta">
       {/* a mouse reads one copy glyph and the words "Plain text"; touch reads the two formats */}
       <CopyButton className="chat-meta-btn" text={answerText} label={t("Copy as markdown")} onResult={copied}><span className="chat-meta-fmt">MD</span></CopyButton>
@@ -1048,7 +1026,7 @@ function TerminalFallback({ paneId, visible }: { paneId: string; visible: boolea
 }
 
 // the app re-renders on every pane-status and poll; an unchanged transcript sits those out
-export const ChatView = memo(function ChatView({ paneId, presentationKey, finishEpoch, finishId, active = true, visible: paneVisible = true, pageScroll, refreshKey, invalidationKey = 0, onConversationWatch, conversationPushes = false, onTerminalOutput, sentKey = 0, localSend, navigation, connected, ended, agent, agentStatus, onMetadata, onRead, greeted = false, onPrompt, onSuggestion, onRestored, promptRefreshKey = 0, pendingAnswer = null, onPendingAnswerDone, promptDock = null, onPromptAnswered, title = null, onOpenTerminal, covered = false, peek = null, onCommandScreenClosed, onOutcomes, interactive = false, onRewindInTerminal, cwd = null, onReplySelection, holdReplySelection = false }: ChatViewProps) {
+export const ChatView = memo(function ChatView({ paneId, presentationKey, finishEpoch, finishId, active = true, visible: paneVisible = true, pageScroll, refreshKey, invalidationKey = 0, onConversationWatch, conversationPushes = false, onTerminalOutput, sentKey = 0, localSend, navigation, connected, ended, agent, agentStatus, onMetadata, onRead, greeted = false, onPrompt, onSuggestion, onRestored, promptRefreshKey = 0, pendingAnswer = null, onPendingAnswerDone, promptDock = null, onPromptAnswered, title = null, onOpenTerminal, covered = false, peek = null, onCommandScreenClosed, onOutcomes, interactive = false, onRewindInTerminal, cwd = null }: ChatViewProps) {
   const t = useT();
   const { fetchPaneConversation, peekPaneConversation, fetchPanePromptState, fetchPaneTranscript } = useMachineApi();
   const { settings } = useSettings();
@@ -1128,23 +1106,6 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
   // a local send accepted before this chat mounted (another pane, another lens) is not followed here
   const seenLocalSend = useRef(localSend?.key ?? 0);
   const scroller = useRef<HTMLDivElement>(null);
-  // a selection inside one reply is told to the pane, which offers to quote it; only changes are told
-  const replySelection = useRef<string | null>(null);
-  useEffect(() => {
-    if (onReplySelection === undefined) return;
-    const changed = () => {
-      const root = scroller.current;
-      const text = root === null ? null : selectedReplyText(getSelection(), root);
-      if (text === replySelection.current) return;
-      replySelection.current = text;
-      onReplySelection(text);
-    };
-    document.addEventListener("selectionchange", changed);
-    return () => {
-      document.removeEventListener("selectionchange", changed);
-      if (replySelection.current !== null) { replySelection.current = null; onReplySelection(null); }
-    };
-  }, [onReplySelection]);
   const timeline = useRef<LegendListRef>(null);
   const ChatTimeline = useChatTimeline();
   const stickToBottom = useRef(true);
@@ -1792,7 +1753,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
     const scroll = (direction: -1 | 1) => {
       const node = scroller.current;
       if (!node) return;
-      const prose = node.querySelector<HTMLElement>(".chat-reply > .markdown, .chat-bubble") ?? node;
+      const prose = node.querySelector<HTMLElement>(".chat-turn-agent > .markdown, .chat-bubble") ?? node;
       const style = getComputedStyle(prose);
       const lineHeight = parseFloat(style.lineHeight);
       const rowHeight = Number.isFinite(lineHeight) ? lineHeight : parseFloat(style.fontSize);
@@ -2051,7 +2012,6 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       label={logLabel}
       onScroll={onScroll}
       renderRow={renderTurn}
-      holdSelection={holdReplySelection}
     /> : <div className="chat-view" ref={scroller} onScroll={onScroll} role="log" aria-live="polite" aria-label={logLabel}>
       <div className="chat-transcript" data-conversation-source={state.conversationSource}>
         <ChatFallback paneId={paneId} agent={agent} visible={visible} messages={state.messages} outcomes={outcomes} restored={restored} actions={outcomeActions} skills={skillMatcher} />
