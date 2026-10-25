@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseCopilotTranscript } from "./copilot.ts";
+import * as copilotStore from "./copilot-store.ts";
 import { copilotProcessSession, copilotTranscriptFile as selectedTranscriptFile, copilotUnwrittenSession as selectedUnwrittenSession, heldSessions } from "./copilot-store.ts";
 import { ConversationUnavailable, forgetTranscriptState, HistoryChanged, paneConversation, toolOutput, transcriptPage, transcriptToolOutput } from "./conversation.ts";
 import { parseConversationMetadata } from "./conversation-metadata.ts";
@@ -386,9 +387,11 @@ it.skipIf(process.platform !== "linux")("reuses peer claims across conversation 
   try {
     appendFileSync(own.log, register(session));
     appendFileSync(peer.log, register(other));
-    writeFileSync(join(own.root, "session-state", session, "events.jsonl"), start + prompt("own history")
+    const transcript = join(own.root, "session-state", session, "events.jsonl");
+    const contents = start + prompt("own history")
       + line("tool.execution_start", { toolCallId: "chosen", toolName: "shell" })
-      + line("tool.execution_complete", { toolCallId: "chosen", result: { content: "output ".repeat(1000) } }));
+      + line("tool.execution_complete", { toolCallId: "chosen", result: { content: "output ".repeat(1000) } });
+    writeFileSync(transcript, contents);
     const conversation = await paneConversation(ownPane);
     expect(conversation.source).toBe("copilot-transcript");
     expect(calls.filter((pane) => pane === peerPane)).toHaveLength(1);
@@ -399,6 +402,22 @@ it.skipIf(process.platform !== "linux")("reuses peer claims across conversation 
     expect(await toolOutput(ownPane, part.output_ref)).toBe("output ".repeat(1000));
     expect(calls.filter((pane) => pane === peerPane)).toHaveLength(1);
     expect(calls.filter((pane) => pane === ownPane)).toHaveLength(2);
+    const selectFile = copilotStore.copilotTranscriptFile;
+    for (const eraseAfter of [1, 2]) {
+      let selections = 0;
+      const disappearing = spyOn(copilotStore, "copilotTranscriptFile").mockImplementation((...args) => {
+        const selected = selectFile(...args);
+        if (selected === transcript && ++selections === eraseAfter) rmSync(transcript);
+        return selected;
+      });
+      try {
+        await expect(paneConversation(ownPane)).rejects.toMatchObject({ name: "ConversationUnavailable", message: "transcript_missing" });
+        expect(selections).toBe(eraseAfter);
+      } finally {
+        disappearing.mockRestore();
+        writeFileSync(transcript, contents);
+      }
+    }
     calls.length = 0;
     info.mockImplementation(async (paneId) => {
       calls.push(paneId);
