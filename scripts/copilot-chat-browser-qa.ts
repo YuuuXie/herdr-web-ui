@@ -142,8 +142,21 @@ console.log("fixture ready");`);
     if (Date.now() > deadline) throw new Error("composer text never reached owned Copilot fixture PTY");
     await Bun.sleep(50);
   }
+  let unavailable = true;
+  const conversationRoute = /\/api\/pane\/conversation\?/;
+  await page.route(conversationRoute, (route) => unavailable
+    ? route.fulfill({ json: { source: "scrollback", turns: [] } })
+    : route.continue());
+  appendFileSync(transcript, event("user.message", { content: "Recover after a transient lookup" })
+    + event("assistant.message", { content: "Conversation recovered without switching lenses.", phase: "final_answer" }));
+  await page.locator(".chat-terminal-fallback summary").waitFor();
+  assert.equal(await log.getByText("Native Copilot answer.", { exact: true }).count(), 0, "unverified history is hidden");
+  unavailable = false;
+  await log.getByText("Conversation recovered without switching lenses.", { exact: true }).waitFor({ timeout: 4000 });
+  await page.locator(".chat-terminal-fallback").waitFor({ state: "detached" });
+  await page.unroute(conversationRoute);
   assert.deepEqual(errors, []);
-  console.log("PASS Copilot native HTTP/React, tool detail, append, desktop/mobile and PTY send");
+  console.log("PASS Copilot native HTTP/React, tool detail, append, desktop/mobile, PTY send and transient recovery");
 } finally {
   const failures: unknown[] = [];
   try { await browser?.close(); } catch (error) { failures.push(error); }
