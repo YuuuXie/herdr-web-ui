@@ -59,7 +59,7 @@ import { resolveAgyStore, sameAgyStore, type AgyStore } from "./agy-store.ts";
 import { withinRetentionBudget } from "./retention-budget.ts";
 import { forgetAllPiIndexes, forgetPiIndex, piAbandonedTurns, piBranchRecords, piBranchSegments } from "./pi-tree.ts";
 import { copilotOutput, copilotRootRecord, parseCopilotTranscript } from "./copilot.ts";
-import { copilotExplicitResume, copilotProcessSession, copilotTranscriptFile, copilotUnwrittenSession, openCopilotFile } from "./copilot-store.ts";
+import { copilotExplicitResume, copilotHandoffSession, copilotProcessSession, copilotTranscriptFile, copilotUnwrittenSession, openCopilotFile } from "./copilot-store.ts";
 import { parseConversationMetadata } from "./conversation-metadata.ts";
 import { answerVersion, ConversationNotStarted, ConversationUnavailable, type ConversationPage, HistoryChanged, type RecognizedConversation, type StreamSource, TRANSCRIPT_WINDOW_BYTES } from "./conversation-shared.ts";
 import { forgetHermesTranscriptState, hermesConversationPage, hermesToolOutput, hermesTranscriptForPane } from "./hermes.ts";
@@ -1034,7 +1034,23 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
   const info = await paneProcessInfo(pane.pane_id).catch(() => null);
   const processes = agentProcesses(info?.foreground_processes ?? [], "copilot");
   const foreground = processes[0];
-  if (process.platform !== "linux" || processes.length !== 1 || typeof foreground?.pid !== "number") {
+  if (process.platform !== "linux" || ![1, 2].includes(processes.length) || typeof foreground?.pid !== "number") {
+    throw new ConversationUnavailable("no_session_path");
+  }
+  if (processes.length === 2) {
+    if (report == null) throw new ConversationUnavailable("no_session_id");
+    const parent = processes[0]!;
+    const child = processes[1]!;
+    const evidence = (entry: typeof parent) => ({ pid: entry.pid, argv: entry.argv ?? [] });
+    const selected = copilotHandoffSession(evidence(parent), evidence(child),
+      report.value, info?.foreground_process_group_id, info?.tty, processEnviron)
+      ?? copilotHandoffSession(evidence(child), evidence(parent),
+        report.value, info?.foreground_process_group_id, info?.tty, processEnviron);
+    if (selected?.logged && !(await claimedByPeer(selected.sessionId))) {
+      const path = copilotTranscriptFile(report.value, selected);
+      if (path !== null && nodePath.basename(nodePath.dirname(path)) === report.value)
+        return { path, binding: selected.generation, peerClaims: await peerClaims! };
+    }
     throw new ConversationUnavailable("no_session_path");
   }
   const environment = processEnviron(foreground.pid);

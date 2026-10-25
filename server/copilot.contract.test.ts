@@ -3,8 +3,10 @@ import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "./index.ts";
-import { herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "./herdr/client.ts";
+import { herdrRpc, paneProcessInfo, sessionSnapshot, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 import { forgetTranscriptState } from "./conversation.ts";
+import { copilotHandoffSession, copilotProcessSession } from "./copilot-store.ts";
+import { processEnviron } from "./omo.ts";
 
 const id = "12aa83d8-48bc-41f2-a498-7055c5c44a01";
 const other = "12aa83d8-48bc-41f2-a498-7055c5c44a02";
@@ -35,6 +37,7 @@ beforeAll(async () => {
   for (const session of [id, other]) mkdirSync(join(home, "session-state", session), { recursive: true });
   writeFileSync(executable, `import { openSync, mkdirSync, writeFileSync, appendFileSync } from "node:fs";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
 const home = process.env.COPILOT_HOME;
 const hold = (id) => { const dir = join(home, "session-state", id); mkdirSync(dir, { recursive: true }); openSync(join(dir, \`inuse.\${process.pid}.hold\`), "w"); };
 const lifecycle = process.argv.includes("--lifecycle");
@@ -44,7 +47,16 @@ mkdirSync(join(home, "logs"), { recursive: true });
 openSync(log, "w");
 if (lifecycle) {
   appendFileSync(log, new Date().toISOString() + " [INFO] Registering foreground session: " + selected + "\\n");
-} else if (!process.argv.includes("--no-proof")) hold(selected);
+} else if (!process.argv.includes("--no-proof") && !process.argv.includes("--handoff")) hold(selected);
+let child;
+if (process.argv.includes("--handoff")) {
+  appendFileSync(log, new Date().toISOString() + " [INFO] Registering foreground session: " + selected + "\\n");
+  appendFileSync(log, new Date().toISOString() + " [INFO] Unregistering foreground session: " + selected + "\\n");
+  child = spawn(process.execPath, [process.argv[1], selected, "--prefer-version", "1.0.104-3", "--session-id", selected, "--handoff-child"], { stdio: "inherit" });
+  process.on("exit", () => child.kill());
+}
+if (process.argv.includes("--handoff-child")) setInterval(() => {}, 1000);
+else {
 process.stdin.setEncoding("utf8");
 let buffer = "";
 process.stdin.on("data", (chunk) => {
@@ -66,9 +78,11 @@ process.stdin.on("data", (chunk) => {
       appendFileSync(log, new Date().toISOString() + " [INFO] Registering foreground session: " + selected + "\\n");
     }
     else if (line === ":quit") process.exit(0);
+    else if (line === ":drop" && child) child.kill();
     else appendFileSync(join(home, "input.txt"), line + "\\n");
   }
 });
+}
 console.log("fixture ready");`);
   chmodSync(executable, 0o755);
   const created = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-copilot-api" });
@@ -84,6 +98,72 @@ afterAll(async () => {
   forgetTranscriptState();
   rmSync(root, { recursive: true, force: true });
 });
+
+const handoffTest = async () => {
+  const handoffId = "12aa83d8-48bc-41f2-a498-7055c5c44a06";
+  mkdirSync(join(home, "session-state", handoffId), { recursive: true });
+  writeFileSync(file(handoffId), fixture(handoffId, "handoff history"));
+  const created = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-copilot-handoff" });
+  const current = created.root_pane.pane_id;
+  let child = 0;
+  try {
+    await startFixture(current, handoffId, `--resume=${handoffId} --handoff`);
+    let parent = 0;
+    for (const deadline = Date.now() + 10_000;;) {
+      const info = await paneProcessInfo(current);
+      const processes = info?.foreground_processes ?? [];
+      parent = processes.find((process) => process.argv?.some((word) => word === "--handoff"))?.pid ?? 0;
+      child = processes.find((process) => process.argv?.some((word) => word === "--handoff-child"))?.pid ?? 0;
+      if (parent && child) break;
+      if (Date.now() > deadline) throw new Error("handoff processes did not join the foreground group");
+      await Bun.sleep(50);
+    }
+    const url = `http://127.0.0.1:${app.port}/api/pane/conversation?pane_id=${encodeURIComponent(current)}`;
+    const read = async () => (await fetch(url)).json() as Promise<{ source: string; turns: { parts: { text?: string }[] }[] }>;
+    expect((await read()).source).toBe("scrollback");
+    await herdrRpc("pane.report_agent_session", { pane_id: current, agent: "copilot", source: "herdr:copilot",
+      seq: Date.now() * 1000, agent_session_id: handoffId });
+    const info = await paneProcessInfo(current);
+    const entries = info?.foreground_processes ?? [];
+    const parentEntry = entries.find((entry) => entry.pid === parent)!;
+    const childEntry = entries.find((entry) => entry.pid === child)!;
+    const ownership = copilotHandoffSession({ pid: parent, argv: parentEntry.argv ?? [] },
+      { pid: child, argv: childEntry.argv ?? [] }, handoffId, info?.foreground_process_group_id, info?.tty, processEnviron);
+    expect({ owner: ownership?.sessionId, parent: copilotProcessSession(processEnviron(parent), parentEntry.argv ?? [], parent, "unregistered")?.sessionId,
+      child: copilotProcessSession(processEnviron(child), childEntry.argv ?? [], child)?.sessionId,
+      report: (await sessionSnapshot()).panes.find((p) => p.pane_id === current)?.agent_session?.value,
+      group: info?.foreground_process_group_id, tty: info?.tty, source: (await read()).source }).toEqual({
+      owner: handoffId, parent: handoffId, child: handoffId, report: handoffId, group: info?.foreground_process_group_id, tty: info?.tty, source: "copilot-transcript",
+    });
+    expect((await read()).turns[0]?.parts[0]?.text).toBe("handoff history");
+    const parentLog = join(home, "logs", `process-100-${parent}.log`);
+    appendFileSync(parentLog, new Date().toISOString() + " [INFO] Registering foreground session: " + handoffId + "\n");
+    expect((await read()).source).toBe("scrollback");
+    appendFileSync(parentLog, new Date().toISOString() + " [INFO] Unregistering foreground session: " + handoffId + "\n");
+    expect((await read()).turns[0]?.parts[0]?.text).toBe("handoff history");
+    const duplicate = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-copilot-handoff-peer" });
+    try {
+      await startFixture(duplicate.root_pane.pane_id, handoffId);
+      await herdrRpc("pane.report_agent_session", { pane_id: duplicate.root_pane.pane_id, agent: "copilot",
+        source: "herdr:copilot", seq: Date.now() * 1000 + 1, agent_session_id: handoffId });
+      expect((await read()).source).toBe("scrollback");
+    } finally { await workspaceClose(duplicate.workspace.workspace_id); }
+    expect((await read()).turns[0]?.parts[0]?.text).toBe("handoff history");
+    process.kill(child, "SIGTERM");
+    for (const deadline = Date.now() + 4000;;) {
+      if ((await read()).source === "scrollback") break;
+      if (Date.now() > deadline) throw new Error("lost child ownership did not disable history");
+      await Bun.sleep(50);
+    }
+  } finally {
+    if (child) {
+      try { process.kill(child, "SIGTERM"); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      }
+    }
+    await workspaceClose(created.workspace.workspace_id);
+  }
+};
 
 it.skipIf(process.platform !== "linux")("binds only the reported UUID to the foreground process's home and rejects old cursors after a switch", async () => {
   const url = `http://127.0.0.1:${app.port}/api/pane/conversation?pane_id=${encodeURIComponent(pane)}`;
@@ -300,3 +380,5 @@ it.skipIf(process.platform !== "linux")("never mistakes an explicitly resumed la
     await workspaceClose(created.workspace.workspace_id);
   }
 });
+
+it.skipIf(process.platform !== "linux")("binds a direct Copilot handoff only while its parent log, child hold and report agree", handoffTest, 25_000);
