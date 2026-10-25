@@ -112,11 +112,13 @@ function copilotPrefix(paneId: string, identity: string): string {
 }
 
 function copilotHistoryIdentity(path: string): string {
-  const fd = openCopilotFile(path);
   try {
-    const stat = fstatSync(fd);
-    return `${stat.dev}:${stat.ino}${transcriptGeneration(path, stat)}`;
-  } finally { closeSync(fd); }
+    const fd = openCopilotFile(path);
+    try {
+      const stat = fstatSync(fd);
+      return `${stat.dev}:${stat.ino}${transcriptGeneration(path, stat)}`;
+    } finally { closeSync(fd); }
+  } catch { throw new ConversationUnavailable("transcript_missing"); }
 }
 
 function copilotPage(page: ConversationPage, prefix: string): ConversationPage {
