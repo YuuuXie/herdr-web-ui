@@ -106,6 +106,7 @@ const handoffTest = async () => {
   const created = await workspaceCreate({ cwd: root, label: "herdr-web-ui-test-copilot-handoff" });
   const current = created.root_pane.pane_id;
   let child = 0;
+  let failed = false;
   try {
     await startFixture(current, handoffId, `--resume=${handoffId} --handoff`);
     let parent = 0;
@@ -155,13 +156,23 @@ const handoffTest = async () => {
       if (Date.now() > deadline) throw new Error("lost child ownership did not disable history");
       await Bun.sleep(50);
     }
+  } catch (error) {
+    failed = true;
+    throw error;
   } finally {
+    const cleanupErrors: string[] = [];
     if (child) {
       try { process.kill(child, "SIGTERM"); } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") cleanupErrors.push(`child ${child}: ${String(error)}`);
       }
     }
-    await workspaceClose(created.workspace.workspace_id);
+    try { await workspaceClose(created.workspace.workspace_id); }
+    catch (error) { cleanupErrors.push(`workspace ${created.workspace.workspace_id}: ${String(error)}`); }
+    if (cleanupErrors.length > 0) {
+      const message = `Copilot handoff cleanup failed: ${cleanupErrors.join("; ")}`;
+      if (failed) console.error(message);
+      else throw new Error(message);
+    }
   }
 };
 
