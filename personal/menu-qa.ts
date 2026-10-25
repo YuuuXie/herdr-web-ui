@@ -14,7 +14,7 @@ const server = createServer({
   herdrConfigPath: join(root, "config.toml"), herdrProfiles: async () => [],
   tailscaleOwner: null, usage: new UsageService(undefined, []),
 });
-const browser = await chromium.launch({ executablePath: chromePath(), headless: true });
+const browser = await chromium.launch({ executablePath: chromePath(), headless: true, chromiumSandbox: true });
 try {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
   await page.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en" })));
