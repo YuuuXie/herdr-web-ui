@@ -67,7 +67,7 @@ describe("omo skill roots", () => {
     const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({
       process_info: { foreground_processes: [{ pid: -1, argv: ["omo"] }] },
     });
-    const identity = spyOn(omo, "omoProcessIdentity").mockReturnValue({ agentDir, heldIds: [], custom: false });
+    const identity = spyOn(omo, "omoProcessIdentity").mockReturnValue({ agentDir, heldIds: [], custom: false, held: false });
     try {
       expect((await paneProcessRoots("omo-cwd-fixture", "omo")).omo?.agentDir).toBe(agentDir);
     } finally {
@@ -78,6 +78,30 @@ describe("omo skill roots", () => {
 });
 
 describe("pane process roots", () => {
+  it("binds an omo pane to the omo process holding a session, not an omo-looking one listed before it", async () => {
+    const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({
+      process_info: { foreground_processes: [
+        { pid: 301, argv: ["/install/omo-ai/node_modules/claude-sdk/cli.js"], cwd: "/repo" },
+        { pid: 302, argv: ["omo"], cwd: "/repo" },
+      ] },
+    });
+    const identity = spyOn(omo, "omoProcessIdentity").mockImplementation((process) =>
+      ({ agentDir: "/fixture-agent", heldIds: process.pid === 302 ? ["sess-1"] : [], custom: false, held: process.pid === 302 }));
+    const environ = spyOn(omo, "processEnviron").mockReturnValue(null);
+    try {
+      const roots = await paneProcessRoots("omo-held-fixture", "claude");
+      expect(roots.pid).toBe(302);
+      expect(roots.omo?.held).toBeTrue();
+      // with none held, the first omo process still answers, unheld, as before
+      identity.mockImplementation(() => ({ agentDir: "/fixture-agent", heldIds: [], custom: false, held: false }));
+      expect(await paneProcessRoots("omo-held-fixture", "claude")).toMatchObject({ pid: 301, omo: { held: false } });
+    } finally {
+      environ.mockRestore();
+      identity.mockRestore();
+      rpc.mockRestore();
+    }
+  });
+
   for (const agent of ["claude", "codex", "omp", "gjc", "pi", "opencode", "devin", "grok", "hermes", "agy"]) {
     it(`reads ${agent}'s environment from its foreground executable`, async () => {
       const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({
@@ -355,11 +379,53 @@ describe("parseClaudeTranscript", () => {
       { role: "assistant", ts: "2026-09-19T08:00:02.000Z", end_ts: "2026-09-19T08:00:05.000Z", parts: [
         { kind: "text", text: "먼저 상태를 확인하겠습니다." },
         // the row says what the agent said the command is for; the command stays in the input
-        { kind: "tool", name: "Bash", summary: "check tree", input: expect.stringContaining("git status"), output: "M src/app.ts" },
+        { kind: "tool", name: "Bash", summary: "check tree", input: expect.stringContaining("git status"), output: "M src/app.ts", call_id: "toolu_1", state: "ok" },
         { kind: "thinking", text: "internal reasoning stays private" },
         { kind: "text", text: "변경된 파일이 하나입니다." },
       ] },
     ]);
+  });
+
+  describe("native call id and state", () => {
+    const prompt = JSON.stringify({ type: "user", message: { role: "user", content: "plan it" } });
+    const use = (id: string, input: object = { todos: [] }) => JSON.stringify({ type: "assistant", message: { role: "assistant", stop_reason: "tool_use", content: [{ type: "tool_use", id, name: "TodoWrite", input }] } });
+    const result = (id: string, content: unknown, isError?: boolean) => JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content, ...(isError === undefined ? {} : { is_error: isError }) }] } });
+    const tools = (text: string) => parseClaudeTranscript(text).flatMap((turn) => turn.parts).filter((part) => part.kind === "tool");
+
+    it("pending call has native id and pending state", () => {
+      expect(tools([prompt, use("toolu_a")].join("\n"))).toMatchObject([{ call_id: "toolu_a", state: "pending", output: "" }]);
+    });
+
+    it("empty successful result is ok", () => {
+      const [part] = tools([prompt, use("toolu_a"), result("toolu_a", "")].join("\n"));
+      expect(part).toMatchObject({ call_id: "toolu_a", state: "ok", output: "" });
+      expect(part?.kind === "tool" && part.error).toBeFalsy();
+    });
+
+    it("explicit failed result is error", () => {
+      expect(tools([prompt, use("toolu_a"), result("toolu_a", "", true)].join("\n"))).toMatchObject([{ call_id: "toolu_a", state: "error", error: true }]);
+      // a result that only reads like a failure is still the success the flag says
+      expect(tools([prompt, use("toolu_b"), result("toolu_b", "Error: exit code 1", false)].join("\n"))).toMatchObject([{ call_id: "toolu_b", state: "ok" }]);
+    });
+
+    it("repeated identical calls retain distinct ids", () => {
+      const parts = tools([prompt, use("toolu_a"), result("toolu_a", "same"), use("toolu_b"), result("toolu_b", "same")].join("\n"));
+      expect(parts.map((part) => part.kind === "tool" && [part.call_id, part.state, part.input, part.output])).toEqual([
+        ["toolu_a", "ok", parts[1]?.kind === "tool" ? parts[1].input : "", "same"],
+        ["toolu_b", "ok", parts[0]?.kind === "tool" ? parts[0].input : "", "same"],
+      ]);
+    });
+
+    it("append and full poll replacement preserve call id and update or omit state", () => {
+      const first = [prompt, use("toolu_a"), use("toolu_b")];
+      expect(tools(first.join("\n")).map((part) => part.kind === "tool" && [part.call_id, part.state])).toEqual([["toolu_a", "pending"], ["toolu_b", "pending"]]);
+      // the next poll reads the file again with both results appended
+      const second = [...first, result("toolu_a", ""), result("toolu_b", "denied", true)];
+      expect(tools(second.join("\n")).map((part) => part.kind === "tool" && [part.call_id, part.state])).toEqual([["toolu_a", "ok"], ["toolu_b", "error"]]);
+      // a cut output keeps the id beside its fetch ref
+      const long = tools([prompt, use("toolu_c"), result("toolu_c", "x".repeat(5000))].join("\n"))[0];
+      expect(long).toMatchObject({ call_id: "toolu_c", state: "ok", output_ref: "toolu_c", output_size: 5000 });
+    });
   });
 
   it("shows a pasted text without Claude Code's paste wrapper, in string and block prompts", () => {

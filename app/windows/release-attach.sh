@@ -113,7 +113,8 @@ attach() {
   done
   # 3. mark the swap done; from here recover finishes it. Then files new to the release take their names, the
   # old files go, and the mark goes. A failure from here on is finished by the cleanup step's recover.
-  : > "$dir/$marker"
+  # The mark is never empty: GitHub refuses a 0-byte asset upload (HTTP 400 Bad Content-Length).
+  printf '%s\n' "$label" > "$dir/$marker"
   gh release upload "$RELEASE_TAG" "$dir/$marker#$label" || { echo "::error::the commit mark could not be uploaded; undoing this run's swaps." >&2; recover; return 1; }
   for name in "${new_names[@]}"; do
     entry=$(asset "$name.uploading")

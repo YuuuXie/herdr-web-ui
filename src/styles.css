@@ -2186,11 +2186,12 @@ button {
 }
 
 /* hovered, a danger button keeps its tint and border: the neutral hover fill above would read as
-   the risk going away */
+   the risk going away. Its border draws twice as thick instead, so the pointer still shows */
 @media (hover: hover) {
   .btn-danger:hover:not(:disabled) {
     background: var(--danger-tint);
     border-color: var(--status-blocked);
+    box-shadow: inset 0 0 0 var(--hairline) var(--status-blocked);
   }
 }
 
@@ -2566,6 +2567,12 @@ button {
   color: var(--text-dim);
   opacity: 1;
 }
+
+/* the sidebar's filter offers the rows' names as it is typed in (a datalist, MachineSidebar.tsx): the
+   browser draws its picker arrow beside the field's own clear with an inline style, which only an
+   important rule hides. Two rules: a browser drops a whole list for a pseudo-element it does not know */
+.sidebar-filter-input::-webkit-calendar-picker-indicator { display: none !important; }
+.sidebar-filter-input::-webkit-list-button { display: none !important; }
 
 /* a bordered field shows focus on its own border; the offset ring is for controls without one */
 .input:focus,
