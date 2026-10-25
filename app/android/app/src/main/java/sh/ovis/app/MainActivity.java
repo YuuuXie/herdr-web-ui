@@ -6,6 +6,7 @@ import android.content.res.Configuration;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
+import android.view.View;
 import android.view.Window;
 import android.webkit.CookieManager;
 import android.webkit.WebResourceError;
@@ -13,7 +14,10 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebView;
 import androidx.core.graphics.ColorUtils;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
 import androidx.core.view.WindowCompat;
+import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
 import com.getcapacitor.BridgeActivity;
 import com.getcapacitor.BridgeWebViewClient;
@@ -94,6 +98,7 @@ public class MainActivity extends BridgeActivity {
                 .create();
         }
         super.onCreate(savedInstanceState);
+        keepClearOfNavigationButtons();
         String appOrigin = bridge.getScheme() + "://" + bridge.getHost();
         followThemeColor(host == null ? Collections.singleton(appOrigin) : new HashSet<>(Arrays.asList(appOrigin, origin)));
         if (host != null) {
@@ -237,6 +242,41 @@ public class MainActivity extends BridgeActivity {
             return; // Keep the default bars when WebView rejects an origin rule.
         }
         bridge.getWebView().evaluateJavascript(BAR_COLOR_SCRIPT, null);
+    }
+
+    /**
+     * Keeps the page clear of navigation buttons (3-button navigation: the bottom bar, or the side bar
+     * of a phone in landscape). On a WebView that gives the page its safe areas itself (140 and
+     * later), Capacitor's SystemBars lets the page draw under the system bars and leaves the room to
+     * the page's CSS, and the client lets its message box and key bar sit partly into the bottom safe
+     * area, as an iPhone's home indicator allows: there the buttons cover them. The client's layout
+     * pads its sides for a side bar; the page is kept clear of one too, so that nothing on it has to.
+     * A gesture bar has no tappable inset, so the page stays under it. A docked
+     * keyboard covers a bottom bar, and SystemBars keeps the page above both. A floating keyboard
+     * takes no bottom inset, so on WebView 144 and later the bar is kept clear under it; before 144
+     * SystemBars passes the page no bottom inset while any keyboard shows, so nothing is padded then.
+     * On an older WebView SystemBars keeps the page out from under the bars itself, so the page gets
+     * no such insets and nothing changes.
+     */
+    private void keepClearOfNavigationButtons() {
+        View page = (View) bridge.getWebView().getParent();
+        int bars = WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout();
+        ViewCompat.setOnApplyWindowInsetsListener(page, (view, insets) -> {
+            Insets under = insets.getInsets(bars);
+            Insets buttons = insets.getInsets(WindowInsetsCompat.Type.tappableElement());
+            boolean keyboard = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom > 0;
+            Insets clear = Insets.of(
+                Math.min(buttons.left, under.left),
+                0,
+                Math.min(buttons.right, under.right),
+                keyboard ? 0 : Math.min(buttons.bottom, under.bottom)
+            );
+            // the strip shows the window's background: the page's theme-color once it has sent one
+            // (paintBars), the app's dark background before
+            view.setPadding(clear.left, 0, clear.right, clear.bottom);
+            if (clear.equals(Insets.NONE)) return insets;
+            return new WindowInsetsCompat.Builder(insets).setInsets(bars, Insets.subtract(under, clear)).build();
+        });
     }
 
     /**

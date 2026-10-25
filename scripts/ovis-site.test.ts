@@ -1,6 +1,7 @@
 import { describe, it } from "bun:test";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { BETA_LINKS } from "../ovis-site/assets/beta.js";
 import { fail, files, read, repo } from "./source-scan.ts";
 
 // ovis.sh (ovis-site/) is plain HTML with no build, so what a build would keep in step is written
@@ -103,6 +104,55 @@ describe("ovis.sh pages", () => {
       return problems;
     });
     fail(offenders, "Search results cut a title after about 60 characters and a description after about 160: shorten them, and copy the same text into og:title / twitter:title and og:description / twitter:description.");
+  });
+});
+
+describe("ovis.sh beta page", () => {
+  const BETA_PAGES = ["ovis-site/beta/index.html", "ovis-site/zh/beta/index.html", "ovis-site/ja/beta/index.html", "ovis-site/ko/beta/index.html"];
+  /** The kind of address each phone test link is, so a link pasted into the wrong slot fails here. */
+  const SHAPES: Record<string, RegExp> = {
+    testflight: /^https:\/\/testflight\.apple\.com\/join\/[A-Za-z0-9]+$/,
+    play: /^https:\/\/groups\.google\.com\/g\/[\w.-]+$/,
+  };
+  const links = BETA_LINKS as Record<string, string>;
+
+  it("sets each phone test link to its kind of address, or leaves it empty", () => {
+    fail(Object.entries(links).filter(([key, link]) => !SHAPES[key] || (link && !SHAPES[key].test(link))).map(([key, link]) => `${key}: ${JSON.stringify(link)}`),
+      "Set each link in BETA_LINKS (ovis-site/assets/beta.js) to the address its comment names, or to \"\" to keep its section hidden; a new key needs its shape in SHAPES in scripts/ovis-site.test.ts:");
+  });
+
+  it("ships each phone section hidden, with its link and its note, for beta.js to show", () => {
+    const offenders = BETA_PAGES.flatMap((file) => {
+      const page = html(file);
+      if (!page.includes("<script src=\"/assets/beta.js\"></script>")) return [`${file}: does not load /assets/beta.js`];
+      return Object.keys(links).flatMap((key) => [
+        !new RegExp(`<section (?:id="[\\w-]+" )?data-beta="${key}" hidden>`).test(page) && `${file}: no <section data-beta="${key}" hidden>`,
+        !page.includes(`<a data-beta-link="${key}">`) && `${file}: no <a data-beta-link="${key}">`,
+        !page.includes(`data-beta-pending="${key}"`) && `${file}: no data-beta-pending="${key}" note`,
+      ].filter((problem): problem is string => !!problem));
+    });
+    fail(offenders, "Each beta page loads /assets/beta.js and, for every key of BETA_LINKS, ships <section data-beta=\"<key>\" hidden> (with an id first, if any) holding an <a data-beta-link=\"<key>\"> with no href, plus a data-beta-pending=\"<key>\" note; beta.js shows the section and hides the note once the link is set:");
+  });
+
+  it("is where the home page's App Store and Google Play icons and a phone's download button lead", () => {
+    // each download row's icons, and the iPhone and Android buttons assets/platform.js puts on a phone
+    const rows = html(HOME).split("<div class=\"dl-row\"").slice(1).map((rest) => rest.split("</div>")[0]!);
+    const platform = read("ovis-site/assets/platform.js");
+    fail([
+      ...(rows.length === 2 ? [] : [`${HOME} has ${rows.length} download rows (<div class="dl-row">), not the hero's and the closing one`]),
+      ...rows.flatMap((row, index) => ["iphone", "android"].filter((id) => !row.includes(`<a class="dl-icon" href="/beta/#${id}"`))
+        .map((id) => `${HOME} download row ${index + 1}: no <a class="dl-icon" href="/beta/#${id}">`)),
+      ...[["ios", "iphone"], ["android", "android"]].filter(([key, id]) => !new RegExp(`^ {4}${key}: \\{.*\\bhref: "/beta/#${id}"`, "m").test(platform))
+        .map(([key, id]) => `ovis-site/assets/platform.js: BUTTONS.${key} has no href: "/beta/#${id}"`),
+    ], "The phone apps are in beta: the App Store and Google Play icons in both download rows of the home page link to /beta/#iphone and /beta/#android, and so do the iPhone and Android buttons in assets/platform.js:");
+  });
+
+  it("has the section each home page link names", () => {
+    // the home page's phone icons and the phone button in assets/platform.js link to /beta/#<id>,
+    // which the page's language script points at the visitor's language
+    const ids = [...new Set([...`${html(HOME)}\n${read("ovis-site/assets/platform.js")}`.matchAll(/["']\/beta\/#([\w-]+)["']/g)].map(([, id]) => id!))];
+    fail(BETA_PAGES.flatMap((file) => ids.filter((id) => !html(file).includes(` id="${id}"`)).map((id) => `${file}: no id="${id}"`)),
+      `${HOME} and ovis-site/assets/platform.js link to these sections of the beta page: give each beta page an element with that id, or change the links:`);
   });
 });
 
