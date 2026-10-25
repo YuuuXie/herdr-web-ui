@@ -6,6 +6,9 @@
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const COMPOSER_KO: Record<string, string> = {
+  "Sent to Pi · waiting for transcript": "Pi로 보냄 · 대화 기록을 기다리는 중",
+  "Sent to Pi · transcript confirmation unavailable": "Pi로 보냄 · 대화 기록을 확인할 수 없음",
+  "Submit or clear edits before switching questions.": "문제를 전환하기 전에 보내지 않은 변경 사항을 제출하거나 지워 주세요.",
   "Password or PIN": "비밀번호 또는 PIN",
   "Enter a single-line password or PIN.": "한 줄의 비밀번호 또는 PIN을 입력하세요.",
   "Update this PC to use masked input.": "비밀번호 입력창을 사용하려면 이 PC의 앱을 업데이트하세요.",

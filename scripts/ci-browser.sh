@@ -69,9 +69,11 @@ run_script scripts/mirror-scroll-demo-regression.ts
 run_script scripts/terminal-cjk-punctuation-regression.ts
 run_script scripts/application-paging-regression.ts
 run_script scripts/pane-paging-demo-regression.ts
+run_script scripts/link-menu-demo-regression.ts
 run_script scripts/key-bar-customization-demo-regression.ts
 run_script scripts/key-bar-hold-repeat-regression.ts
 run_script scripts/settings-pages-demo-regression.ts
+run_script scripts/interface-font-demo-regression.ts
 run_script scripts/theme-first-paint-demo-regression.ts
 run_script scripts/cliproxy-settings-regression.ts
 run_script scripts/pane-input-focus-demo-regression.ts
@@ -82,6 +84,7 @@ run_script scripts/chat-history-browser-qa.ts
 run_script scripts/session-history-browser-qa.ts
 run_script scripts/new-session-skills-browser-qa.ts
 run_script scripts/chat-virtual-browser-qa.ts
+run_script scripts/chat-gjc-streaming-browser-qa.ts
 run_script scripts/chat-scroll-padding-regression.ts
 run_script scripts/chat-selection-copy-regression.ts
 run_script scripts/chat-fallback-browser-qa.ts
@@ -95,6 +98,8 @@ run_script scripts/terminal-autoswitch-demo-regression.ts
 run_script scripts/agy-chat-browser-qa.ts
 run_script scripts/gjc-status-browser-regression.ts
 run_script scripts/math-browser-qa.ts
+run_script scripts/claude-image-browser-qa.ts
+run_script scripts/pi-image-browser-qa.ts
 run_script scripts/file-viewer-regression.ts
 run_script scripts/pwa-update-browser-qa.ts
 run_script scripts/install-state-demo-regression.ts
@@ -123,6 +128,7 @@ run_script scripts/sidebar-filter-demo-regression.ts
 run_script scripts/sidebar-spacing-demo-regression.ts
 run_script scripts/sidebar-machine-layout-demo-regression.ts
 run_script scripts/sidebar-machine-removal-demo-regression.ts
+run_script scripts/hide-pc-demo-regression.ts
 run_script scripts/sidebar-branch-line-demo-regression.ts
 run_script scripts/sidebar-tokens-demo-regression.ts
 run_script scripts/pane-mute-demo-regression.ts

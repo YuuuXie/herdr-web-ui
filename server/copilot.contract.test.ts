@@ -102,6 +102,21 @@ it.skipIf(process.platform !== "linux")("binds only the reported UUID to the for
   await report(id, 1, "untrusted");
   expect((await read()).source).toBe("scrollback");
   await report(id, 2);
+  const header = event("session.start", { sessionId: id });
+  writeFileSync(file(id), header);
+  expect((await read()).source).toBe("copilot-transcript");
+  expect((await read()).turns).toEqual([]);
+  for (const record of [
+    event("user.message", { content: [{ type: "text", text: "unsupported prompt" }] }),
+    event("assistant.message", { content: [{ type: "text", text: "unsupported answer" }] }),
+    event("assistant.message", { toolRequests: ["unreadable request"] }),
+    event("assistant.message", { content: "", toolRequests: { toolCallId: "call", name: "shell" } }),
+    "malformed complete record\n",
+  ]) {
+    writeFileSync(file(id), header + record);
+    expect((await read()).source).toBe("scrollback");
+  }
+  writeFileSync(file(id), fixture(id, "session A"));
   const first = await read();
   expect(first.source).toBe("copilot-transcript");
   expect(first.history_id).not.toBe(external.history_id);

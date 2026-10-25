@@ -101,6 +101,16 @@ describe("explicit Codex Send now", () => {
     expect(f.reads()).toBe(1);
   });
 
+  it("interrupts Ultra's pending panel with either empty composer form", async () => {
+    for (const composer of ["»", "» Ask Codex to do anything"]) {
+      const ultra = { ...working, screen: frame(hint, composer).replace("default ·", "ultra ·") };
+      const f = fixture([ultra]);
+      await interruptCodexSteering(true, "send this now", ultra, f.io);
+      expect(f.effects).toEqual(["restart gate", "Escape"]);
+      expect(f.reads()).toBe(1);
+    }
+  });
+
   for (const [name, explicit, context] of [
     ["ordinary Send racing with work", false, working],
     ["idle Codex", true, { ...working, working: false }],

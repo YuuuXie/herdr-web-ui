@@ -2,6 +2,7 @@ import type { ConversationPart, ConversationTurn } from "../shared/protocol.ts";
 import { readSync } from "node:fs";
 import { MAX_TURNS, toolSummary } from "./transcript-records.ts";
 import { trimOutput } from "./tool-output.ts";
+import { ConversationUnavailable } from "./conversation-shared.ts";
 
 type Row = Record<string, unknown>;
 const row = (value: unknown): Row | null => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Row : null;
@@ -15,15 +16,29 @@ export function copilotRootRecord(value: unknown): boolean {
 }
 
 /** Lines written by the CLI, not its ephemeral streaming updates or nested agents. */
-export function copilotRecords(jsonl: string): { type: string; data: Row; timestamp: string | null }[] {
+export function copilotRecords(jsonl: string, strict = false): { type: string; data: Row; timestamp: string | null }[] {
   const records: { type: string; data: Row; timestamp: string | null }[] = [];
-  for (const line of jsonl.split("\n")) {
+  const lines = jsonl.split("\n");
+  for (const [index, line] of lines.entries()) {
+    if (!line.trim()) continue;
     let value: unknown;
-    try { value = JSON.parse(line); } catch { continue; }
+    try { value = JSON.parse(line); } catch {
+      // An unfinished final append is retried; complete unreadable records are
+      // not proof of an empty conversation.
+      if (strict && index < lines.length - 1) throw new ConversationUnavailable("transcript_unreadable");
+      continue;
+    }
     const entry = row(value);
-    if (!entry || typeof entry.type !== "string" || !copilotRootRecord(entry)) continue;
+    if (!entry || typeof entry.type !== "string") {
+      if (strict) throw new ConversationUnavailable("transcript_unreadable");
+      continue;
+    }
+    if (!copilotRootRecord(entry)) continue;
     const data = row(entry.data);
-    if (data === null) continue;
+    if (data === null) {
+      if (strict) throw new ConversationUnavailable("transcript_unreadable");
+      continue;
+    }
     records.push({ type: entry.type, data, timestamp: typeof entry.timestamp === "string" ? entry.timestamp : null });
   }
   return records;
@@ -68,8 +83,9 @@ export function parseCopilotTranscript(jsonl: string, maxTurns = MAX_TURNS): Con
     const summary = text(args.summary);
     if (name === "task_complete" && summary !== null) completionTools.set(id, summary);
   };
-  for (const { type, data, timestamp } of copilotRecords(jsonl)) {
+  for (const { type, data, timestamp } of copilotRecords(jsonl, true)) {
     if (type === "user.message") {
+      if (typeof data.content !== "string") throw new ConversationUnavailable("transcript_unreadable");
       const content = text(data.content);
       if (content !== null) {
         flushCompletion();
@@ -79,6 +95,9 @@ export function parseCopilotTranscript(jsonl: string, maxTurns = MAX_TURNS): Con
         finished = false;
       }
     } else if (type === "assistant.message") {
+      if ((data.content != null && typeof data.content !== "string")
+        || (data.content == null && !Array.isArray(data.toolRequests))
+        || (data.toolRequests !== undefined && !Array.isArray(data.toolRequests))) throw new ConversationUnavailable("transcript_unreadable");
       const content = text(data.content);
       const requests = Array.isArray(data.toolRequests) ? data.toolRequests : [];
       if (content === null && requests.length === 0) continue;
@@ -90,7 +109,12 @@ export function parseCopilotTranscript(jsonl: string, maxTurns = MAX_TURNS): Con
       });
       for (const raw of requests) {
         const request = row(raw);
-        if (request) addTool(request, timestamp, text(request.name) ?? "tool", text(request.intentionSummary));
+        const name = text(request?.name);
+        if (request === null || typeof request.toolCallId !== "string" || !CALL_ID.test(request.toolCallId)
+          || name === null || (request.arguments != null && row(request.arguments) === null)) {
+          throw new ConversationUnavailable("transcript_unreadable");
+        }
+        addTool(request, timestamp, name, text(request.intentionSummary));
       }
       if (data.phase === "final_answer") finished = true;
     } else if (type === "tool.execution_start") {
@@ -121,7 +145,7 @@ export function parseCopilotTranscript(jsonl: string, maxTurns = MAX_TURNS): Con
  * Scan a pinned descriptor forward in 64 KiB reads, holding at most one 8 MiB record.
  * Oversized unrelated lines are discarded without parsing; an oversized line that
  * mentions the requested ID fails closed. I/O is linear up to the first result (or
- * EOF for a missing ID), never a whole-file read/index on the server event loop.
+ * EOF for a missing ID), capped at 32 MiB total on the server event loop.
  */
 export function copilotOutput(fd: number, ref: string, outputMax: number): string | null {
   if (!CALL_ID.test(ref)) return null;
@@ -152,7 +176,11 @@ export function copilotOutput(fd: number, ref: string, outputMax: number): strin
     const content = row(data.result)?.content;
     return typeof content === "string" ? content.length > outputMax ? `${content.slice(0, outputMax)}\n… trimmed` : content : null;
   };
-  for (let count; (count = readSync(fd, chunk, 0, chunk.length, null)) > 0;) {
+  const scanMax = 32 * 1024 * 1024;
+  for (let scanned = 0; scanned < scanMax;) {
+    const count = readSync(fd, chunk, 0, Math.min(chunk.length, scanMax - scanned), null);
+    if (count === 0) return consume() ?? null;
+    scanned += count;
     for (let at = 0; at < count;) {
       const newline = chunk.indexOf(0x0a, at);
       const end = newline < 0 || newline >= count ? count : newline;
@@ -170,7 +198,6 @@ export function copilotOutput(fd: number, ref: string, outputMax: number): strin
       at = newline + 1;
     }
   }
-  // JSONL may end in a complete object without a newline. Use the same bounded
-  // record path as newline-terminated records; malformed tails still return null.
-  return consume() ?? null;
+  // The limit can cut a record: never interpret that prefix as a complete one.
+  return null;
 }

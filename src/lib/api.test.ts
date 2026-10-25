@@ -1,7 +1,8 @@
 import { afterEach, expect, it, jest } from "bun:test";
 import { MAX_ATTACHMENT_BYTES } from "../../shared/attachments.ts";
 import { NOTICE_VERSION } from "../../shared/telemetry.ts";
-import { AttachmentTooLargeError, ApiError, changeTelemetry, fetchAgentKinds, fetchTelemetry, uploadPaneImage, verifySourceBoot } from "./api.ts";
+import { AttachmentTooLargeError, ApiError, changeTelemetry, fetchAgentKinds, fetchTelemetry, swapPaneWith, uploadPaneImage, verifySourceBoot } from "./api.ts";
+import { movingHerdrFocusOn } from "./followFocus.ts";
 import { DEFAULT_SETTINGS, telemetrySettingsSnapshot } from "./settings.ts";
 
 const realFetch = globalThis.fetch;
@@ -10,6 +11,22 @@ afterEach(() => {
   globalThis.fetch = realFetch;
   Object.defineProperties(AbortSignal, { any: abortSignalStatics.any!, timeout: abortSignalStatics.timeout! });
   jest.useRealTimers();
+});
+
+it("suppresses this PC's focus frames until an explicit swap answers, including refusals", async () => {
+  for (const changed of [true, false]) {
+    const response = Promise.withResolvers<Response>();
+    globalThis.fetch = (async (_url: string) => response.promise) as typeof fetch;
+    const pending = swapPaneWith("source", "target", "office");
+    try {
+      expect(movingHerdrFocusOn("office")).toBe(true);
+      expect(movingHerdrFocusOn("local")).toBe(false);
+    } finally {
+      response.resolve(Response.json({ ok: true, changed, reason: changed ? null : "same_pane", target_pane_id: "target" }));
+      await pending;
+    }
+    expect(movingHerdrFocusOn("office")).toBe(false);
+  }
 });
 
 it("offers installed Copilot in agent menus while filtering missing and unsupported agents", async () => {

@@ -18,6 +18,7 @@ import { checkTerminalFileInput } from "./terminal-file-input-regression.ts";
 import { checkTerminalInput } from "./terminal-input-regression.ts";
 import { checkSafariIme } from "./terminal-safari-ime-regression.ts";
 import { checkIpadIme } from "./terminal-ipad-ime-regression.ts";
+import { checkLinuxIme } from "./terminal-linux-ime-regression.ts";
 import { checkHeldDraftPaneSwitch } from "./terminal-draft-regression.ts";
 import { checkCommandBackspace } from "./terminal-command-backspace-regression.ts";
 import { checkCtrlEnter } from "./terminal-ctrl-enter-regression.ts";
@@ -2287,6 +2288,7 @@ try {
   await checkTerminalInput(browser, origin, paneA, paneB);
   await checkSafariIme(browser, origin, paneA, paneB);
   await checkIpadIme(browser, origin, paneA, paneB);
+  await checkLinuxIme(browser, origin, paneA);
   await checkHeldDraftPaneSwitch(browser, origin, paneA, paneB);
 
   // the terminal lens on a touch screen starts in direct typing without raising the keyboard;

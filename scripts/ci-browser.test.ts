@@ -116,7 +116,6 @@ const MANUAL_BROWSER_SCRIPTS = [
   "scripts/keyboard-viewport-demo-regression.ts", // docs/development.md
   "scripts/machines-browser-qa.ts", // an SSH_TEST_KEEP=1 fixture (docs/remote-pcs.md)
   "scripts/output-browser-qa.ts", // docs/terminal-flow-control.md
-  "scripts/pi-image-browser-qa.ts",
   "scripts/rewind-browser-qa.ts",
   "scripts/skill-activity-browser-qa.ts", // docs/chat-skill-activity.md
   "scripts/terminal-file-links-regression.ts",

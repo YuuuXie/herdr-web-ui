@@ -1,32 +1,36 @@
 import { constants, closeSync, fstatSync, lstatSync, openSync, opendirSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID, type Hash } from "node:crypto";
 import { processAlive, processStartedAt } from "./process-start.ts";
 
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const HEADER_BYTES = 64 * 1024;
 const MAX_DESCRIPTORS = 4096;
 const LOG_WINDOW_BYTES = 16 * 1024 * 1024;
+const LOG_HASH_BYTES = 64 * 1024 * 1024;
+// Cover FAT's two-second granularity plus coarse wall-clock lag.
+const LOG_TIMESTAMP_MARGIN_NS = 3_000_000_000n;
 const LOG_NAME = /^process-\d+-(\d+)\.log$/;
-const FOREGROUND_EVENT = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z \[INFO\] (Registering|Unregistering) foreground session: ([\da-f-]{36})$/;
+const FOREGROUND_PREFIXES = ["Registering foreground session: ", "Unregistering foreground session: "] as const;
+const FOREGROUND_EVENT = new RegExp(String.raw`^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z \[INFO\] (${FOREGROUND_PREFIXES.join("|")})([\da-f-]{36})$`);
 interface ForegroundBinding { sessionId: string; generation: string }
 interface ForegroundCheckpoint {
-  dev: number; ino: number; path: string; size: number; mtimeMs: number; ctimeMs: number;
-  boundary: string; epoch: string; binding: ForegroundBinding | null | undefined;
+  dev: bigint; ino: bigint; path: string; size: number; observedSize: number; mtimeNs: bigint; ctimeNs: bigint; checkedAtNs: bigint; pendingSwitch: boolean;
+  hash: Hash; epoch: string; binding: ForegroundBinding | null | undefined;
 }
 const foregroundCheckpoints = new Map<number, ForegroundCheckpoint>();
 const foregroundLogProcesses = new Map<number, { started: number; observed: boolean }>();
 
-/** Check consumed content at both ends before treating the next read as an append. */
-function logBoundary(fd: number, size: number): string | null {
-  const length = Math.min(size, HEADER_BYTES);
-  const bytes = Buffer.alloc(length);
+/** Revalidate every consumed byte: unchanged boundary samples cannot prove an append. */
+function logPrefix(fd: number, size: number): Hash | null {
+  const bytes = Buffer.alloc(HEADER_BYTES);
   const hash = createHash("sha256");
-  for (const position of [0, Math.max(0, size - length)]) {
+  for (let position = 0; position < size; position += bytes.length) {
+    const length = Math.min(bytes.length, size - position);
     if (readSync(fd, bytes, 0, length, position) !== length) return null;
-    hash.update(bytes);
+    hash.update(bytes.subarray(0, length));
   }
-  return hash.digest("hex");
+  return hash;
 }
 
 /** The latest complete lifecycle event in the CLI's own open log, never the newest transcript. */
@@ -88,24 +92,37 @@ function loggedForeground(pid: number, logDirectories: readonly string[]): Foreg
         if (realpathSync(target) !== target) return unavailable();
         const fd = openSync(`/proc/${pid}/fd/${descriptor.name}`, constants.O_RDONLY | constants.O_NONBLOCK);
         try {
-          const stat = fstatSync(fd);
-          const named = statSync(target);
+          const checkedAtNs = BigInt(Date.now()) * 1_000_000n;
+          const stat = fstatSync(fd, { bigint: true });
+          const named = statSync(target, { bigint: true });
           if (!stat.isFile() || stat.dev !== named.dev || stat.ino !== named.ino) return unavailable();
+          if (stat.size > LOG_HASH_BYTES) return unavailable();
+          const size = Number(stat.size);
           const cached = foregroundCheckpoints.get(pid);
+          // A same-size rewrite can share both timestamps with this check.
+          // Only a check already outside that tick can attest unchanged bytes.
+          if (cached?.dev === stat.dev && cached.ino === stat.ino && cached.path === target
+            && cached.observedSize === size && cached.mtimeNs === stat.mtimeNs && cached.ctimeNs === stat.ctimeNs
+            && checkedAtNs >= cached.checkedAtNs
+            && cached.checkedAtNs - stat.mtimeNs >= LOG_TIMESTAMP_MARGIN_NS
+            && cached.checkedAtNs - stat.ctimeNs >= LOG_TIMESTAMP_MARGIN_NS) {
+            found = cached.pendingSwitch ? undefined : cached.binding;
+            continue;
+          }
+          const prefix = cached && size >= cached.size ? logPrefix(fd, cached.size) : null;
           const same = cached?.dev === stat.dev && cached.ino === stat.ino && cached.path === target
-            && stat.size >= cached.size && stat.size - cached.size <= LOG_WINDOW_BYTES
-            && (stat.size !== cached.size || (stat.mtimeMs === cached.mtimeMs && stat.ctimeMs === cached.ctimeMs))
-            && logBoundary(fd, cached.size) === cached.boundary;
+            && size >= cached.size && size - cached.size <= LOG_WINDOW_BYTES
+            && (size !== cached.size || (stat.mtimeNs === cached.mtimeNs && stat.ctimeNs === cached.ctimeNs))
+            && prefix?.copy().digest("hex") === cached.hash.copy().digest("hex");
           const epoch = same ? cached.epoch : randomUUID();
-          const start = same ? cached.size : Math.max(0, stat.size - LOG_WINDOW_BYTES);
-          const bytes = Buffer.alloc(stat.size - start);
+          const start = same ? cached.size : Math.max(0, size - LOG_WINDOW_BYTES);
+          const bytes = Buffer.alloc(size - start);
           const read = readSync(fd, bytes, 0, bytes.length, start);
-          const boundary = logBoundary(fd, stat.size);
-          const after = fstatSync(fd);
-          if (read !== bytes.length || boundary === null || after.size !== stat.size
-            || after.mtimeMs !== stat.mtimeMs || after.ctimeMs !== stat.ctimeMs) return unavailable();
+          const hash = same ? prefix : logPrefix(fd, start);
+          const after = fstatSync(fd, { bigint: true });
+          if (read !== bytes.length || hash === null || after.size !== stat.size
+            || after.mtimeNs !== stat.mtimeNs || after.ctimeNs !== stat.ctimeNs) return unavailable();
           const text = bytes.subarray(0, read).toString("utf8");
-          if (text && !text.endsWith("\n")) return undefined;
           const skip = start === 0 || same ? 0 : text.indexOf("\n") + 1;
           const complete = text.slice(skip, text.lastIndexOf("\n") + 1);
           if (start > 0 && !complete && !same) return unavailable();
@@ -116,16 +133,24 @@ function loggedForeground(pid: number, logDirectories: readonly string[]): Foreg
             const match = FOREGROUND_EVENT.exec(line);
             if (match) {
               if (!SESSION_ID.test(match[2]!)) return unavailable();
-              if (match[1] === "Registering") selected = { sessionId: match[2]!, generation: `${pid}:${stat.dev}:${stat.ino}:${epoch}:${position}` };
+              if (match[1] === FOREGROUND_PREFIXES[0]) selected = { sessionId: match[2]!, generation: `${pid}:${stat.dev}:${stat.ino}:${epoch}:${position}` };
               else selected = undefined;
             }
             position += Buffer.byteLength(line) + 1;
           }
+          const completeBytes = bytes.lastIndexOf(0x0a) + 1;
+          hash.update(bytes.subarray(0, completeBytes));
+          const tail = text.slice(text.lastIndexOf("\n") + 1);
+          // Cache the visible result separately from the last complete binding:
+          // an unchanged partial timestamp or switch must remain unavailable.
+          const message = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z \[INFO\] (.*)$/.exec(tail)?.[1];
+          const pendingSwitch = !!tail && (selected == null || (/^\d/.test(tail) && (message === undefined
+            || FOREGROUND_PREFIXES.some((event) => event.startsWith(message) || message.startsWith(event)))));
           foregroundCheckpoints.set(pid, {
-            dev: stat.dev, ino: stat.ino, path: target, size: stat.size,
-            mtimeMs: stat.mtimeMs, ctimeMs: stat.ctimeMs, boundary, epoch, binding: selected,
+            dev: stat.dev, ino: stat.ino, path: target, size: start + completeBytes,
+            observedSize: size, mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs, checkedAtNs, pendingSwitch, hash, epoch, binding: selected,
           });
-          found = selected;
+          found = pendingSwitch ? undefined : selected;
         } finally { closeSync(fd); }
       } catch { return unavailable(); }
     }

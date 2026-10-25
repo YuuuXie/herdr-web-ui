@@ -1,11 +1,15 @@
-import { expect, it } from "bun:test";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { expect, it, spyOn } from "bun:test";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseCopilotTranscript } from "./copilot.ts";
 import { copilotProcessSession, copilotTranscriptFile as selectedTranscriptFile, copilotUnwrittenSession as selectedUnwrittenSession, heldSessions } from "./copilot-store.ts";
-import { ConversationUnavailable, forgetTranscriptState, HistoryChanged, transcriptPage, transcriptToolOutput } from "./conversation.ts";
+import { ConversationUnavailable, forgetTranscriptState, HistoryChanged, paneConversation, toolOutput, transcriptPage, transcriptToolOutput } from "./conversation.ts";
 import { parseConversationMetadata } from "./conversation-metadata.ts";
+import * as herdr from "./herdr/client.ts";
+import * as omo from "./omo.ts";
+import type { SessionSnapshot } from "../shared/protocol.ts";
 
 const session = "12aa83d8-48bc-41f2-a498-7055c5c44a01";
 const other = "12aa83d8-48bc-41f2-a498-7055c5c44a02";
@@ -81,6 +85,18 @@ it("parses persisted Copilot messages and tool rounds once, with failures and re
   expect(turns[1]?.parts[1]).toMatchObject({ kind: "tool", name: "shell", summary: "Check directory", error: true, output_ref: "call-1" });
   expect(turns[1]?.parts[2]).toEqual({ kind: "text", text: "Finished.", phase: "final_answer" });
   expect(parseConversationMetadata(text, "copilot-transcript")).toEqual({ model: "fixture-model", reasoning_effort: null });
+});
+
+it("reads a redacted recorded CLI session with root task ancestry and a tool-only assistant message", () => {
+  const recorded = readFileSync(new URL("./fixtures/copilot-recorded.jsonl", import.meta.url), "utf8");
+  const turns = parseCopilotTranscript(recorded);
+  expect(turns.map(({ role }) => role)).toEqual(["user", "assistant"]);
+  expect(turns[0]?.parts).toEqual([{ kind: "text", text: "Recorded fixture text." }]);
+  expect(turns[1]?.parts).toEqual([
+    { kind: "tool", name: "shell", summary: "redacted", input: "{}", output: "Recorded fixture text." },
+    { kind: "text", text: "Recorded fixture text.", phase: "commentary" },
+  ]);
+  expect(parseConversationMetadata(recorded, "copilot-transcript").model).toBe("fixture-model");
 });
 
 it("keeps root prompts carrying parentAgentTaskId and pages at those prompts", () => {
@@ -197,7 +213,7 @@ it("pages bounded native turns and observes append, torn lines, and same-file re
     expect(older.turns[0]?.parts[0]).toEqual({ kind: "text", text: "prompt 0" });
     appendFileSync(path, '{"type":"user.message","data":');
     expect(transcriptPage("copilot-transcript", path).turns).toEqual(first.turns);
-    appendFileSync(path, '\n' + line("session.resume", { selectedModel: "fixture-model" }) + prompt("after resume") + answer("still here"));
+    appendFileSync(path, '{"content":"completed partial prompt"}}\n' + line("session.resume", { selectedModel: "fixture-model" }) + prompt("after resume") + answer("still here"));
     const resumed = transcriptPage("copilot-transcript", path);
     expect(resumed.history_id).toBe(first.history_id);
     expect(resumed.turns.at(-1)?.parts[0]).toEqual({ kind: "text", text: "still here", phase: "final_answer" });
@@ -282,6 +298,67 @@ it("skips oversized unrelated records and bounds selected output before parsing"
       + line("tool.execution_complete", { toolCallId: "chosen", result: { content: "incorrect fallback" } }));
     expect(transcriptToolOutput("copilot-transcript", path, "chosen")).toBeNull();
   } finally { forgetTranscriptState(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it("bounds total tool-output scans even when a reference is missing or beyond the limit", () => {
+  const dir = mkdtempSync(join(tmpdir(), "copilot-output-scan-"));
+  const path = join(dir, "events.jsonl");
+  try {
+    const request = line("tool.execution_start", { toolCallId: "chosen", toolName: "shell" });
+    const output = line("tool.execution_complete", { toolCallId: "chosen", result: { content: "found" } });
+    writeFileSync(path, start + request + output);
+    expect(transcriptToolOutput("copilot-transcript", path, "chosen")).toBe("found");
+    writeFileSync(path, start + line("system.message", { content: "padding".repeat(1024 * 1024) }).repeat(6) + request + output);
+    expect(transcriptToolOutput("copilot-transcript", path, "chosen")).toBeNull();
+    expect(transcriptToolOutput("copilot-transcript", path, "missing")).toBeNull();
+  } finally { forgetTranscriptState(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it.skipIf(process.platform !== "linux")("reuses peer claims across conversation and tool reads while rechecking the pane process", async () => {
+  const own = await logFixture([]);
+  const peer = await logFixture([]);
+  const ownPane = "copilot-own";
+  const peerPane = "copilot-peer";
+  const calls: string[] = [];
+  const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } });
+  const info = spyOn(herdr, "paneProcessInfo").mockImplementation(async (paneId) => {
+    calls.push(paneId);
+    return { pane_id: paneId, foreground_processes: [{ pid: paneId === ownPane ? own.pid : peer.pid, name: "copilot", argv: ["copilot"] }] };
+  });
+  const environment = spyOn(omo, "processEnviron").mockImplementation((pid) => pid === own.pid ? own.environment : peer.environment);
+  const snapshot = {
+    panes: [ownPane, peerPane].map((pane_id) => ({ pane_id, agent: "copilot", cwd: own.root })),
+    agents: [],
+  } as unknown as SessionSnapshot;
+  const snapshots = spyOn(herdr, "sessionSnapshot").mockResolvedValue(snapshot);
+  try {
+    appendFileSync(own.log, register(session));
+    appendFileSync(peer.log, register(other));
+    writeFileSync(join(own.root, "session-state", session, "events.jsonl"), start + prompt("own history")
+      + line("tool.execution_start", { toolCallId: "chosen", toolName: "shell" })
+      + line("tool.execution_complete", { toolCallId: "chosen", result: { content: "output ".repeat(1000) } }));
+    const conversation = await paneConversation(ownPane);
+    expect(conversation.source).toBe("copilot-transcript");
+    expect(calls.filter((pane) => pane === peerPane)).toHaveLength(1);
+    expect(calls.filter((pane) => pane === ownPane)).toHaveLength(2);
+    const part = conversation.turns.at(-1)?.parts.at(-1);
+    if (part?.kind !== "tool" || !part.output_ref) throw new Error("tool output ref missing");
+    calls.length = 0;
+    expect(await toolOutput(ownPane, part.output_ref)).toBe("output ".repeat(1000));
+    expect(calls.filter((pane) => pane === peerPane)).toHaveLength(1);
+    expect(calls.filter((pane) => pane === ownPane)).toHaveLength(2);
+    calls.length = 0;
+    info.mockImplementation(async (paneId) => {
+      calls.push(paneId);
+      if (paneId === ownPane && calls.filter((pane) => pane === ownPane).length === 2) return { pane_id: paneId, foreground_processes: [] };
+      return { pane_id: paneId, foreground_processes: [{ pid: paneId === ownPane ? own.pid : peer.pid, name: "copilot", argv: ["copilot"] }] };
+    });
+    await expect(paneConversation(ownPane)).rejects.toThrow(ConversationUnavailable);
+  } finally {
+    snapshots.mockRestore(); environment.mockRestore(); info.mockRestore(); rpc.mockRestore();
+    forgetTranscriptState();
+    await own.close(); await peer.close();
+  }
 });
 
 it.skipIf(process.platform !== "linux")("uses only the process home and a canonical regular file with the matching native header", async () => {
@@ -412,17 +489,25 @@ for (const scenario of ["rewrite", "gap"] as const) {
   it.skipIf(process.platform !== "linux")(`recovers foreground discovery after a log ${scenario}`, async () => {
     const fixture = await logFixture([]);
     const { log, binding } = fixture;
+    let modifiedAt = Date.now();
+    const rewrite = (content: string) => {
+      writeFileSync(log, content);
+      // Same-size writes can share an inode timestamp tick. Make each changed
+      // stat explicit: unchanged identity and stat deliberately reuse evidence.
+      modifiedAt += 1000;
+      fs.utimesSync(log, modifiedAt / 1000, modifiedAt / 1000);
+    };
     try {
       appendFileSync(log, register(session));
       const original = binding();
       expect(original?.sessionId).toBe(session);
       if (scenario === "rewrite") {
-        writeFileSync(log, register(other));
+        rewrite(register(other));
         expect(binding()?.sessionId).toBe(other);
-        writeFileSync(log, register(session));
+        rewrite(register(session));
         expect(binding()?.sessionId).toBe(session);
         expect(binding()?.generation).not.toBe(original?.generation);
-        writeFileSync(log, register(other) + "unrelated\n");
+        rewrite(register(other) + "unrelated\n");
         expect(binding()?.sessionId).toBe(other);
         const replaced = binding();
         appendFileSync(log, "ordinary append\n");
@@ -439,6 +524,196 @@ for (const scenario of ["rewrite", "gap"] as const) {
     } finally { await fixture.close(); }
   });
 }
+
+it.skipIf(process.platform !== "linux")("detects a growing mid-log rewrite with unchanged boundary bytes", async () => {
+  const fixture = await logFixture([]);
+  const { log, binding } = fixture;
+  try {
+    const padding = "ordinary line\n".repeat(6000);
+    writeFileSync(log, padding + register(session) + padding);
+    const original = binding();
+    expect(original?.sessionId).toBe(session);
+    writeFileSync(log, padding + register(other) + padding + "append\n");
+    expect(binding()?.sessionId).toBe(other);
+    expect(binding()?.generation).not.toBe(original?.generation);
+  } finally { await fixture.close(); }
+});
+
+it.skipIf(process.platform !== "linux")("reuses unchanged lifecycle log checks without reading the prefix again", async () => {
+  const fixture = await logFixture([]);
+  const { log, binding } = fixture;
+  const reads = spyOn(fs, "readSync");
+  const clock = spyOn(Date, "now");
+  const ageLog = () => {
+    const stat = fs.statSync(log);
+    clock.mockReturnValue(Math.ceil(Math.max(stat.mtimeMs, stat.ctimeMs)) + 5000);
+  };
+  try {
+    appendFileSync(log, register(session));
+    ageLog();
+    const original = binding();
+    expect(original?.sessionId).toBe(session);
+    reads.mockClear();
+    expect(binding()?.generation).toBe(original?.generation);
+    expect(reads.mock.calls).toHaveLength(0);
+    clock.mockReturnValue(Date.now() - 1000);
+    expect(binding()?.sessionId).toBe(session);
+    expect(reads.mock.calls.length).toBeGreaterThan(0);
+    reads.mockClear();
+    expect(binding()?.sessionId).toBe(session);
+    expect(reads.mock.calls).toHaveLength(0);
+    for (const tail of ["ordinary partial line", register(other).trimEnd()]) {
+      appendFileSync(log, tail);
+      ageLog();
+      const partial = binding();
+      expect(partial?.sessionId).toBe(tail.startsWith("ordinary") ? session : undefined);
+      reads.mockClear();
+      expect(binding()?.generation).toBe(partial?.generation);
+      expect(reads.mock.calls).toHaveLength(0);
+      appendFileSync(log, "\n");
+    }
+    expect(binding()?.sessionId).toBe(other);
+  } finally { clock.mockRestore(); reads.mockRestore(); await fixture.close(); }
+});
+
+/** Only the owned log's timestamp reporting changes; reads, size and identity stay real. */
+function fixedLogTimestamps(log: string, mtime: number, ctime = mtime) {
+  const identity = fs.statSync(log, { bigint: true });
+  const realFstat = fs.fstatSync;
+  function tickStat(fd: number, options?: fs.StatOptions & { bigint?: false }): fs.Stats;
+  function tickStat(fd: number, options: fs.StatOptions & { bigint: true }): fs.BigIntStats;
+  function tickStat(fd: number, options?: fs.StatOptions): fs.Stats | fs.BigIntStats;
+  function tickStat(fd: number, options?: fs.StatOptions): fs.Stats | fs.BigIntStats {
+    const stat = realFstat(fd, options);
+    if (stat.dev === identity.dev && stat.ino === identity.ino) {
+      Object.assign(stat, {
+        mtimeNs: BigInt(mtime) * 1_000_000n, ctimeNs: BigInt(ctime) * 1_000_000n,
+        mtimeMs: BigInt(mtime), ctimeMs: BigInt(ctime), mtime: new Date(mtime), ctime: new Date(ctime),
+      });
+    }
+    return stat;
+  }
+  return spyOn(fs, "fstatSync").mockImplementation(tickStat);
+}
+
+for (const age of [2000, 3000]) {
+  it.skipIf(process.platform !== "linux")(`checks the unchanged-log timestamp boundary at exactly ${age}ms`, async () => {
+    const fixture = await logFixture([]);
+    const { log, binding } = fixture;
+    const now = Date.now();
+    const clock = spyOn(Date, "now").mockReturnValue(now);
+    const stats = fixedLogTimestamps(log, now - age);
+    const reads = spyOn(fs, "readSync");
+    try {
+      writeFileSync(log, register(session));
+      const original = binding();
+      expect(original?.sessionId).toBe(session);
+      reads.mockClear();
+      expect(binding()?.generation).toBe(original?.generation);
+      if (age === 2000) expect(reads.mock.calls.length).toBeGreaterThan(0);
+      else expect(reads.mock.calls).toHaveLength(0);
+    } finally { reads.mockRestore(); stats.mockRestore(); clock.mockRestore(); await fixture.close(); }
+  });
+}
+
+for (const recent of ["mtime", "ctime", "both"] as const) {
+  it.skipIf(process.platform !== "linux")(`rechecks an immediate same-size rewrite with racy ${recent} without utimes`, async () => {
+    const fixture = await logFixture([]);
+    const { log, binding } = fixture;
+    const now = Date.now();
+    const clock = spyOn(Date, "now").mockReturnValue(now);
+    // Real same-size writes share a deterministic timestamp tick.
+    const stats = fixedLogTimestamps(log, recent === "ctime" ? now - 5000 : now, recent === "mtime" ? now - 5000 : now);
+    try {
+      writeFileSync(log, register(session));
+      const original = binding();
+      expect(original?.sessionId).toBe(session);
+      writeFileSync(log, register(other));
+      // A later request cannot make the earlier, racily clean check trustworthy.
+      clock.mockReturnValue(now + 5000);
+      const replacement = binding();
+      expect(replacement?.sessionId).toBe(other);
+      expect(replacement?.generation).not.toBe(original?.generation);
+      for (let request = 0; request < 100; request += 1) expect(binding()?.sessionId).toBe(other);
+    } finally { stats.mockRestore(); clock.mockRestore(); await fixture.close(); }
+  });
+}
+
+it.skipIf(process.platform !== "linux")("refuses lifecycle logs past the hash cap without reading them or falling back to a held marker", async () => {
+  const fixture = await logFixture([session]);
+  const { log, binding, environment, pid, root } = fixture;
+  const reads = spyOn(fs, "readSync");
+  try {
+    const path = join(root, "session-state", session, "events.jsonl");
+    writeFileSync(path, start + prompt("old session"));
+    appendFileSync(log, register(session));
+    expect(binding()?.sessionId).toBe(session);
+    const fd = fs.openSync(log, "r+");
+    try { fs.ftruncateSync(fd, 64 * 1024 * 1024); } finally { fs.closeSync(fd); }
+    appendFileSync(log, "\n" + register(other));
+    reads.mockClear();
+    expect(binding()).toBeNull();
+    expect(copilotTranscriptFile(session, environment, ["copilot"], pid)).toBeNull();
+    expect(reads.mock.calls).toHaveLength(0);
+    writeFileSync(log, register(other));
+    expect(binding()?.sessionId).toBe(other);
+  } finally { reads.mockRestore(); await fixture.close(); }
+});
+
+it.each([
+  { toolRequests: ["unreadable request"] },
+  { content: "", toolRequests: { toolCallId: "call", name: "shell" } },
+  { content: "readable prose", toolRequests: [null] },
+  { toolRequests: [{}] },
+  { toolRequests: [{ toolCallId: 123, name: "shell" }] },
+  { toolRequests: [{ toolCallId: "../invalid", name: "shell" }] },
+  { toolRequests: [{ toolCallId: "call", name: 123 }] },
+  { toolRequests: [{ toolCallId: "call", name: "shell", arguments: [] }] },
+])("rejects unsupported tool request containers and entries: %j", (data) => {
+  const dir = mkdtempSync(join(tmpdir(), "copilot-unreadable-tool-"));
+  const path = join(dir, "events.jsonl");
+  try {
+    writeFileSync(path, start + line("assistant.message", data));
+    expect(() => transcriptPage("copilot-transcript", path)).toThrow(ConversationUnavailable);
+  } finally { forgetTranscriptState(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it.each([
+  line("user.message", { content: [{ type: "text", text: "unsupported" }] }),
+  line("assistant.message", { content: [{ type: "text", text: "unsupported" }] }),
+  line("user.message", {}),
+  JSON.stringify({ type: "assistant.message", data: [] }) + "\n",
+  "malformed complete record\n",
+])("rejects unreadable history instead of returning an empty native chat: %s", (record) => {
+  const dir = mkdtempSync(join(tmpdir(), "copilot-unreadable-"));
+  const path = join(dir, "events.jsonl");
+  try {
+    writeFileSync(path, start);
+    expect(transcriptPage("copilot-transcript", path).turns).toEqual([]);
+    appendFileSync(path, record);
+    expect(() => transcriptPage("copilot-transcript", path)).toThrow(ConversationUnavailable);
+  } finally { forgetTranscriptState(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+it.skipIf(process.platform !== "linux")("keeps complete bindings through safe partial lines but blocks unfinished switches", async () => {
+  const fixture = await logFixture([]);
+  const { log, binding } = fixture;
+  try {
+    appendFileSync(log, register(session));
+    const original = binding();
+    for (const tail of ["ordinary partial line", "2026-10-24T00:00:00.000Z [INFO] Writing session"]) {
+      appendFileSync(log, tail);
+      expect(binding()?.generation).toBe(original?.generation);
+      expect(binding()?.sessionId).toBe(session);
+      appendFileSync(log, "\n");
+      expect(binding()?.sessionId).toBe(session);
+    }
+    appendFileSync(log, register(other).trimEnd());
+    expect(binding()).toBeNull();
+    appendFileSync(log, "\n");
+    expect(binding()?.sessionId).toBe(other);
+  } finally { await fixture.close(); }
+});
 
 it.skipIf(process.platform !== "linux")("recovers from an ambiguous unregister only after a fresh registration", async () => {
   const fixture = await logFixture([]);
@@ -500,7 +775,7 @@ it.skipIf(process.platform !== "linux")("follows process-owned foreground eviden
     appendFileSync(log, register(other, "Unregistering") + register(session));
     expect(binding()?.sessionId).toBe(session);
     appendFileSync(log, "ordinary partial line");
-    expect(binding()).toBeNull();
+    expect(binding()?.sessionId).toBe(session);
     appendFileSync(log, "\n");
     expect(binding()?.sessionId).toBe(session);
     appendFileSync(log, register(other).trimEnd());

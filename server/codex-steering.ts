@@ -32,7 +32,7 @@ export function codexSteeringPending(screen: string, text: string): boolean {
     return { indent: line.length - line.trimStart().length, text: line.trim() };
   }).filter((row) => row.text);
   const lines = rows.map((row) => row.text);
-  const composer = lastLine(lines, (line) => /^›(?:\s+Ask Codex to do anything)?$/.test(line));
+  const composer = lastLine(lines, (line) => /^[›»](?:\s+Ask Codex to do anything)?$/.test(line));
   if (composer < 0) return false;
   const footer = lines.slice(composer + 1);
   if (footer.length > 4 || footer.some((line) => !FOOTER.test(line))) return false;

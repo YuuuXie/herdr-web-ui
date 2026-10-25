@@ -6,6 +6,9 @@
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const COMPOSER_ZH: Record<string, string> = {
+  "Sent to Pi · waiting for transcript": "已发送到 Pi · 正在等待写入对话记录",
+  "Sent to Pi · transcript confirmation unavailable": "已发送到 Pi · 无法确认对话记录",
+  "Submit or clear edits before switching questions.": "请先提交或清空尚未提交的修改，再切换题目。",
   "Password or PIN": "密码或 PIN",
   "Enter a single-line password or PIN.": "请输入不含换行的密码或 PIN。",
   "Update this PC to use masked input.": "请更新此电脑上的应用以使用密码输入框。",
