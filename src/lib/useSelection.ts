@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
-import type { Machine } from "../../shared/machines.ts";
+import { paneStorageId, type Machine } from "../../shared/machines.ts";
 import { fetchSession } from "./api.ts";
 import { fileFromLink, resolveLink, type AppLink, type LinkNote } from "./deepLink.ts";
 import { machineGone, notificationLanding, notificationTargetFromSearch, sameLink, onNotificationTarget, type NotificationTarget } from "./notificationTarget.ts";
@@ -108,10 +108,14 @@ export function useSelectionMark({ selectedMachineId, selectedPaneId }: { select
   useLayoutEffect(() => {
     selectionRef.current = markSelection(selectionRef.current, selectedMachineId, selectedPaneId);
   }, [selectedMachineId, selectedPaneId]);
-  return { selectionRef };
+  // panes a tab move has on its way to another workspace (paneStorageId): herdr can drop the old ID
+  // from a roster before the move answers with the new one, and until it does neither the selection
+  // nor the split's other half falls back from it
+  const movingPanes = useRef(new Set<string>());
+  return { selectionRef, movingPanes };
 }
 
-export function useSelectTarget({ selectedMachineId, setConnected, setConnectedBefore, setSelectedMachineId, setSelectedPaneId, setAutoSelected, setDrawerOpen, setOutputStopped, setNotificationViewTarget, setTerminalPeek, pendingLink, pendingFile, setLinkLanded, selectionHint, selectionSince, rosterSeq, snapshot, selectedMachine, selectedPaneId, setHeaderNote, linkTick }: {
+export function useSelectTarget({ selectedMachineId, setConnected, setConnectedBefore, setSelectedMachineId, setSelectedPaneId, setAutoSelected, setDrawerOpen, setOutputStopped, setNotificationViewTarget, setTerminalPeek, pendingLink, pendingFile, setLinkLanded, selectionHint, selectionSince, rosterSeq, snapshot, selectedMachine, selectedPaneId, setHeaderNote, linkTick, movingPanes }: {
   selectedMachineId: string;
   setConnected: Dispatch<SetStateAction<boolean>>;
   setConnectedBefore: Dispatch<SetStateAction<boolean>>;
@@ -133,6 +137,8 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
   selectedPaneId: string | null;
   setHeaderNote: Dispatch<SetStateAction<LinkNote | "copied" | null>>;
   linkTick: number;
+  /** panes a tab move has on its way to another workspace (paneStorageId): their selection waits for the move */
+  movingPanes: RefObject<Set<string>>;
 }) {
   const selectedMachineRef = useRef(selectedMachineId);
   selectedMachineRef.current = selectedMachineId;
@@ -206,11 +212,13 @@ export function useSelectTarget({ selectedMachineId, setConnected, setConnectedB
     }
     if (snapshot.panes.some((pane) => pane.pane_id === selectedPaneId)) return;
     if (selectedPaneId === null) { setSelectedPaneId(fallback(snapshot)); return; }
+    const moving = (): boolean => movingPanes.current.has(paneStorageId(selectedMachineId, selectedPaneId));
+    if (moving()) return;
     // The combined roster is cached: a newly created pane can be selected before it
     // appears there. Confirm absence against this PC before discarding the selection.
     let cancelled = false;
     void fetchSession(selectedMachineId).then((current) => {
-      if (cancelled || current.panes.some((pane) => pane.pane_id === selectedPaneId)) return;
+      if (cancelled || moving() || current.panes.some((pane) => pane.pane_id === selectedPaneId)) return;
       // a pane a tapped alert selected: the workspace the alert named opens, and says so
       const hint = selectionHint.current;
       selectionHint.current = null;

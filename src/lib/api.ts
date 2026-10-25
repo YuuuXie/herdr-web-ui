@@ -21,7 +21,9 @@ import type {
   LanExposure,
   InteractivePrompt,
   MoveTabRequest,
+  MoveTabToWorkspaceRequest,
   TabMoved,
+  TabMovedToWorkspace,
   OmoActivity,
   PaneBackgroundAgentDetail,
   OpenWorktreeRequest,
@@ -780,6 +782,13 @@ export async function moveTab(tabId: string, insertIndex: number, machineId = "l
   const request: MoveTabRequest = { tab_id: tabId, insert_index: insertIndex };
   const response = await sendJson(machinePath(machineId, "tab/move"), "POST", request);
   return (await response.json()) as TabMoved;
+}
+
+/** A one-pane tab into a new tab of another workspace; its pane answers under its new ID. */
+export async function moveTabToWorkspace(tabId: string, workspaceId: string, machineId = "local"): Promise<TabMovedToWorkspace> {
+  const request: MoveTabToWorkspaceRequest = { tab_id: tabId, workspace_id: workspaceId };
+  const response = await sendJson(machinePath(machineId, "tab/move-to-workspace"), "POST", request);
+  return (await response.json()) as TabMovedToWorkspace;
 }
 
 /** POST /api/tab/close: the tab and every pane in it; a workspace's last tab takes the workspace with it. */

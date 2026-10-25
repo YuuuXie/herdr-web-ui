@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Browser, BrowserContext, Page, Route, WebSocket } from "playwright-core";
 import { herdrRpc, paneFocus, paneRead, paneSplit, sessionSnapshot, tabCreate, workspaceClose, workspaceCreate } from "../server/herdr/client.ts";
+import type { TabMovedToWorkspace } from "../shared/protocol.ts";
 
 /**
  * The split view's edges (lib/split.ts), each on a browser context of its own: the other half's
@@ -810,6 +811,68 @@ export async function checkSplitView(browser: Browser, origin: string): Promise<
         "the tab strip remains visible");
       assert.deepEqual(errors, []);
       console.log("PASS phone glass-header selectors follow pane-slot nesting without covering notices or tabs");
+    }
+
+    // A tab moved to another workspace goes as its pane, under a new ID: the half that showed it
+    // follows it there, the inactive half as much as the active one, and the split stays.
+    {
+      const [left, right, , , probe] = await panesFor("move-left", "move-right", "move-target", "move-back", "move-probe") as [string, string, string, string, string];
+      const { page, errors } = await open([left, right], "terminal");
+      await splitRight(page, right);
+      const shows = (side: string, pane: string) => page.waitForFunction(([which, id]) =>
+        document.querySelector(`.pane-slot[data-side="${which}"] [data-layout-pane="${id}"]:not([inert])`) !== null, [side, pane] as const);
+      const moveOut = async (side: string, to = "ovis-test-split-move-target"): Promise<string> => {
+        // a right press on the half's open tab opens its menu without making the half the active one
+        await half(page, side).locator('.tab-strip [role=tab][aria-selected="true"]').click({ button: "right" });
+        await page.getByRole("menuitem", { name: "Move to workspace…", exact: true }).click();
+        const answered = page.waitForResponse((response) => response.request().method() === "POST" && new URL(response.url()).pathname.endsWith("/tab/move-to-workspace"));
+        await page.getByRole("menuitem", { name: to, exact: true }).click();
+        const response = await answered;
+        assert.equal(response.status(), 200);
+        return ((await response.json()) as TabMovedToWorkspace).pane_id;
+      };
+      await shows("left", left);
+
+      const movedLeft = await moveOut("left");
+      assert.notEqual(movedLeft, left, "herdr gives the moved pane a new ID");
+      await shows("left", movedLeft);
+      assert.equal(await page.locator(".pane-slot").count(), 2, "the split stays when the inactive half's tab moves");
+      await isActive(page, "right");
+
+      const movedRight = await moveOut("right");
+      await shows("right", movedRight);
+      await shows("left", movedLeft);
+      assert.equal(await page.locator(".pane-slot").count(), 2, "the split stays when the active half's tab moves");
+      await isActive(page, "right");
+      // the lens picked for each pane went to its new ID with it (lib/paneMove.ts)
+      assert.deepEqual(await page.evaluate((ids) => ids.map((id) => localStorage.getItem(`ovis:view:${id}`)), [left, right, movedLeft, movedRight]),
+        [null, null, "terminal", "terminal"]);
+
+      // herdr can drop the old ID from a roster before the move answers: until it does, neither half
+      // falls back from its pane, and then each follows it. A later roster has come and gone before the
+      // check, so a fallback would have shown by then
+      const report = (pane: string, state: string) => herdrRpc("pane.report_agent", { pane_id: pane, source: "manual", agent: "claude", state });
+      for (const [side, pane] of [["left", movedLeft], ["right", movedRight]] as const) {
+        let release = (): void => undefined;
+        const held = new Promise<void>((resolve) => { release = resolve; });
+        await page.route("**/tab/move-to-workspace", async (route) => { const response = await route.fetch(); await held; await route.fulfill({ response }); });
+        // the page's roster without the pane: herdr moved it
+        const dropped = page.waitForResponse(async (response) => new URL(response.url()).pathname === "/api/machines" && !(await response.text()).includes(`"${pane}"`));
+        const moving = moveOut(side, "ovis-test-split-move-back");
+        await dropped;
+        await report(probe, "working");
+        await page.locator(`.pane-item:has(.pane-select[title^="${probe} —"]) [data-status="working"]`).first().waitFor({ state: "attached" });
+        await report(probe, "idle");
+        await settled(page);
+        assert.equal(await page.locator(".pane-slot").count(), 2, `the ${side} half stays while the move is answered`);
+        release();
+        await shows(side, await moving);
+        await page.unroute("**/tab/move-to-workspace");
+      }
+      assert.equal(await page.locator(".pane-slot").count(), 2);
+      await isActive(page, "right");
+      assert.deepEqual(errors, []);
+      console.log("PASS a tab moved to another workspace keeps its half of the split, active or not");
     }
 
     // A saved partner on a removed PC is discarded only after the roster arrives.

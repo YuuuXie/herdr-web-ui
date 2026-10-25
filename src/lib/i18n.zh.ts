@@ -247,6 +247,7 @@ const BASE: Record<string, string> = {
   "Zoom pane": "放大窗格",
   "Unzoom pane": "取消放大",
   "This PC's bridge does not offer this yet": "此电脑的桥接尚未提供此功能。",
+  "Move failed: {reason}": "移动失败：{reason}",
   "Pane swap was refused: {reason}": "窗格交换被拒绝：{reason}",
   "The panes are in different tabs.": "窗格位于不同的标签页中。",
   "Choose two different panes.": "请选择两个不同的窗格。",
