@@ -23,6 +23,7 @@ import type {
   MoveTabRequest,
   TabMoved,
   OmoActivity,
+  PaneBackgroundAgentDetail,
   OpenWorktreeRequest,
   PairedDevice,
   PairingCode,
@@ -32,8 +33,10 @@ import type {
   PanePromptResponse,
   PaneReadResult,
   PaneResized,
+  RepoBranchComparison,
   RepoDiffFileList,
   RepoDiffFilePatch,
+  RepoDiffRefs,
   RepoDiffScope,
   PaneSplit,
   PaneSwapped,
@@ -80,6 +83,7 @@ import type { VoiceConfigUpdate, VoiceStatus } from "../../shared/voice.ts";
 import { MAX_ATTACHMENT_BYTES } from "../../shared/attachments.ts";
 import { t } from "./i18n.ts";
 import { chatReadDeadlineMs, withChatReadDeadline } from "./chatReadDeadline.ts";
+import { movingHerdrFocus } from "./followFocus.ts";
 import type { UsageLoginAccounts, UsageLoginProvider, UsageLoginRequest, UsageLoginStarted } from "../../shared/usage-login.ts";
 
 export function fetchUsageLoginProviders(signal: AbortSignal): Promise<{ providers: readonly UsageLoginProvider[] }> {
@@ -559,12 +563,14 @@ export async function renameAgent(paneId: string, name: string | null, machineId
 
 /**
  * POST /api/pane/split: a new pane beside this one in herdr (its prefix+v / prefix+-), answered as
- * herdr lists it. herdr's focus stays put unless `focus` asks for the new pane; the sidebar and the
- * tab strip learn of it from the server's session-changed broadcast.
+ * herdr lists it. herdr's focus stays put unless `focus` asks for the new pane, which the caller then
+ * opens itself (movingHerdrFocus); the sidebar and the tab strip learn of it from the server's
+ * session-changed broadcast.
  */
 export async function splitPane(paneId: string, direction: SplitPaneDirection, focus = false, machineId = "local"): Promise<PaneInfo> {
-  const response = await sendJson(machinePath(machineId, "pane/split"), "POST", { pane_id: paneId, direction, ...(focus ? { focus: true } : {}) } satisfies SplitPaneRequest);
-  return ((await response.json()) as PaneSplit).pane;
+  const request = sendJson(machinePath(machineId, "pane/split"), "POST", { pane_id: paneId, direction, ...(focus ? { focus: true } : {}) } satisfies SplitPaneRequest)
+    .then(async (response) => ((await response.json()) as PaneSplit).pane);
+  return focus ? movingHerdrFocus(machineId, request) : request;
 }
 
 /** POST /api/pane/zoom: herdr's prefix+z on that pane; `zoomed` is the tab's state after it. */
@@ -656,25 +662,36 @@ export function fileUrl(path: string, paneId: string | null, machineId = "local"
 
 /**
  * Which repository and which two of its states: the pane's folder (or `directory`, read when the
- * pane is gone), and the working tree against the index, the index against HEAD, or two commits.
+ * pane is gone), and the working tree against the index, the index against HEAD, two commits, or
+ * the working tree against the merge base of a chosen base and HEAD.
  */
 export interface RepoDiffQuery {
   paneId: string | null;
   directory: string | null;
   scope: RepoDiffScope;
-  /** `commit` only: the list's hashes, so a file is read from the same comparison */
+  /** `commit`: the list's hashes, so a file is read from the same comparison; `branch`: the base to list from */
   base: string | null;
   head: string | null;
+  /** `branch` only: the identity the list answered with, which a patch is read from instead of the base's name */
+  comparison: RepoBranchComparison | null;
 }
 
 function repoDiffQuery(query: RepoDiffQuery): URLSearchParams {
+  const pinned = query.scope === "branch" && query.comparison !== null;
   return new URLSearchParams({
     ...(query.paneId ? { pane_id: query.paneId } : {}),
     ...(query.directory ? { directory: query.directory } : {}),
     scope: query.scope,
-    ...(query.scope === "commit" && query.base ? { base: query.base } : {}),
+    ...((query.scope === "commit" || query.scope === "branch") && !pinned && query.base ? { base: query.base } : {}),
     ...(query.scope === "commit" && query.head ? { head: query.head } : {}),
+    ...(pinned ? { comparison: JSON.stringify(query.comparison) } : {}),
   });
+}
+
+/** GET /api/workspace/diff/refs: the repository's branches, for choosing a base; nothing is fetched. */
+export async function fetchRepoDiffRefs(query: Pick<RepoDiffQuery, "paneId" | "directory">, machineId = "local"): Promise<RepoDiffRefs> {
+  const params = new URLSearchParams({ ...(query.paneId ? { pane_id: query.paneId } : {}), ...(query.directory ? { directory: query.directory } : {}) });
+  return getJson<RepoDiffRefs>(machinePath(machineId, `workspace/diff/refs?${params.toString()}`));
 }
 
 /** GET /api/workspace/diff/files: the files a comparison changed, with their status and counts. */
@@ -813,6 +830,17 @@ export async function fetchPaneOmoActivity(paneId: string, machineId = "local"):
   const activity = await getJson<Partial<OmoActivity>>(machinePath(machineId, `pane/omo-tasks?pane_id=${encodeURIComponent(paneId)}`));
   // a bridge from before workflows answers tasks only
   return { tasks: activity.tasks ?? [], runs: activity.runs ?? [], serverTime: activity.server_time ?? null };
+}
+
+/**
+ * GET /api/pane/background-agent: what a running Claude Code subagent's own transcript holds now,
+ * read-only and bounded (its dispatch prompt, its prose and the tools it called), for the
+ * background-task list's detail sheet. The PC resolves the session and the files: the caller
+ * names a pane and the agent id the list gave it, nothing else.
+ */
+export async function fetchPaneBackgroundAgent(paneId: string, agentId: string, machineId = "local"): Promise<PaneBackgroundAgentDetail> {
+  const query = new URLSearchParams({ pane_id: paneId, agent_id: agentId });
+  return await getJson<PaneBackgroundAgentDetail>(machinePath(machineId, `pane/background-agent?${query.toString()}`));
 }
 
 /** GET /api/pane/plan: the plan the pane's Claude Code or Codex session keeps, and that PC's clock. */

@@ -66,7 +66,7 @@ keytool -printcert -jarfile app/build/outputs/bundle/release/app-release.aab   #
 | Field | Now | Rule |
 |---|---|---|
 | `applicationId` | `sh.ovis.app` | never changes once uploaded |
-| `versionCode` | `2` | raise it by one for every upload, test tracks included (`defaultConfig` in `app/android/app/build.gradle`) |
+| `versionCode` | `3` | raise it by one for every upload, test tracks included (`defaultConfig` in `app/android/app/build.gradle`) |
 | `versionName` | `1.0` | what people see; raise it for each public release |
 | `targetSdkVersion` | 36 | Play asks new apps for a recent target |
 
@@ -209,8 +209,8 @@ developer):
 6. **First release**: in that track, Create new release. App signing: accept Play App Signing
    (Google makes the app signing key). Upload `app-release.aab` (section 2). Release name
    `1.0 (1)`, release notes `First test build.` (for the push build: `1.0 (2)`,
-   `Push notifications.`) Next > Save > Go to overview > Send changes for review (Publishing
-   overview).
+   `Push notifications.`; then `1.0 (3)`, `The page stays above the navigation buttons.`)
+   Next > Save > Go to overview > Send changes for review (Publishing overview).
 7. **Invite**: once Google approves (hours to a few days), open the track's Testers tab and copy
    the opt-in link ("Join on the web"). Send it to the group. Each tester opens it, taps Become a
    tester, then installs Ovis from Play with the same Google account.

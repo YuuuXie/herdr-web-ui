@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Beta · Ovis</title>
+<meta name="description" content="Try the Ovis phone apps before release: install Ovis on your computer, join the iPhone or Android test, and tell us what you find.">
+<link rel="canonical" href="https://ovis.sh/beta/">
+<link rel="alternate" hreflang="en" href="https://ovis.sh/beta/">
+<link rel="alternate" hreflang="ko" href="https://ovis.sh/ko/beta/">
+<link rel="alternate" hreflang="x-default" href="https://ovis.sh/beta/">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://ovis.sh/beta/">
+<meta property="og:title" content="Beta · Ovis">
+<meta property="og:description" content="Try the Ovis phone apps before release: install Ovis on your computer, join the iPhone or Android test, and tell us what you find.">
+<meta property="og:site_name" content="Ovis">
+<meta property="og:locale" content="en_US">
+<meta property="og:locale:alternate" content="ko_KR">
+<meta property="og:image" content="https://ovis.sh/assets/og-icon.png">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="The Ovis app icon, a sleepy sheep on navy, above the name Ovis.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://ovis.sh/assets/og-icon.png">
+<meta name="twitter:image:alt" content="The Ovis app icon, a sleepy sheep on navy, above the name Ovis.">
+<meta name="theme-color" content="#fbf7f2" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#131a2b" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/assets/icon-32.png" sizes="32x32">
+<link rel="apple-touch-icon" href="/assets/icon-180.png">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="wrap top">
+<a class="brand" href="/"><picture><source srcset="/assets/logo-dark.png" media="(prefers-color-scheme: dark)"><img src="/assets/logo-light.png" alt="Ovis" width="113" height="40"></picture></a>
+<nav><a href="/privacy/">Privacy</a><a href="/support/">Support</a><a href="/ko/beta/" hreflang="ko" lang="ko">한국어</a></nav>
+</header>
+<main>
+<article class="wrap doc">
+<h1>Ovis beta</h1>
+<p class="date">Try Ovis for iPhone and Android before release</p>
+<p>The phone app connects to Ovis on the computer where your coding agents run. Set up the computer first, then join the test for your phone.</p>
+<h2>On your computer</h2>
+<p>First install <a href="https://tailscale.com/download">Tailscale</a> on the computer and on your phone, and sign in to both with the same account. It lets the phone reach the computer wherever you are. On a Mac and on Linux, the Ovis installer also sets up the phone's address when it finds Tailscale. Then install Ovis:</p>
+<ul>
+<li><strong>Mac</strong> (macOS 13 or later): <a href="https://ovis.sh/Ovis.dmg">download Ovis for Mac</a>, open it and click <strong>Install</strong>.</li>
+<li><strong>Windows</strong>: install <a href="https://git-scm.com/download/win">Git for Windows</a>, then run this in PowerShell:<br><code>irm https://ovis.sh/install.ps1 | iex</code></li>
+<li><strong>Linux</strong>: run this in a terminal:<br><code>curl -fsSL https://ovis.sh/install.sh | sh</code></li>
+</ul>
+<section data-beta="testflight" hidden>
+<h2>On iPhone</h2>
+<ol>
+<li>Install <a href="https://apps.apple.com/app/testflight/id899247664">TestFlight</a> from the App Store.</li>
+<li>On the iPhone, open <a data-beta-link="testflight">the Ovis beta invitation</a>, tap <strong>Accept</strong>, then <strong>Install</strong>.</li>
+</ol>
+<p>If TestFlight says this beta is not accepting testers, it is closed to new testers for now: Apple may still be reviewing it, or it may be full. Try again later, or tell us in <a href="https://github.com/devswha/ovis/issues">an issue</a>.</p>
+</section>
+<p data-beta-pending="testflight"><strong>iPhone</strong>: the link to join the TestFlight test appears here as soon as it opens.</p>
+<section data-beta="play" hidden>
+<h2>On Android</h2>
+<p>The Android app is in a closed test on Google Play, open to the members of the Ovis testers group.</p>
+<ol>
+<li>Join <a data-beta-link="play">the Ovis testers group</a> with the Google account you use on the phone.</li>
+<li>With the same account, opt in at <a href="https://play.google.com/apps/testing/sh.ovis.app">play.google.com/apps/testing/sh.ovis.app</a>.</li>
+<li>Install <a href="https://play.google.com/store/apps/details?id=sh.ovis.app">Ovis from Google Play</a>. Play can take a few minutes to offer it after you opt in.</li>
+</ol>
+</section>
+<p data-beta-pending="play"><strong>Android</strong>: the link to join the Google Play test appears here as soon as it opens.</p>
+<h2>Connect your phone</h2>
+<p>Open Ovis on the phone and scan the QR code that Ovis on your computer shows. Ovis for Mac shows it in its window; otherwise open Ovis in the computer's browser (normally <code>http://127.0.0.1:7317</code>) and find it under <strong>Settings → Phone &amp; devices</strong>. If it shows a <code>tailscale serve</code> command instead of a QR code (on Windows, for example), run that command on the computer, then look again. You can also type the address shown under it. If the phone cannot reach the computer, see <a href="/support/">Support</a>.</p>
+<h2>Feedback</h2>
+<div class="box"><p><strong>Found a bug, or something unclear?</strong> <a href="https://github.com/devswha/ovis/issues">Open an issue on GitHub</a> with a screenshot and your device model, for example iPhone 15 or Pixel 8.</p></div>
+</article>
+</main>
+<footer><div class="wrap"><span>Ovis is made by devswha.</span><a href="/privacy/">Privacy</a><a href="/support/">Support</a><a href="/beta/">Beta</a><a href="https://github.com/devswha/ovis">Source on GitHub</a><a href="https://github.com/devswha/ovis/blob/main/docs/guide.md">Guide</a></div></footer>
+<script src="/assets/beta.js"></script>
+</body>
+</html>

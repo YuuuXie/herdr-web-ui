@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>베타 · Ovis</title>
+<meta name="description" content="출시 전의 Ovis 휴대폰 앱을 먼저 써 보세요. 컴퓨터에 Ovis를 설치하고 iPhone이나 Android 테스트에 참여한 뒤 의견을 보내 주세요.">
+<link rel="canonical" href="https://ovis.sh/ko/beta/">
+<link rel="alternate" hreflang="en" href="https://ovis.sh/beta/">
+<link rel="alternate" hreflang="ko" href="https://ovis.sh/ko/beta/">
+<link rel="alternate" hreflang="x-default" href="https://ovis.sh/beta/">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://ovis.sh/ko/beta/">
+<meta property="og:title" content="베타 · Ovis">
+<meta property="og:description" content="출시 전의 Ovis 휴대폰 앱을 먼저 써 보세요. 컴퓨터에 Ovis를 설치하고 iPhone이나 Android 테스트에 참여한 뒤 의견을 보내 주세요.">
+<meta property="og:site_name" content="Ovis">
+<meta property="og:locale" content="ko_KR">
+<meta property="og:locale:alternate" content="en_US">
+<meta property="og:image" content="https://ovis.sh/assets/og-icon.png">
+<meta property="og:image:type" content="image/png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Ovis 앱 아이콘: 남색 바탕의 졸린 양, 그 아래에 Ovis라는 이름.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://ovis.sh/assets/og-icon.png">
+<meta name="twitter:image:alt" content="Ovis 앱 아이콘: 남색 바탕의 졸린 양, 그 아래에 Ovis라는 이름.">
+<meta name="theme-color" content="#fbf7f2" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#131a2b" media="(prefers-color-scheme: dark)">
+<link rel="icon" href="/assets/icon-32.png" sizes="32x32">
+<link rel="apple-touch-icon" href="/assets/icon-180.png">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="wrap top">
+<a class="brand" href="/ko/"><picture><source srcset="/assets/logo-dark.png" media="(prefers-color-scheme: dark)"><img src="/assets/logo-light.png" alt="Ovis" width="113" height="40"></picture></a>
+<nav><a href="/ko/privacy/">개인정보</a><a href="/ko/support/">지원</a><a href="/beta/" hreflang="en" lang="en">English</a></nav>
+</header>
+<main>
+<article class="wrap doc">
+<h1>Ovis 베타</h1>
+<p class="date">출시 전의 iPhone·Android용 Ovis를 먼저 써 보세요</p>
+<p>휴대폰 앱은 코딩 에이전트가 돌아가는 컴퓨터의 Ovis에 연결됩니다. 컴퓨터부터 준비한 다음, 사용하는 휴대폰에 맞는 테스트에 참여하세요.</p>
+<h2>컴퓨터에서</h2>
+<p>먼저 컴퓨터와 휴대폰 모두에 <a href="https://tailscale.com/download">Tailscale</a>을 설치하고 같은 계정으로 로그인하세요. 그래야 어디서든 휴대폰으로 컴퓨터에 연결할 수 있습니다. Mac과 Linux에서는 Ovis 설치 프로그램이 Tailscale을 찾으면 휴대폰용 주소도 만들어 둡니다. 그다음 Ovis를 설치하세요.</p>
+<ul>
+<li><strong>Mac</strong>(macOS 13 이상): <a href="https://ovis.sh/Ovis.dmg">Mac용 Ovis를 내려받아</a> 열고 <strong>설치</strong>를 누르세요.</li>
+<li><strong>Windows</strong>: <a href="https://git-scm.com/download/win">Git for Windows</a>를 설치한 뒤 PowerShell에서 이 명령을 실행하세요.<br><code>irm https://ovis.sh/install.ps1 | iex</code></li>
+<li><strong>Linux</strong>: 터미널에서 이 명령을 실행하세요.<br><code>curl -fsSL https://ovis.sh/install.sh | sh</code></li>
+</ul>
+<section data-beta="testflight" hidden>
+<h2>iPhone에서</h2>
+<ol>
+<li>App Store에서 <a href="https://apps.apple.com/app/testflight/id899247664">TestFlight</a>를 설치하세요.</li>
+<li>iPhone에서 <a data-beta-link="testflight">Ovis 베타 초대 링크</a>를 열고 <strong>수락</strong>, 이어서 <strong>설치</strong>를 누르세요.</li>
+</ol>
+<p>TestFlight에 이 베타가 테스터를 받지 않는다고 나오면 지금은 새 테스터를 받지 않는 상태입니다. 아직 Apple의 심사 중이거나 정원이 찼을 수 있습니다. 나중에 다시 열어 보거나 <a href="https://github.com/devswha/ovis/issues">이슈</a>로 알려 주세요.</p>
+</section>
+<p data-beta-pending="testflight"><strong>iPhone</strong>: TestFlight 테스트 참여 링크는 테스트가 열리는 대로 여기에 올립니다.</p>
+<section data-beta="play" hidden>
+<h2>Android에서</h2>
+<p>Android 앱은 Google Play 비공개 테스트 중이며, Ovis 테스터 그룹의 회원이면 참여할 수 있습니다.</p>
+<ol>
+<li>휴대폰에서 쓰는 Google 계정으로 <a data-beta-link="play">Ovis 테스터 그룹</a>에 가입하세요.</li>
+<li>같은 계정으로 <a href="https://play.google.com/apps/testing/sh.ovis.app">play.google.com/apps/testing/sh.ovis.app</a>에서 테스트 참여를 누르세요.</li>
+<li><a href="https://play.google.com/store/apps/details?id=sh.ovis.app">Google Play에서 Ovis</a>를 설치하세요. 참여한 뒤 Play에 앱이 나타나기까지 몇 분 걸릴 수 있습니다.</li>
+</ol>
+</section>
+<p data-beta-pending="play"><strong>Android</strong>: Google Play 테스트 참여 링크는 테스트가 열리는 대로 여기에 올립니다.</p>
+<h2>휴대폰 연결하기</h2>
+<p>휴대폰에서 Ovis를 열고, 컴퓨터의 Ovis가 보여 주는 QR 코드를 스캔하세요. Mac용 Ovis는 자기 창에 보여 주고, 그 밖에는 컴퓨터의 브라우저에서 Ovis(보통 <code>http://127.0.0.1:7317</code>)를 열어 <strong>설정 → 폰 및 기기</strong>에서 찾으면 됩니다. QR 코드 대신 <code>tailscale serve</code> 명령이 보이면(예: Windows) 컴퓨터에서 그 명령을 실행한 뒤 다시 보세요. QR 코드 아래의 주소를 직접 입력해도 됩니다. 휴대폰이 컴퓨터에 연결되지 않으면 <a href="/ko/support/">지원</a> 페이지를 보세요.</p>
+<h2>의견 보내기</h2>
+<div class="box"><p><strong>버그를 찾았거나 헷갈리는 점이 있나요?</strong> 스크린샷과 기기 모델(예: iPhone 15, 갤럭시 S24)을 함께 <a href="https://github.com/devswha/ovis/issues">GitHub 이슈</a>로 남겨 주세요. 한국어로 쓰셔도 됩니다.</p></div>
+</article>
+</main>
+<footer><div class="wrap"><span>Ovis는 devswha가 만듭니다.</span><a href="/ko/privacy/">개인정보처리방침</a><a href="/ko/support/">지원</a><a href="/ko/beta/">베타</a><a href="https://github.com/devswha/ovis">GitHub 소스</a><a href="https://github.com/devswha/ovis/blob/main/docs/guide.md">안내 문서</a></div></footer>
+<script src="/assets/beta.js"></script>
+</body>
+</html>
