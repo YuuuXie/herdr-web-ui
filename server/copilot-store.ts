@@ -14,10 +14,12 @@ const LOG_NAME = /^process-\d+-(\d+)\.log$/;
 const FOREGROUND_PREFIXES = ["Registering foreground session: ", "Unregistering foreground session: "] as const;
 const FOREGROUND_EVENT = new RegExp(String.raw`^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z \[INFO\] (${FOREGROUND_PREFIXES.join("|")})([\da-f-]{36})$`);
 const VERIFIED_UNREGISTER = Symbol("verified unregister");
+const LOG_READ_CHANGED = Symbol("log read changed");
 interface ForegroundBinding { sessionId: string; generation: string }
+type ForegroundResult = ForegroundBinding | null | undefined | typeof VERIFIED_UNREGISTER;
 interface ForegroundCheckpoint {
   dev: bigint; ino: bigint; path: string; size: number; observedSize: number; mtimeNs: bigint; ctimeNs: bigint; checkedAtNs: bigint; pendingSwitch: boolean;
-  hash: Hash; epoch: string; binding: ForegroundBinding | null | undefined; unregistered: ForegroundBinding | null;
+  hash: Hash; epoch: string; binding: ForegroundBinding | null | undefined; unregistered: ForegroundBinding | null; readConflict?: true;
 }
 const foregroundCheckpoints = new Map<number, ForegroundCheckpoint>();
 const foregroundLogProcesses = new Map<number, { started: number; observed: boolean }>();
@@ -35,7 +37,15 @@ function logPrefix(fd: number, size: number): Hash | null {
 }
 
 /** The latest complete lifecycle event in the CLI's own open log, never the newest transcript. */
-function loggedForeground(pid: number, logDirectories: readonly string[]): ForegroundBinding | null | undefined | typeof VERIFIED_UNREGISTER {
+function loggedForeground(pid: number, logDirectories: readonly string[]): ForegroundResult {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result = scanForegroundLog(pid, logDirectories);
+    if (result !== LOG_READ_CHANGED) return result;
+  }
+  return undefined;
+}
+
+function scanForegroundLog(pid: number, logDirectories: readonly string[]): ForegroundResult | typeof LOG_READ_CHANGED {
   const started = processStartedAt(pid);
   if (started === null) return undefined;
   let owner = foregroundLogProcesses.get(pid);
@@ -102,7 +112,7 @@ function loggedForeground(pid: number, logDirectories: readonly string[]): Foreg
           const cached = foregroundCheckpoints.get(pid);
           // A same-size rewrite can share both timestamps with this check.
           // Only a check already outside that tick can attest unchanged bytes.
-          if (cached?.dev === stat.dev && cached.ino === stat.ino && cached.path === target
+          if (!cached?.readConflict && cached?.dev === stat.dev && cached.ino === stat.ino && cached.path === target
             && cached.observedSize === size && cached.mtimeNs === stat.mtimeNs && cached.ctimeNs === stat.ctimeNs
             && checkedAtNs >= cached.checkedAtNs
             && cached.checkedAtNs - stat.mtimeNs >= LOG_TIMESTAMP_MARGIN_NS
@@ -123,7 +133,11 @@ function loggedForeground(pid: number, logDirectories: readonly string[]): Foreg
           const hash = same ? prefix : logPrefix(fd, start);
           const after = fstatSync(fd, { bigint: true });
           if (read !== bytes.length || hash === null || after.size !== stat.size
-            || after.mtimeNs !== stat.mtimeNs || after.ctimeNs !== stat.ctimeNs) return unavailable();
+            || after.mtimeNs !== stat.mtimeNs || after.ctimeNs !== stat.ctimeNs) {
+            if (cached) cached.readConflict = true;
+            owner.observed = observedBefore;
+            return LOG_READ_CHANGED;
+          }
           const text = bytes.subarray(0, read).toString("utf8");
           const skip = start === 0 || same ? 0 : text.indexOf("\n") + 1;
           const complete = text.slice(skip, text.lastIndexOf("\n") + 1);
@@ -152,7 +166,7 @@ function loggedForeground(pid: number, logDirectories: readonly string[]): Foreg
           // Cache the visible result separately from the last complete binding:
           // an unchanged partial timestamp or switch must remain unavailable.
           const message = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z \[INFO\] (.*)$/.exec(tail)?.[1];
-          const pendingSwitch = !!tail && (selected == null || (/^\d/.test(tail) && (message === undefined
+          const pendingSwitch = !!tail && (selected === undefined || (/^\d/.test(tail) && (message === undefined
             || FOREGROUND_PREFIXES.some((event) => event.startsWith(message) || message.startsWith(event)))));
           foregroundCheckpoints.set(pid, {
             dev: stat.dev, ino: stat.ino, path: target, size: start + completeBytes,

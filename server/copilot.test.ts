@@ -599,6 +599,73 @@ it.skipIf(process.platform !== "linux")("keeps report-and-marker fallback for a 
   } finally { await fixture.close(); }
 });
 
+it.skipIf(process.platform !== "linux")("keeps marker fallback through ordinary partial lines but rejects pending and completed revocation", async () => {
+  const fixture = await logFixture([session]);
+  const { root, log, environment, pid } = fixture;
+  const path = join(root, "session-state", session, "events.jsonl");
+  const read = () => copilotTranscriptFile(session, environment, ["copilot"], pid);
+  try {
+    writeFileSync(path, start + prompt("existing conversation"));
+    appendFileSync(log, "CLI started\n");
+    expect(read()).toBe(path);
+    for (const tail of ["ordinary partial line", "2026-10-24T00:00:00.000Z [INFO] Writing session"]) {
+      appendFileSync(log, tail);
+      expect(read()).toBe(path);
+      expect(read()).toBe(path);
+      appendFileSync(log, "\n");
+      expect(read()).toBe(path);
+    }
+    appendFileSync(log, register(session, "Unregistering").trimEnd());
+    expect(read()).toBeNull();
+    appendFileSync(log, "\nordinary complete line\n");
+    expect(read()).toBeNull();
+    expect(read()).toBeNull();
+  } finally { await fixture.close(); }
+});
+
+for (const registered of [false, true]) {
+  for (const writes of [1, 2]) {
+    it.skipIf(process.platform !== "linux")(`recovers ${registered ? "registered" : "marker"} continuity after ${writes} concurrent log appends`, async () => {
+      const fixture = await logFixture([session]);
+      const { root, log, environment, pid } = fixture;
+      const path = join(root, "session-state", session, "events.jsonl");
+      const read = () => copilotProcessSession(environment, ["copilot"], pid);
+      const realRead = fs.readSync;
+      let remaining = writes;
+      function concurrentRead(fd: number, buffer: NodeJS.ArrayBufferView, offset: number, length: number, position: fs.ReadPosition | null): number;
+      function concurrentRead(fd: number, buffer: NodeJS.ArrayBufferView, options?: fs.ReadSyncOptions): number;
+      function concurrentRead(fd: number, buffer: NodeJS.ArrayBufferView, offset?: number | fs.ReadSyncOptions, length?: number, position?: fs.ReadPosition | null): number {
+        const count = typeof offset === "number" ? realRead(fd, buffer, offset, length!, position ?? null) : realRead(fd, buffer, offset);
+        if (position === 0 && remaining > 0 && fs.readlinkSync(`/proc/self/fd/${fd}`) === log) {
+          remaining--;
+          appendFileSync(log, "concurrent ordinary append\n");
+        }
+        return count;
+      }
+      let reads: ReturnType<typeof spyOn<typeof fs, "readSync">> | undefined;
+      try {
+        writeFileSync(path, start + prompt("existing conversation"));
+        appendFileSync(log, registered ? register(session) : "CLI started\n");
+        const original = read();
+        expect(original?.sessionId).toBe(session);
+        reads = spyOn(fs, "readSync").mockImplementation(concurrentRead);
+        const raced = read();
+        expect(remaining).toBe(0);
+        if (writes === 1) expect(raced?.sessionId).toBe(session);
+        else expect(raced).toBeNull();
+        const recovered = read();
+        expect(recovered?.sessionId).toBe(session);
+        expect(recovered?.logged).toBe(registered);
+        if (original?.logged && recovered?.logged) expect(recovered.generation).toBe(original.generation);
+        appendFileSync(log, register(session, "Unregistering"));
+        expect(read()).toBeNull();
+        appendFileSync(log, "ordinary append after unregister\n");
+        expect(read()).toBeNull();
+      } finally { reads?.mockRestore(); await fixture.close(); }
+    });
+  }
+}
+
 for (const scenario of ["rewrite", "gap"] as const) {
   it.skipIf(process.platform !== "linux")(`recovers foreground discovery after a log ${scenario}`, async () => {
     const fixture = await logFixture([]);
