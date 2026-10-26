@@ -1,5 +1,5 @@
-import { describe, expect, it } from "bun:test";
-import { createDarwinStartReader, parseElapsed, processStartedAt, processStartLowerBound, processStartUpperBound, processStartUpperBoundAsync } from "./process-start.ts";
+import { describe, expect, it, spyOn } from "bun:test";
+import { createDarwinStartReader, parseElapsed, processStartedAt, processStartedAtAsync, processStartLowerBound, processStartUpperBound, processStartUpperBoundAsync } from "./process-start.ts";
 
 describe("bounded macOS process start reads", () => {
   it("returns unknown when the bounded spawn times out even with partial output", () => {
@@ -37,6 +37,72 @@ describe("bounded macOS process start reads", () => {
     }, () => now);
     // When read, then its lower bound uses the earlier clock, not the later estimate.
     expect(read(42)).toEqual({ started: 5020, lower: 4000 });
+  });
+});
+
+describe("process start read without holding the event loop", () => {
+  it("reads macOS's start from ps run as an awaited child, never a synchronous one", async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    const blocking = spyOn(Bun, "spawnSync");
+    const probes: { argv: string[]; timeout?: number; killSignal?: string }[] = [];
+    const awaited = spyOn(Bun, "spawn").mockImplementation(((argv: string[], options?: { timeout?: number; killSignal?: string }) => {
+      probes.push({ argv, timeout: options?.timeout, killSignal: options?.killSignal });
+      return { stdout: new Response("   00:05\n").body, exited: Promise.resolve(0), signalCode: null, kill: () => {} };
+    }) as unknown as typeof Bun.spawn);
+    try {
+      const before = Date.now();
+      const started = await processStartedAtAsync(42);
+      expect(started).toBeGreaterThanOrEqual(before - 5000);
+      expect(started).toBeLessThanOrEqual(Date.now() - 5000);
+      expect(probes).toEqual([{ argv: ["/bin/ps", "-o", "etime=", "-p", "42"], timeout: 1000, killSignal: "SIGKILL" }]);
+      expect(blocking).not.toHaveBeenCalled();
+    } finally {
+      awaited.mockRestore();
+      blocking.mockRestore();
+      Object.defineProperty(process, "platform", platform);
+    }
+  });
+
+  it("counts a macOS birth from when ps started, so a late answer does not move it", async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    // the clock moves 900 ms while ps runs and the event loop is busy before its answer is taken
+    let now = 100_000;
+    const clock = spyOn(Date, "now").mockImplementation(() => now);
+    const awaited = spyOn(Bun, "spawn").mockImplementation((() => {
+      now += 900;
+      return { stdout: new Response("00:10\n").body, exited: Promise.resolve(0), signalCode: null, kill: () => {} };
+    }) as unknown as typeof Bun.spawn);
+    try {
+      expect(await processStartedAtAsync(42)).toBe(100_000 - 10_000);
+      // the bound from above stays one: counted from after the answer
+      expect(await processStartUpperBoundAsync(42)).toBe(now - 10_000 + 1000);
+    } finally {
+      awaited.mockRestore();
+      clock.mockRestore();
+      Object.defineProperty(process, "platform", platform);
+    }
+  });
+
+  it("says nothing for a macOS ps that was killed at its deadline", async () => {
+    const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    const awaited = spyOn(Bun, "spawn").mockImplementation((() => ({ stdout: new Response("00:05\n").body, exited: Promise.resolve(0), signalCode: "SIGKILL", kill: () => {} })) as unknown as typeof Bun.spawn);
+    try {
+      expect(await processStartedAtAsync(42)).toBeNull();
+    } finally {
+      awaited.mockRestore();
+      Object.defineProperty(process, "platform", platform);
+    }
+  });
+
+  it.skipIf(process.platform !== "linux")("reads Linux's start as the same identity the synchronous read gives", async () => {
+    const child = Bun.spawn([process.execPath, "-e", "await Bun.sleep(5000)"]);
+    try {
+      expect(await processStartedAtAsync(child.pid)).toBe(processStartedAt(child.pid));
+      expect(await processStartedAtAsync(2147483647)).toBeNull();
+    } finally { child.kill(); }
   });
 });
 

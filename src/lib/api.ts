@@ -19,6 +19,7 @@ import type {
   HealthAuth,
   IntegrationsResponse,
   LanExposure,
+  SecuritySummary,
   InteractivePrompt,
   MoveTabRequest,
   MoveTabToWorkspaceRequest,
@@ -386,6 +387,8 @@ export interface HealthInfo {
   auth?: HealthAuth;
   /** present only while this server is reachable beyond this PC with no token and nothing paired */
   lan_exposure?: LanExposure;
+  /** authenticated only; absent from an older server, which the summary shows as unavailable */
+  security?: SecuritySummary;
 }
 
 export async function fetchHealth(): Promise<HealthInfo> {

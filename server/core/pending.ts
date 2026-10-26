@@ -29,12 +29,14 @@ import { bindCommandProcess, claudeHeldIsGrey, codexQuestionsCollapsed, isClaude
 import { registry } from "../dialogs/registry.ts";
 import { secretPrompt } from "../../shared/secret-prompt.ts";
 import { PendingInputs, samePendingIdentity, type PendingIdentity, type PendingRecord } from "../pending-input.ts";
-import { processStartedAt } from "../process-start.ts";
+import { processStartedAtAsync } from "../process-start.ts";
+import { agentProcessInFront } from "../agent-process.ts";
 import { capturePiDeliveryAnchorRetrying, matchPiDeliveries, PiReceiptCapacity, type PiDeliveryAnchor, type PiReceiptReservation } from "../pi-delivery.ts";
 import { piTranscriptPath, piUnwrittenHeaderId } from "../pi.ts";
 import { PendingRequestBook } from "../pending-requests.ts";
 import { interruptCodexSteering } from "../codex-steering.ts";
 import type { OmoStatus } from "../omo-status.ts";
+import { heldOmoProcess } from "../omo.ts";
 import { startOpenCodeWatch, openCodeSkillsToType, type OpenCodeWatch, skillsNotAttached } from "../opencode-native.ts";
 import { herdrSkillAttachIo, type PromptPiece, typeWithSkills } from "../opencode-skill-attach.ts";
 
@@ -312,25 +314,57 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   }
   /**
    * The pane and the identity of what runs in it now, as a pending message is checked against them. Its
-   * process is the first in front of the pane, or `bound` (the process a message was bound to) while that
-   * one is among those in front: a wrapper that does not exec its agent (a shim, `sh -c` with more to run)
-   * stays listed before it, and is not another agent.
+   * process is the agent's in front of the pane, as a command outcome picks it (agentProcessInFront): `bound`
+   * (the process a message was bound to, or its launch reported) while it is among those in front, else the
+   * agent's own program, so a wrapper that does not exec its agent (a shim, a launcher, `sh -c` with more to run)
+   * and stays listed before it is not taken for it. For OmO, the process holding its session (heldOmoProcess), as
+   * typing picks it, so a custom OmO is not taken for its SDK child. While herdr names no agent, or none of its
+   * programs runs there, the first process in front. Its birth is read without holding the event loop (no `ps` on
+   * it on macOS); the foreground is then read again, and a process no longer in front by then is not the one that
+   * runs now: the reads are made again from what is, so a replacement that came meanwhile is never checked against
+   * the old process's birth. While the foreground keeps changing, the latest process with no birth.
    */
   async function currentIdentity(paneId: string, bound: number | null = null): Promise<{ pane: HerdrPane; identity: PendingIdentity; shellPid: number | null; processes: ProcessInfo | undefined }> {
     // The same normalized snapshot the client sees includes a known Codex finish that
     // herdr reports as unknown. Nothing is inferred from a bare unknown state.
     const pane = (await clientSnapshot()).panes.find((candidate) => candidate.pane_id === paneId);
     if (!pane) throw new HerdrError("pane_not_found", `pane ${paneId} not found`);
-    const info = await paneProcessInfo(paneId);
-    const foreground = info?.foreground_processes ?? [];
-    const pid = (bound !== null && foreground.some((entry) => entry.pid === bound) ? bound : foreground[0]?.pid) ?? null;
     const base = pendingIdentity(pane);
-    return { pane, shellPid: info?.shell_pid ?? null, processes: info, identity: {
-      ...base, processPid: pid, processBirth: pid === null ? null : processStartedAt(pid),
-      omoSession: omo.sessionOf(paneId)?.sessionId ?? null,
+    const pick = async (info: ProcessInfo | undefined): Promise<number | null> => {
+      const held = base.agent === "omo" ? await heldOmoProcess(pane, info?.foreground_processes ?? []) : null;
+      return agentProcessInFront(info, base.agent, bound, held)?.pid ?? info?.foreground_processes?.[0]?.pid ?? null;
+    };
+    const inFront = (info: ProcessInfo | undefined, pid: number | null): boolean =>
+      pid === null ? (info?.foreground_processes ?? []).length === 0 : (info?.foreground_processes ?? []).some((entry) => entry.pid === pid);
+    let info = await paneProcessInfo(paneId);
+    for (let attempt = 1; ; attempt++) {
+      const pid = await pick(info);
+      const processBirth = pid === null ? null : await processStartedAtAsync(pid);
       // Claude's own PID record says which session it runs, also without herdr's hook
-      claudeSession: base.agent === "claude" ? await claudeForegroundSession(info?.foreground_processes ?? []) : null,
-    } };
+      const claudeSession = base.agent === "claude" ? await claudeForegroundSession(info?.foreground_processes ?? []) : null;
+      const after = await paneProcessInfo(paneId);
+      const settled = inFront(after, pid);
+      if (settled || attempt === 3) {
+        const processPid = settled ? pid : await pick(after);
+        return { pane, shellPid: after?.shell_pid ?? null, processes: after, identity: {
+          ...base, processPid, processBirth: settled ? processBirth : null,
+          omoSession: omo.sessionOf(paneId)?.sessionId ?? null,
+          claudeSession: settled ? claudeSession : null,
+        } };
+      }
+      info = after;
+    }
+  }
+  /**
+   * The process a check passed for is still in front, read once more after the awaits that followed it and just
+   * before a write: herdr cannot compare and send in one step, so this keeps the window to the write's own call.
+   */
+  async function stillInFront(paneId: string, pid: number | null | undefined): Promise<void> {
+    if (pid == null) return;
+    const info = await paneProcessInfo(paneId);
+    if (!(info?.foreground_processes ?? []).some((entry) => entry.pid === pid)) {
+      throw new HerdrError("pending_target_changed", "The pane's terminal or agent session changed; review the message before sending it again");
+    }
   }
   async function pendingContext(owner: Client, paneId: string, lease: PendingLease, identity?: PendingIdentity, pasted = false): Promise<{ pane: HerdrPane; identity: PendingIdentity; working: boolean; screen: string; processes: ProcessInfo | undefined }> {
     authorizePending(owner, paneId, lease);
@@ -367,6 +401,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     if (current.agent && !["working", "idle", "done"].includes(pane.agent_status) && !collapsed) {
       throw new HerdrError("agent_not_ready", "The agent's current input state is not known");
     }
+    // the screen and card reads above awaited: what they were read for must still be in front
+    await stillInFront(paneId, current.processPid);
     authorizePending(owner, paneId, lease);
     return { pane, identity: current, working: current.agent !== null && (pane.agent_status === "working" || collapsed), screen, processes };
   }
@@ -415,6 +451,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       // followed from before the first key: the send's own message can be announced before Enter returns
       watch = startOpenCodeWatch(context.pane, command, options.openCodeStateDir);
       if (Date.now() - arrivedAt > (options.submitDeadlineMs ?? SUBMIT_DEADLINE_MS)) throw new HerdrError("submit_timeout", "The pending message waited too long; nothing was typed");
+      // the input-box checks and the catalog above awaited after the check: what it was made for must still be in front
+      await stillInFront(paneId, context.identity.processPid);
       authorizePending(owner, paneId, lease);
       // asked again right before herdr is written to: its connect is awaited (#666)
       const allowed = (): boolean => {
@@ -458,6 +496,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       // Capture Pi's exact active transcript position before Enter. Status is deliberately not
       // evidence: Pi can report idle/done while its TUI is staging an automatic-compaction input.
       const piAnchor = await preparePiReceipt(paneId, beforeEnter.identity).catch(() => null);
+      if (piAnchor !== undefined) await stillInFront(paneId, beforeEnter.identity.processPid);
       committing(steering);
       // Claude Code queues what Enter commits during a turn; Ctrl+Enter sends it now (#737). herdr
       // encodes the key as the pane asked, and as a plain CR for a program that asked for nothing.
@@ -566,7 +605,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       // The launch's own word wins: a shell-started agent's launch says which process it came up as, which
       // may have ended already, and then an agent the user starts later is not the one launched
       const launchedProcess = launchedPid !== null
-        ? { processPid: launchedPid, processBirth: identity.processPid === launchedPid ? identity.processBirth : processStartedAt(launchedPid) }
+        ? { processPid: launchedPid, processBirth: identity.processPid === launchedPid ? identity.processBirth : await processStartedAtAsync(launchedPid) }
         : identity.processPid !== null && identity.processPid !== undefined && identity.processPid !== shellPid
           ? { processPid: identity.processPid, processBirth: identity.processBirth } : {};
       // and to the sessions herdr, OmO or Claude's own record already name for that agent: a /resume

@@ -24,7 +24,6 @@ export const DEVICES_JA: Record<string, string> = {
   "Pairing…": "ペアリングしています…",
   "Pair this device": "このデバイスをペアリング",
   "Have an access token instead?": "アクセストークンをお持ちですか?",
-  "Access token": "アクセストークン",
   "Unlocking…": "ロックを解除しています…",
   "Unlock": "ロック解除",
   "You are on the PC itself.": "PC 本体からアクセスしています。",

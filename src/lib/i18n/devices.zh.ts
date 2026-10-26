@@ -24,7 +24,6 @@ export const DEVICES_ZH: Record<string, string> = {
   "Pairing…": "正在配对…",
   "Pair this device": "配对此设备",
   "Have an access token instead?": "有访问 Token？",
-  "Access token": "访问 Token",
   "Unlocking…": "正在解锁…",
   "Unlock": "解锁",
   "You are on the PC itself.": "你正在 PC 本机上访问。",

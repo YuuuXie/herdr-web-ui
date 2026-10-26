@@ -15,6 +15,8 @@ import type { NotificationTarget } from "./notificationTarget.ts";
 import type { SelectionMark } from "./selectionMark.ts";
 import type { SplitState } from "./split.ts";
 import { deviceInUse, followsHerdrFocus, movingHerdrFocusOn } from "./followFocus.ts";
+import { paneLifetimes } from "./paneLifetime.ts";
+import { displayPaneTitle } from "../components/Sidebar.tsx";
 import type { usePreferencesSync } from "./preferencesSync.ts";
 import type { useAlertSignals } from "./useAlertSignals.ts";
 
@@ -87,6 +89,8 @@ export function useRosterLoader({ rosterIn, setMachines, setMachineRosterLoaded,
     const started = reorderCoordinator.loadStarted();
     try {
       await snapshotRequests.current.read(fetchMachines, (next) => {
+        // a PC whose herdr was replaced leaves its panes' drafts and lenses before they are drawn
+        paneLifetimes.observe(next, displayPaneTitle);
         reorderCoordinator.roster(next, { kind: "load", started });
         setMachines((previous) => sameData(previous, next) ? previous : next);
         rosterIn();
@@ -190,6 +194,7 @@ export function useRosterEvents({ locked, receivePreferencesRef, snapshotRequest
       // A poll started before this event can carry an older roster or pane status.
       snapshotRequests.current.invalidate();
       if (payload.type === "machines") {
+        paneLifetimes.observe(payload.machines, displayPaneTitle);
         onRoster(payload.machines);
         reorderCoordinator.roster(payload.machines, { kind: "event" });
         setMachines((previous) => sameData(previous, payload.machines) ? previous : payload.machines);

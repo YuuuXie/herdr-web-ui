@@ -24,7 +24,6 @@ export const DEVICES_KO: Record<string, string> = {
   "Pairing…": "페어링 중…",
   "Pair this device": "이 기기 페어링",
   "Have an access token instead?": "접속 토큰이 있나요?",
-  "Access token": "접속 토큰",
   "Unlocking…": "잠금 해제 중…",
   "Unlock": "잠금 해제",
   "You are on the PC itself.": "지금 PC 자체에서 보고 있습니다.",

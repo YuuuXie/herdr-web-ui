@@ -6,7 +6,7 @@ import nodePath, { join, type PlatformPath } from "node:path";
 
 import { readGjcNativeBinding, validateGjcNativeTranscript } from "./gjc-native.ts";
 import { herdrRpc } from "./herdr/client.ts";
-import { processStartedAt } from "./process-start.ts";
+import { processStartedAt, processStartedAtAsync } from "./process-start.ts";
 import { descendantArgv, windowsProcessTable, type ProcessRow } from "./windows-processes.ts";
 
 export interface GjcTerminal { id: string; startedAt: number }
@@ -286,7 +286,7 @@ type GjcProcessIdentity = { pid: number; birth: number };
 export type GjcTranscriptOptions = {
   platform?: string;
   processInfo?: (paneId: string) => Promise<GjcPaneProcessInfo | null>;
-  processBirth?: (pid: number) => number | null;
+  processBirth?: (pid: number) => number | null | Promise<number | null>;
   readProcessTable?: () => Promise<ProcessRow[]>;
   now?: () => number;
 };
@@ -319,12 +319,13 @@ async function foregroundProcesses(
   const foreground = processInfo.foreground_processes;
   if (!Array.isArray(foreground)) return null;
   const identities = new Map<number, number>();
-  const birthOf = options.processBirth ?? processStartedAt;
+  // awaited: GJC discovery runs this for every snapshot, and macOS reads a start with `ps` (#1545)
+  const birthOf = options.processBirth ?? processStartedAtAsync;
   for (const process of foreground) {
     const argv = Array.isArray(process.argv) ? process.argv.filter((arg): arg is string => typeof arg === "string") : [];
     if (!isGjcProcess(argv)) continue;
     if (typeof process.pid !== "number" || !Number.isSafeInteger(process.pid) || process.pid <= 0) return null;
-    const birth = birthOf(process.pid);
+    const birth = await birthOf(process.pid);
     if (birth === null || !Number.isSafeInteger(birth) || birth <= 0) return null;
     const previous = identities.get(process.pid);
     if (previous !== undefined && !sameBirth(previous, birth, platform)) return null;
