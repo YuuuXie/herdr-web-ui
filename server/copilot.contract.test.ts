@@ -1,5 +1,6 @@
-import { afterAll, beforeAll, expect, it } from "bun:test";
+import { afterAll, beforeAll, expect, it, spyOn } from "bun:test";
 import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "./index.ts";
@@ -7,6 +8,7 @@ import { herdrRpc, paneProcessInfo, sessionSnapshot, workspaceClose, workspaceCr
 import { forgetTranscriptState } from "./conversation.ts";
 import { copilotHandoffSession, copilotProcessSession } from "./copilot-store.ts";
 import { processEnviron } from "./omo.ts";
+import * as processStart from "./process-start.ts";
 
 const id = "12aa83d8-48bc-41f2-a498-7055c5c44a01";
 const other = "12aa83d8-48bc-41f2-a498-7055c5c44a02";
@@ -78,7 +80,6 @@ process.stdin.on("data", (chunk) => {
       appendFileSync(log, new Date().toISOString() + " [INFO] Registering foreground session: " + selected + "\\n");
     }
     else if (line === ":quit") process.exit(0);
-    else if (line === ":drop" && child) child.kill();
     else appendFileSync(join(home, "input.txt"), line + "\\n");
   }
 });
@@ -128,16 +129,61 @@ const handoffTest = async () => {
     const entries = info?.foreground_processes ?? [];
     const parentEntry = entries.find((entry) => entry.pid === parent)!;
     const childEntry = entries.find((entry) => entry.pid === child)!;
+    const differentHome = join(root, "different-store");
+    mkdirSync(join(differentHome, "session-state", handoffId), { recursive: true });
+    expect(copilotHandoffSession({ pid: parent, argv: parentEntry.argv ?? [] },
+      { pid: child, argv: childEntry.argv ?? [] }, handoffId, info?.foreground_process_group_id, info?.tty,
+      (pid) => pid === child ? [`COPILOT_HOME=${differentHome}`] : processEnviron(pid))).toBeNull();
     const ownership = copilotHandoffSession({ pid: parent, argv: parentEntry.argv ?? [] },
       { pid: child, argv: childEntry.argv ?? [] }, handoffId, info?.foreground_process_group_id, info?.tty, processEnviron);
     expect({ owner: ownership?.sessionId, parent: copilotProcessSession(processEnviron(parent), parentEntry.argv ?? [], parent, "unregistered")?.sessionId,
       child: copilotProcessSession(processEnviron(child), childEntry.argv ?? [], child)?.sessionId,
       report: (await sessionSnapshot()).panes.find((p) => p.pane_id === current)?.agent_session?.value,
-      group: info?.foreground_process_group_id, tty: info?.tty, source: (await read()).source }).toEqual({
-      owner: handoffId, parent: handoffId, child: handoffId, report: handoffId, group: info?.foreground_process_group_id, tty: info?.tty, source: "copilot-transcript",
+      source: (await read()).source }).toEqual({
+      owner: handoffId, parent: handoffId, child: handoffId, report: handoffId, source: "copilot-transcript",
     });
     expect((await read()).turns[0]?.parts[0]?.text).toBe("handoff history");
     const parentLog = join(home, "logs", `process-100-${parent}.log`);
+    const parentProcess = { pid: parent, argv: parentEntry.argv ?? [] };
+    const childProcess = { pid: child, argv: childEntry.argv ?? [] };
+    const group = info?.foreground_process_group_id;
+    const tty = info?.tty ?? fs.realpathSync(`/proc/${parent}/fd/0`);
+    expect(group).toBeGreaterThan(0);
+    expect(tty).toMatch(/^\/dev\//);
+    const handoff = () => copilotHandoffSession(parentProcess, childProcess, handoffId, group, tty, processEnviron);
+    expect(copilotHandoffSession({ ...parentProcess, argv: ["copilot"] }, childProcess, handoffId, group, tty, processEnviron)).toBeNull();
+    expect(copilotHandoffSession(parentProcess, { ...childProcess, argv: ["copilot"] }, handoffId, group, tty, processEnviron)).toBeNull();
+    expect(copilotHandoffSession(childProcess, parentProcess, handoffId, group, tty, processEnviron)).toBeNull();
+    expect(copilotHandoffSession(parentProcess, childProcess, other, group, tty, processEnviron)).toBeNull();
+    expect(copilotHandoffSession(parentProcess, childProcess, handoffId, group! + 1, tty, processEnviron)).toBeNull();
+    expect(copilotHandoffSession(parentProcess, childProcess, handoffId, group, "/dev/null", processEnviron)).toBeNull();
+    const realRead = fs.readFileSync;
+    const childStat = `/proc/${child}/stat`;
+    const statText = realRead(childStat, "utf8");
+    const fields = statText.slice(statText.lastIndexOf(") ") + 2).split(" ");
+    fields[1] = "1";
+    const changedParent = statText.slice(0, statText.lastIndexOf(") ") + 2) + fields.join(" ");
+    function alteredStat(path: fs.PathOrFileDescriptor, options?: { encoding?: null; flag?: string } | null): Buffer<ArrayBuffer>;
+    function alteredStat(path: fs.PathOrFileDescriptor, options: { encoding: BufferEncoding; flag?: string } | BufferEncoding): string;
+    function alteredStat(path: fs.PathOrFileDescriptor, options?: (fs.ObjectEncodingOptions & { flag?: string }) | BufferEncoding | null): Buffer<ArrayBuffer> | string;
+    function alteredStat(path: fs.PathOrFileDescriptor, options?: (fs.ObjectEncodingOptions & { flag?: string }) | BufferEncoding | null): Buffer<ArrayBuffer> | string {
+      if (path === childStat) return typeof options === "string" || options?.encoding ? changedParent : Buffer.from(changedParent);
+      return realRead(path, options);
+    }
+    const ancestry = spyOn(fs, "readFileSync").mockImplementation(alteredStat);
+    try { expect(handoff()).toBeNull(); } finally { ancestry.mockRestore(); }
+    expect(handoff()?.sessionId).toBe(handoffId);
+    const realStarted = processStart.processStartedAt;
+    const unavailableStart = spyOn(processStart, "processStartedAt").mockImplementation((pid) => pid === parent ? null : realStarted(pid));
+    try {
+      writeFileSync(parentLog, new Date().toISOString() + " [INFO] Registering foreground session: " + other + "\n");
+      expect(copilotProcessSession(processEnviron(parent), parentProcess.argv, parent, "unregistered")).toBeNull();
+      expect(handoff()).toBeNull();
+    } finally { unavailableStart.mockRestore(); }
+    expect(handoff()).toBeNull();
+    appendFileSync(parentLog, new Date().toISOString() + " [INFO] Registering foreground session: " + handoffId + "\n"
+      + new Date().toISOString() + " [INFO] Unregistering foreground session: " + handoffId + "\n");
+    expect(handoff()?.sessionId).toBe(handoffId);
     appendFileSync(parentLog, new Date().toISOString() + " [INFO] Registering foreground session: " + handoffId + "\n");
     expect((await read()).source).toBe("scrollback");
     appendFileSync(parentLog, new Date().toISOString() + " [INFO] Unregistering foreground session: " + handoffId + "\n");

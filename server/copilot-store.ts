@@ -13,6 +13,7 @@ const LOG_TIMESTAMP_MARGIN_NS = 3_000_000_000n;
 const LOG_NAME = /^process-\d+-(\d+)\.log$/;
 const FOREGROUND_PREFIXES = ["Registering foreground session: ", "Unregistering foreground session: "] as const;
 const FOREGROUND_EVENT = new RegExp(String.raw`^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z \[INFO\] (${FOREGROUND_PREFIXES.join("|")})([\da-f-]{36})$`);
+const VERIFIED_UNREGISTER = Symbol("verified unregister");
 interface ForegroundBinding { sessionId: string; generation: string }
 interface ForegroundCheckpoint {
   dev: bigint; ino: bigint; path: string; size: number; observedSize: number; mtimeNs: bigint; ctimeNs: bigint; checkedAtNs: bigint; pendingSwitch: boolean;
@@ -34,7 +35,7 @@ function logPrefix(fd: number, size: number): Hash | null {
 }
 
 /** The latest complete lifecycle event in the CLI's own open log, never the newest transcript. */
-function loggedForeground(pid: number, logDirectories: readonly string[]): ForegroundBinding | null | undefined {
+function loggedForeground(pid: number, logDirectories: readonly string[]): ForegroundBinding | null | undefined | typeof VERIFIED_UNREGISTER {
   const started = processStartedAt(pid);
   if (started === null) return undefined;
   let owner = foregroundLogProcesses.get(pid);
@@ -68,7 +69,7 @@ function loggedForeground(pid: number, logDirectories: readonly string[]): Foreg
     return undefined;
   };
   const directory = opendirSync(`/proc/${pid}/fd`);
-  let found: ForegroundBinding | null | undefined = null;
+  let found: ForegroundBinding | null | undefined | typeof VERIFIED_UNREGISTER = null;
   let logFound = false;
   let count = 0;
   try {
@@ -106,7 +107,8 @@ function loggedForeground(pid: number, logDirectories: readonly string[]): Foreg
             && checkedAtNs >= cached.checkedAtNs
             && cached.checkedAtNs - stat.mtimeNs >= LOG_TIMESTAMP_MARGIN_NS
             && cached.checkedAtNs - stat.ctimeNs >= LOG_TIMESTAMP_MARGIN_NS) {
-            found = cached.pendingSwitch ? undefined : cached.binding;
+            found = cached.pendingSwitch ? undefined
+              : cached.binding === undefined && cached.unregistered ? VERIFIED_UNREGISTER : cached.binding;
             continue;
           }
           const prefix = cached && size >= cached.size ? logPrefix(fd, cached.size) : null;
@@ -156,7 +158,7 @@ function loggedForeground(pid: number, logDirectories: readonly string[]): Foreg
             dev: stat.dev, ino: stat.ino, path: target, size: start + completeBytes,
             observedSize: size, mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs, checkedAtNs, pendingSwitch, hash, epoch, binding: selected, unregistered,
           });
-          found = pendingSwitch ? undefined : selected;
+          found = pendingSwitch ? undefined : selected === undefined && unregistered ? VERIFIED_UNREGISTER : selected;
         } finally { closeSync(fd); }
       } catch { return unavailable(); }
     }
@@ -269,13 +271,13 @@ export function copilotProcessSession(environment: readonly string[] | null, arg
     const foreground = loggedForeground(pid, logs);
     if (mode === "unregistered") {
       const checkpoint = foregroundCheckpoints.get(pid);
-      const ended = foreground === undefined && checkpoint && !checkpoint.pendingSwitch ? checkpoint.unregistered : null;
+      const ended = foreground === VERIFIED_UNREGISTER && checkpoint ? checkpoint.unregistered : null;
       if (!ended) return null;
       const directory = join(store, ended.sessionId);
       if (realpathSync(directory) !== directory) return null;
       return { ...ended, path: join(directory, "events.jsonl"), logged: true };
     }
-    if (foreground === undefined) return null;
+    if (foreground === undefined || foreground === VERIFIED_UNREGISTER) return null;
     if (foreground !== null) {
       const directory = join(store, foreground.sessionId);
       if (realpathSync(directory) !== directory) return null;
