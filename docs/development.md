@@ -324,8 +324,9 @@ older bridges receive no unknown control frame, and their visible Chat reads eve
 The client retains current interest through reconnect, replaying it after attachment and
 capability discovery. Hiding the page, leaving Chat or unmounting disables interest. The bridge
 drops interest with the attachment, and the client asks again with the pane's next attach: a
-tab that let go of its pane while out of use (Settings → Use alongside herdr's own window) has
-no pushes while it only watches, so it reads every 2 s, and gets pushes back when it attaches.
+tab that let go of its pane while out of use or idle (Settings → Use alongside herdr's own
+window) has no pushes while it only watches, so it reads every 2 s, and gets pushes back when it
+attaches.
 Observers may subscribe without gaining input or resize authority.
 
 The bridge shares one native-file monitor per interested attached pane and one 250 ms stat
