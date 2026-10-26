@@ -4,6 +4,7 @@ import type { FitAddon } from "@xterm/addon-fit";
 import type { HerdrSocket } from "./ws.ts";
 import { EMPTY_DRAFT, restoreDraft, type InputDraft } from "./draft.ts";
 import { paneStorageId } from "../../shared/machines.ts";
+import { paneLifetimes } from "./paneLifetime.ts";
 import { inUse } from "./paneTerminalShared.ts";
 import { modalOpen } from "./focus.ts";
 import type { PendingMessageView } from "./pendingMessages.ts";
@@ -57,12 +58,14 @@ export interface PaneAttachDeps {
   watchingRef: RefObject<boolean>;
   keyboardHoldsRef: RefObject<(force: boolean) => boolean>;
   followRef: RefObject<boolean>;
+  /** decides the fold again and keeps the cursor in view (useTerminalMount) */
+  followCursorRef: RefObject<() => void>;
   leaveRef: RefObject<() => void>;
   shownRef: RefObject<boolean>;
 }
 
 export function usePaneAttach(deps: PaneAttachDeps): void {
-  const { activeRef, autoSelected, cached, coarseRef, deferAttachRef, draftPaneRef, findOpenRef, fitRef, fittedRef, fixedGridRef, frameGateRef, hyperlinksRef, hostRef, machineId, mirrored, modifyOtherKeysRef, observeRef, paneId, pending, presented, presentationRef, releaseRef, releasedRef, retireOutputRef, secretRef, setDraft, setComposing, setEnded, setHeld, setInputError, setInputReady, setOutputError, setOutputReady, setReleased, setSecret, setUnsupported, setWatching, sharedGridRef, socketRef, stalledRef, terminalId, termRef, chatViewRef, cancelLeaveRef, cachedRef, watchingRef, keyboardHoldsRef, followRef, leaveRef, shownRef } = deps;
+  const { activeRef, autoSelected, cached, coarseRef, deferAttachRef, draftPaneRef, findOpenRef, fitRef, fittedRef, fixedGridRef, frameGateRef, hyperlinksRef, hostRef, machineId, mirrored, modifyOtherKeysRef, observeRef, paneId, pending, presented, presentationRef, releaseRef, releasedRef, retireOutputRef, secretRef, setDraft, setComposing, setEnded, setHeld, setInputError, setInputReady, setOutputError, setOutputReady, setReleased, setSecret, setUnsupported, setWatching, sharedGridRef, socketRef, stalledRef, terminalId, termRef, chatViewRef, cancelLeaveRef, cachedRef, watchingRef, keyboardHoldsRef, followRef, followCursorRef, leaveRef, shownRef } = deps;
 
   // Reset on a pane or terminal replacement: a herdr restart can keep the pane ID.
   // Old composition timers must never see the new terminal.
@@ -90,7 +93,7 @@ export function usePaneAttach(deps: PaneAttachDeps): void {
     // a record past its TTL, an undated one, and a hand-edited one all restore as nothing held
     let saved = EMPTY_DRAFT;
     try {
-      saved = paneId ? restoreDraft(localStorage.getItem(`ovis:terminal-draft:${paneStorageId(machineId, paneId)}`), Date.now()) : EMPTY_DRAFT;
+      saved = paneId ? restoreDraft(paneLifetimes.paneStorage.getItem(`ovis:terminal-draft:${paneStorageId(machineId, paneId)}`), Date.now()) : EMPTY_DRAFT;
     } catch {}
     setDraft(saved);
     draftPaneRef.current = paneId;
@@ -99,6 +102,8 @@ export function usePaneAttach(deps: PaneAttachDeps): void {
     frameGateRef.current.reset();
     hyperlinksRef.current.reset();
     modifyOtherKeysRef.current = 0;
+    // the fold is decided again for this pane (lib/terminalFold.ts), and the pane menu forgets the last one's width
+    followCursorRef.current();
     if (!paneId) return;
     const leavePane = (): void => {
       cancelLeaveRef.current();

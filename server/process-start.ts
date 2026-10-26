@@ -73,20 +73,44 @@ export function processAlive(pid: number): boolean {
 }
 
 /**
+ * macOS: how long `pid` has run, in whole seconds, from `ps` run as a child that is awaited, never on the event
+ * loop; null when it cannot say. Bounded as the synchronous reader is: a `ps` past a second is killed and says nothing.
+ * `spawned`: the clock as `ps` was started, which it read the elapsed time after by no more than its own start-up;
+ * the clock once the answer is awaited can be later by however long the event loop was busy.
+ */
+async function darwinElapsedAsync(pid: number): Promise<{ elapsed: number; spawned: number } | null> {
+  try {
+    const spawned = Date.now();
+    const ps = Bun.spawn(["/bin/ps", "-o", "etime=", "-p", String(pid)], { stdout: "pipe", stderr: "ignore", timeout: 1000, killSignal: "SIGKILL" });
+    const [text, code] = await Promise.all([new Response(ps.stdout).text(), ps.exited]);
+    const elapsed = code === 0 && ps.signalCode === null ? parseElapsed(text) : null;
+    return elapsed === null ? null : { elapsed, spawned };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * processStartedAt without holding the event loop: the same reading (Linux's /proc birth; macOS's start to the
+ * second, from `ps` run as a child that is awaited). null where neither answers.
+ */
+export async function processStartedAtAsync(pid: number): Promise<number | null> {
+  if (process.platform !== "darwin") return linuxBirth(pid);
+  // counted from when `ps` was started: a late answer must not move the birth (samePendingIdentity allows a second)
+  const read = await darwinElapsedAsync(pid);
+  return read === null ? null : read.spawned - read.elapsed * 1000;
+}
+
+/**
  * processStartUpperBound without holding the event loop: on macOS `ps` runs as a child that is awaited.
  * Where no start time is known (Windows), null.
  */
 export async function processStartUpperBoundAsync(pid: number): Promise<number | null> {
   if (process.platform === "linux") return processStartUpperBound(pid);
   if (process.platform !== "darwin") return null;
-  try {
-    const ps = Bun.spawn(["/bin/ps", "-o", "etime=", "-p", String(pid)], { stdout: "pipe", stderr: "ignore" });
-    const [text, code] = await Promise.all([new Response(ps.stdout).text(), ps.exited]);
-    const elapsed = code === 0 ? parseElapsed(text) : null;
-    return elapsed === null ? null : Date.now() - elapsed * 1000 + 1000;
-  } catch {
-    return null;
-  }
+  const read = await darwinElapsedAsync(pid);
+  // from above, so counted from the clock after the answer: `ps` read the elapsed time no later than that
+  return read === null ? null : Date.now() - read.elapsed * 1000 + 1000;
 }
 
 /** An upper bound for comparing a new thread's timestamp, without btime's whole-second loss. */

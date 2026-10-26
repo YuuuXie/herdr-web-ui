@@ -38,6 +38,7 @@ const BASE: Record<string, string> = {
   "Chat": "채팅",
   "Agent default": "에이전트 기본값",
   "Phone & devices": "폰 및 기기",
+  "Access token": "접속 토큰",
   "Install app": "앱 설치",
 
   // ---- shortcuts (lib/shortcuts.ts labels) ----
@@ -240,9 +241,11 @@ const BASE: Record<string, string> = {
   "Try again": "다시 시도",
   // tabs: the strip over the pane, and the New tab dialog
   "New tab": "새 탭",
+  "Rename tab": "탭 이름 바꾸기",
   "Zoom pane": "패널 확대",
   "Unzoom pane": "패널 확대 해제",
   "This PC's bridge does not offer this yet": "이 PC의 브리지는 아직 이 기능을 제공하지 않습니다.",
+  "Move failed: {reason}": "이동 실패: {reason}",
   "Pane swap was refused: {reason}": "패널 교환이 거부되었습니다: {reason}",
   "The panes are in different tabs.": "패널이 서로 다른 탭에 있습니다.",
   "Choose two different panes.": "서로 다른 두 패널을 선택하세요.",
@@ -264,6 +267,15 @@ const BASE: Record<string, string> = {
   // t3code ports (d)
   "Change PC": "PC 바꾸기",
   "Selected": "선택됨",
+  // Recover unsent text (components/UnsentText.tsx)
+  "Unsent text": "보내지 않은 글",
+  "Text you had not sent when herdr restarted. A new herdr gives pane IDs out again, so it waits here rather than in a pane it was not written for. Nothing here is sent.": "herdr가 다시 시작될 때 보내지 않았던 글입니다. 새 herdr는 패널 ID를 다시 나눠 주므로, 그 글이 다른 패널에 나타나지 않도록 여기에 보관합니다. 여기서는 아무것도 보내지 않습니다.",
+  "Put in message box": "입력창에 넣기",
+  "Adds the text to this pane's message box. Nothing is sent.": "이 패널의 입력창에 글을 추가합니다. 보내지는 않습니다.",
+  "Message box": "입력창",
+  "Terminal line": "터미널 입력 줄",
+  "Held message": "보관한 메시지",
+  "Held input": "보관한 입력",
 };
 
 /** The parts KO is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

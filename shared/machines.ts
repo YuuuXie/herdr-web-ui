@@ -1,11 +1,11 @@
 import type { AgentRowTokens } from "./pane-tokens.ts";
 import type { SharedPreferences } from "./preferences.ts";
-import type { HealthAuth, ServerMessage, SessionSnapshot } from "./protocol.ts";
+import type { HealthAuth, SecuritySummary, ServerMessage, SessionSnapshot } from "./protocol.ts";
 import type { SeenFinish } from "./seen.ts";
 
 export const LOCAL_MACHINE = "local";
 export const BRIDGE_PROTOCOL = 1;
-export const REMOTE_BUNDLE_VERSION = "35";
+export const REMOTE_BUNDLE_VERSION = "37";
 export interface PaneTarget { machine_id: string; pane_id: string }
 export type MachineState = "connecting" | "connected" | "reconnecting" | "disconnected" | "error";
 export interface SshTarget {
@@ -98,7 +98,8 @@ export type MachineEvent = { type: "machines"; machines: Machine[] } | { type: "
   | { type: "herdr-sidebar"; agents: AgentRowTokens | null }
   /** finishes a browser of this server presented (shared/seen.ts): every record when the stream opens, then each change */
   | { type: "seen"; finishes: SeenFinish[] };
-export interface BridgeHealth { ok: true; auth: HealthAuth; bridge_protocol: number }
+/** `security`: authenticated requests only, absent from an older server (shared/protocol.ts SecuritySummary) */
+export interface BridgeHealth { ok: true; auth: HealthAuth; bridge_protocol: number; security?: SecuritySummary }
 export interface BridgeIdentity {
   pid: number;
   managed_remote: boolean;

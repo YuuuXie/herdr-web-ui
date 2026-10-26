@@ -11,10 +11,10 @@ import { readHerdrProfiles, type HerdrMachineProfile } from "./herdr-profiles.ts
 import { accessSync, constants, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import type { HealthAuth, PendingMessage } from "../shared/protocol.ts";
+import type { HealthAuth, PendingMessage, SecuritySummary } from "../shared/protocol.ts";
 import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { authClient, deviceCookieValue, bearerMatches, handleAuthRequest, isAuthenticated, parseCookies, presentedToken, presentedTokenHeld, recordPresentedTokenFailure, requiresAuth, unauthorizedJson } from "./auth.ts";
-import { cameThroughProxy, decideAccess, isLoopbackAddress, isLoopbackBind, isServeOwnerRequest, lanExposed } from "./access.ts";
+import { bindScope, cameThroughProxy, decideAccess, forwardingHeaders, isLoopbackAddress, isLoopbackBind, isServeOwnerRequest, lanExposed, observedIngress } from "./access.ts";
 import { DeviceStore, handleDeviceRequest, type DeviceMatch } from "./devices.ts";
 import { handlePreferencesRequest, PreferenceStore } from "./preferences.ts";
 import { handleSeenRequest, SeenStore } from "./seen.ts";
@@ -132,6 +132,8 @@ export function createServer(
     /** Native Codex store; defaults to CODEX_HOME. Tests use an isolated store. */
     codexHome?: string;
     grokHome?: string;
+    /** Muse Code's data directory; defaults to XDG_DATA_HOME/muse or ~/.local/share/muse. Tests use an isolated store. */
+    museData?: string;
     /** OpenCode's database; defaults to where OpenCode finds it (OPENCODE_DB, XDG_DATA_HOME). Tests use an isolated store. */
     opencodeDb?: string;
     /** OpenCode state dir where service.json lives; tests use an isolated directory. */
@@ -179,6 +181,8 @@ export function createServer(
     backgroundWait?: { grace: number; limit: number };
     /** Clock for background holds and alert turn durations; tests advance it explicitly. */
     statusNow?: () => number;
+    /** herdr's identity behind `herdr_lifetime`; unset, its socket's (server/finishes.ts). Tests swap one in. */
+    herdrIdentity?: () => string | null;
     /** ATTACH_RETRY_FOR_MS; tests shorten it */
     attachRetryForMs?: number;
     /** ATTACH_HELD_RETRY_MS; tests shorten it */
@@ -475,13 +479,24 @@ export function createServer(
         // reconnaissance, not help. Nothing here changes who is let in (server/access.ts).
         const lan_exposure = access.level === "full" && lanExposed({ hostname, tokenConfigured: token !== "", gated: devices.gated })
           ? { host: hostname } : undefined;
-        if (url.searchParams.get("scope") === "bridge") return jsonResponse({ ok: true, auth, bridge_protocol: BRIDGE_PROTOCOL });
+        // what protects this server, for a client that got in (a watching one too) and nobody else;
+        // per request, so never stored. The ingress is this request's, proven or `unknown`.
+        const ingress = observedIngress({ ...requestShape, ...identity, peerKnown: ip !== null, forwardingHeaders: forwardingHeaders(request.headers) });
+        const security: SecuritySummary | undefined = access.level === "full" ? {
+          token_configured: token !== "",
+          pairing_gate: devices.error !== null ? "unavailable" : devices.gated ? "closed" : "open",
+          bind_scope: bindScope(hostname),
+          observed_ingress: ingress,
+          public_exposure: ingress === "funnel" ? "observed" : "unknown",
+        } : undefined;
+        const securityHeaders: Record<string, string> = security ? { "cache-control": "no-store" } : {};
+        if (url.searchParams.get("scope") === "bridge") return jsonResponse({ ok: true, auth, bridge_protocol: BRIDGE_PROTOCOL, ...(security ? { security } : {}) }, 200, securityHeaders);
         try {
           const info = await ping();
           // a forced answer (tests) and a runtime without the PTY sidecar are told the way a Windows herdr's own would be
           const herdr = attachableIdentity(info, sidecar);
-          return jsonResponse({ ok: true, herdr, auth, ...(lan_exposure ? { lan_exposure } : {}),
-            web_ui: { boot_id: bootId, revision: process.env["OVIS_REVISION"] ?? null } });
+          return jsonResponse({ ok: true, herdr, auth, ...(lan_exposure ? { lan_exposure } : {}), ...(security ? { security } : {}),
+            web_ui: { boot_id: bootId, revision: process.env["OVIS_REVISION"] ?? null } }, 200, securityHeaders);
         } catch (error) {
           return errorResponse(error);
         }

@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, mock, spyOn } from "bun:test";
-import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { createServer } from "./index.ts";
@@ -135,7 +135,11 @@ beforeAll(() => {
   // The recorder polls its screen file: fs.watch can drop the change that follows writeFileSync's
   // truncation, leaving the cleared screen it read in between up for good.
   writeFileSync(join(root, "record.cjs"), `const fs=require("node:fs");const out=process.argv[2];process.stdin.setRawMode(true);process.stdin.resume();process.stdout.write("\\x1b[?2004h"+(process.argv[3]||"").replace(/\\\\x1b/g,"\\x1b"),()=>fs.writeFileSync(out,""));process.stdin.on("data",c=>fs.appendFileSync(out,JSON.stringify(c.toString("utf8"))+"\\n"));let shown="";setInterval(()=>{const next=fs.readFileSync(process.argv[4],"utf8");if(next!==shown){shown=next;process.stdout.write("\\x1b[2J\\x1b[H"+next);}},20);`);
-  for (const name of ["claude", "codex", "omp", "pi", "plain"]) { copyFileSync(process.execPath, join(root, name)); chmodSync(join(root, name), 0o755); }
+  for (const name of ["claude", "codex", "omp", "pi", "plain", "node"]) { copyFileSync(process.execPath, join(root, name)); chmodSync(join(root, name), 0o755); }
+  // an npm-style launcher (`node .../bin/claude`) that does not exec its agent: it stays in front, listed before the
+  // native agent it starts, and starts SESSION2 once SESSION1 exits
+  mkdirSync(join(root, "launcher"));
+  writeFileSync(join(root, "launcher", "claude"), `const{spawn}=require("node:child_process");const[agent,recorder,log,screen,screenFile,replacementLog]=process.argv.slice(2);const run=(args,then)=>spawn(agent,[recorder,...args],{stdio:"inherit"}).on("exit",then);run([log,screen,screenFile],()=>run([replacementLog,"SESSION2",screenFile],()=>process.exit(0)));`);
 });
 afterEach(async () => {
   for (const item of active.splice(0)) { for (const socket of item.sockets) socket.close(); item.stop(); await herdrRpc("workspace.close", { workspace_id: item.workspace }).catch(() => undefined); }
@@ -145,7 +149,7 @@ afterEach(async () => {
 });
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
-async function setup(label: string, agent = "claude", screen = "› Message\n", options: Parameters<typeof createServer>[0] = {}, replaceable = false, piTranscript?: string) {
+async function setup(label: string, agent = "claude", screen = "› Message\n", options: Parameters<typeof createServer>[0] = {}, replaceable: boolean | "launcher" = false, piTranscript?: string) {
   const id = ++next;
   const created = await herdrRpc<{ workspace: { workspace_id: string }; root_pane: { pane_id: string } }>("workspace.create", { label: `ovis-test-pending-${label}`, cwd: root, focus: false });
   // registered before anything below can throw, so afterEach closes the workspace of a setup that failed
@@ -158,7 +162,9 @@ async function setup(label: string, agent = "claude", screen = "› Message\n", 
   const command = `'${join(root, agent)}' '${join(root, "record.cjs")}' '${log}' '${screen.replace(/\n/g, "\r\n")}' '${screenFile}'`;
   // The shell immediately starts SESSION2 once SESSION1 exits, preserving terminal and lease.
   const replacementLog = join(root, `${id}-replacement.jsonl`);
-  await herdrRpc("pane.send_text", { pane_id: pane, text: replaceable
+  await herdrRpc("pane.send_text", { pane_id: pane, text: replaceable === "launcher"
+    ? `exec '${join(root, "node")}' '${join(root, "launcher", "claude")}' '${join(root, agent)}' '${join(root, "record.cjs")}' '${log}' '${screen.replace(/\n/g, "\r\n")}' '${screenFile}' '${replacementLog}'\n`
+    : replaceable
     ? `${command}; exec '${join(root, agent)}' '${join(root, "record.cjs")}' '${replacementLog}' 'SESSION2' '${screenFile}'\n`
     : `exec ${command}\n` });
   const deadline = Date.now() + 10_000;
@@ -475,6 +481,37 @@ describe("connection-owned pending input", () => {
     expect(bytes).not.toContain("MSG-FOR-SESSION-1"); // regression: SESSION2 receives nothing
   }, 30_000);
 
+  it("holds a queued message when the agent behind a launcher listed before it is replaced (#1545)", async () => {
+    const f = await setup("launcher-replaced", "claude", "SESSION1", {}, "launcher");
+    const foreground = (await herdrClient.paneProcessInfo(f.pane))?.foreground_processes ?? [];
+    const launcher = foreground.find((entry) => entry.argv?.[1] === join(root, "launcher", "claude"));
+    const agent = foreground.find((entry) => entry.argv?.[0] === join(root, "claude"));
+    if (!launcher || !agent) throw new Error(`SESSION1 has no launcher and agent in front: ${JSON.stringify(foreground)}`);
+    // control: herdr lists the launcher first, where taking the first process in front binds the launcher
+    expect(foreground.indexOf(launcher)).toBeLessThan(foreground.indexOf(agent));
+    const message = await f.queue(1545, "MSG-FOR-SESSION-1");
+    const started = new Promise<void>((resolve, reject) => {
+      const watcher = watch(root, () => {
+        if (!existsSync(f.replacementLog)) return;
+        clearTimeout(timeout); watcher.close(); resolve();
+      });
+      const timeout = setTimeout(() => { watcher.close(); reject(new Error("SESSION2 did not start")); }, 10_000);
+    });
+    globalThis.process.kill(agent.pid, "SIGKILL");
+    await started;
+    const after = (await herdrClient.paneProcessInfo(f.pane))?.foreground_processes ?? [];
+    expect(after.some((entry) => entry.pid === launcher.pid)).toBe(true); // control: the launcher still runs in front
+    expect(after.find((entry) => entry.argv?.[0] === join(root, "claude"))?.pid).not.toBe(agent.pid); // control: the agent changed
+    const settled = f.socket.event((frame) => frame.removed?.some((entry) => entry.id === message.id)
+      || frame.messages.some((entry) => entry.id === message.id && entry.state === "held"));
+    await f.state("idle");
+    const outcome = await settled;
+    expect(outcome.messages).toContainEqual(expect.objectContaining({
+      id: message.id, state: "held", error: expect.objectContaining({ code: "pending_target_changed" }),
+    }));
+    expect(readFileSync(f.replacementLog, "utf8")).not.toContain("MSG-FOR-SESSION-1");
+  }, 30_000);
+
   it("delivers to the same hookless process with unchanged pid and birth (control #540)", async () => {
     const f = await setup("same-process");
     const before = (await herdrClient.paneProcessInfo(f.pane))?.foreground_processes?.[0];
@@ -498,10 +535,10 @@ describe("connection-owned pending input", () => {
       const process = (await herdrClient.paneProcessInfo(f.pane))?.foreground_processes?.[0];
       if (!process) throw new Error("No foreground recorder");
       let reading = 100_000;
-      const birth = processStart.processStartedAt;
+      const birth = processStart.processStartedAtAsync;
       const compare = pendingInput.samePendingIdentity;
       // Supply macOS's two observations without changing the real recorder, RPCs or delivery.
-      const startedAt = spyOn(processStart, "processStartedAt").mockImplementation((pid) => pid === process.pid ? reading : birth(pid));
+      const startedAt = spyOn(processStart, "processStartedAtAsync").mockImplementation(async (pid) => pid === process.pid ? reading : await birth(pid));
       const platform = spyOn(pendingInput, "samePendingIdentity").mockImplementation((before, after) => compare(before, after, "darwin"));
       try {
         const message = await f.queue(544, `darwin birth ${drift}`);

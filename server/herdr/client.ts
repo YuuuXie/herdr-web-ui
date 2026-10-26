@@ -471,6 +471,19 @@ export async function tabMove(tabId: string, insertIndex: number, socketPath?: s
   return herdrRpc("tab.move", { tab_id: tabId, insert_index: insertIndex }, socketPath);
 }
 
+/**
+ * The pane leaves for a new tab of another workspace, its process running; herdr gives it a new
+ * ID there and closes the tab (and a workspace) it leaves empty. Focus stays where it is.
+ */
+export async function paneMoveToNewTab(paneId: string, workspaceId: string, label: string | null, socketPath?: string): Promise<{
+  pane: PaneInfo; closed_tab_id?: string | null; closed_workspace_id?: string | null;
+}> {
+  const result = await herdrRpc<{ move_result: { pane: PaneInfo; closed_tab_id?: string | null; closed_workspace_id?: string | null } }>("pane.move", {
+    pane_id: paneId, destination: { type: "new_tab", workspace_id: workspaceId, label }, focus: false,
+  }, socketPath);
+  return result.move_result;
+}
+
 /** Closes the tab and every pane in it; a workspace's last tab takes the workspace with it. */
 export async function tabClose(tabId: string, socketPath?: string): Promise<void> {
   await queueHerdrFocus(socketPath, (socket) => herdrRpc("tab.close", { tab_id: tabId }, socket));

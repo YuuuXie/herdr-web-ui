@@ -1,6 +1,6 @@
 import { type Dispatch, type DragEvent, type RefObject, type SetStateAction, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { HerdrPane } from "../../shared/protocol.ts";
-import type { Machine } from "../../shared/machines.ts";
+import { paneStorageId, type Machine } from "../../shared/machines.ts";
 import { fetchSession, type HealthInfo } from "./api.ts";
 import { dockPane, draggedPane, dropSide, otherSlot, PANE_DRAG_TYPE, sameTarget, storedSplit, storeSplit, type SplitSide, type SplitSlot, type SplitState, type SplitTarget } from "./split.ts";
 import { paneDrag, type PaneDrag } from "./paneDrag.ts";
@@ -94,7 +94,7 @@ export function useSplitState() {
   return { split, setSplit, soloSlot, endSplit, splitRef, splitShownRef, lastKeyAtRef, paneDragging, setPaneDragging, dropAt, dropAtRef, showDropTarget, clearDropPreview, paneAreaRef, tabDrag, draggedPaneRef, markSwap };
 }
 
-export function useSplitLayout({ machines, split, wideScreen, selectedPaneId, selectedPane, selectedMachineId, splitShownRef, health, machineRosterLoaded, endSplit, otherRecheck, otherRosterTick, setSplit, soloSlot, setConnected, setConnectedBefore, setSelectedMachineId, setSelectedPaneId, setAutoSelected, setOutputStopped, splitRef, selectPane, paneAreaRef, dropAtRef, clearDropPreview, tabDrag, showDropTarget, setPaneDragging, draggedPaneRef, markSwap, swapPanes }: {
+export function useSplitLayout({ machines, split, wideScreen, selectedPaneId, selectedPane, selectedMachineId, splitShownRef, health, machineRosterLoaded, endSplit, otherRecheck, otherRosterTick, setSplit, soloSlot, setConnected, setConnectedBefore, setSelectedMachineId, setSelectedPaneId, setAutoSelected, setOutputStopped, splitRef, selectPane, paneAreaRef, dropAtRef, clearDropPreview, tabDrag, showDropTarget, setPaneDragging, movingPanes, draggedPaneRef, markSwap, swapPanes }: {
   machines: Machine[];
   split: SplitState | null;
   wideScreen: boolean;
@@ -123,6 +123,8 @@ export function useSplitLayout({ machines, split, wideScreen, selectedPaneId, se
   tabDrag: PaneDrag | null;
   showDropTarget: (side: SplitSide | null) => void;
   setPaneDragging: Dispatch<SetStateAction<boolean>>;
+  /** panes a tab move has on its way to another workspace (paneStorageId): the other half waits for the move */
+  movingPanes: RefObject<Set<string>>;
   draggedPaneRef: RefObject<SplitTarget | null>;
   markSwap: (head: HTMLElement | null) => void;
   /** herdr's pane.swap of the dragged pane and another pane of its tab */
@@ -156,6 +158,8 @@ export function useSplitLayout({ machines, split, wideScreen, selectedPaneId, se
     if (!otherMachine.snapshot || otherMachine.state !== "connected") return;
     const panes = otherMachine.snapshot.panes;
     if (panes.some((pane) => pane.pane_id === split.other.paneId)) return;
+    const moving = (): boolean => movingPanes.current.has(paneStorageId(split.other.machineId, split.other.paneId));
+    if (moving()) return;
     const tabId = otherTabRef.current?.tab ?? null;
     // a pane this page has not seen in the roster yet (a saved split, a pane made just before the page
     // loaded) may be newer than the cached roster: ask the PC before the split ends, as the selection does
@@ -163,7 +167,7 @@ export function useSplitLayout({ machines, split, wideScreen, selectedPaneId, se
       let cancelled = false;
       const other = split.other;
       void fetchSession(other.machineId).then((current) => {
-        if (!cancelled && !current.panes.some((pane) => pane.pane_id === other.paneId)) endSplit(split.active);
+        if (!cancelled && !moving() && !current.panes.some((pane) => pane.pane_id === other.paneId)) endSplit(split.active);
       }).catch(() => {
         // a failed read is not evidence that the pane closed: ask again on the next roster
         if (!cancelled) otherRecheck.current = true;

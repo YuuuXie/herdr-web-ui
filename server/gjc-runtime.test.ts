@@ -1,4 +1,4 @@
-import { expect, it } from "bun:test";
+import { expect, it, spyOn } from "bun:test";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
@@ -393,4 +393,37 @@ it("cancels a running identity read when its pane ends", async () => {
     release();
     expect(await lookup).toBeNull();
   } finally { forgetGjcState(); f.done(); }
+});
+
+/** macOS, where a start is read with `ps`: answered by an awaited child, and any synchronous spawn recorded */
+async function onDarwinPs<T>(elapsed: string, run: (probes: string[][], blocking: { mock: { calls: unknown[] } }) => Promise<T>): Promise<T> {
+  const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { value: "darwin" });
+  const blocking = spyOn(Bun, "spawnSync");
+  const probes: string[][] = [];
+  const awaited = spyOn(Bun, "spawn").mockImplementation(((argv: string[]) => {
+    probes.push(argv);
+    return { stdout: new Response(`${elapsed}\n`).body, exited: Promise.resolve(0), signalCode: null, kill: () => {} };
+  }) as unknown as typeof Bun.spawn);
+  try { return await run(probes, blocking); } finally {
+    awaited.mockRestore();
+    blocking.mockRestore();
+    Object.defineProperty(process, "platform", platform);
+  }
+}
+
+// GJC discovery runs this lookup for every snapshot a pending message is checked against (#1545)
+it("reads the GJC process's birth through an awaited ps on macOS, never a synchronous one", async () => {
+  const f = nativeFixture();
+  const clock = spyOn(Date, "now").mockReturnValue(61_000);
+  try {
+    const path = f.sessionFile("session-darwin");
+    f.publish(f.record(200, "session-darwin", path));
+    const { processBirth: _sync, ...options } = f.options;
+    await onDarwinPs("01:00", async (probes, blocking) => {
+      expect(await gjcTranscriptForPane("pane", f.cwd, f.home, { ...options, platform: "darwin" })).toBe(realpathSync(path));
+      expect(probes).toContainEqual(["/bin/ps", "-o", "etime=", "-p", "200"]);
+      expect(blocking.mock.calls).toHaveLength(0);
+    });
+  } finally { clock.mockRestore(); f.done(); }
 });

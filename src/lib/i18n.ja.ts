@@ -40,6 +40,7 @@ const BASE: Record<string, string> = {
   "Chat": "チャット",
   "Agent default": "エージェントの既定",
   "Phone & devices": "スマートフォンとデバイス",
+  "Access token": "アクセストークン",
   "Install app": "アプリをインストール",
 
   // ---- shortcuts (lib/shortcuts.ts labels) ----
@@ -242,9 +243,11 @@ const BASE: Record<string, string> = {
   "Try again": "再試行",
   // tabs: the strip over the pane, and the New tab dialog
   "New tab": "新しいタブ",
+  "Rename tab": "タブの名前を変更",
   "Zoom pane": "ペインをズーム",
   "Unzoom pane": "ズームを解除",
   "This PC's bridge does not offer this yet": "このPCのブリッジはまだこの機能に対応していません。",
+  "Move failed: {reason}": "移動できませんでした: {reason}",
   "Pane swap was refused: {reason}": "ペインの入れ替えが拒否されました: {reason}",
   "The panes are in different tabs.": "ペインが別々のタブにあります。",
   "Choose two different panes.": "異なる2つのペインを選んでください。",
@@ -266,6 +269,15 @@ const BASE: Record<string, string> = {
   // t3code ports (d)
   "Change PC": "PCを切り替え",
   "Selected": "選択中",
+  // Recover unsent text (components/UnsentText.tsx)
+  "Unsent text": "未送信のテキスト",
+  "Text you had not sent when herdr restarted. A new herdr gives pane IDs out again, so it waits here rather than in a pane it was not written for. Nothing here is sent.": "herdr が再起動したときに送信していなかったテキストです。新しい herdr はペイン ID を再び割り当てるため、別のペインに出ないようここに保管しています。ここからは何も送信されません。",
+  "Put in message box": "入力欄に入れる",
+  "Adds the text to this pane's message box. Nothing is sent.": "このペインの入力欄にテキストを追加します。送信はしません。",
+  "Message box": "入力欄",
+  "Terminal line": "ターミナルの入力行",
+  "Held message": "保留中のメッセージ",
+  "Held input": "保持した入力",
 };
 
 /** The parts JA is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

@@ -42,6 +42,7 @@ const BASE: Record<string, string> = {
   "Chat": "聊天",
   "Agent default": "代理默认",
   "Phone & devices": "手机和设备",
+  "Access token": "访问 Token",
   "Install app": "安装应用",
 
   // ---- shortcuts (lib/shortcuts.ts labels) ----
@@ -244,9 +245,11 @@ const BASE: Record<string, string> = {
   "Try again": "重试",
   // tabs: the strip over the pane, and the New tab dialog
   "New tab": "新建标签页",
+  "Rename tab": "重命名标签页",
   "Zoom pane": "放大窗格",
   "Unzoom pane": "取消放大",
   "This PC's bridge does not offer this yet": "此电脑的桥接尚未提供此功能。",
+  "Move failed: {reason}": "移动失败：{reason}",
   "Pane swap was refused: {reason}": "窗格交换被拒绝：{reason}",
   "The panes are in different tabs.": "窗格位于不同的标签页中。",
   "Choose two different panes.": "请选择两个不同的窗格。",
@@ -268,6 +271,15 @@ const BASE: Record<string, string> = {
   // t3code ports (d)
   "Change PC": "切换电脑",
   "Selected": "已选择",
+  // Recover unsent text (components/UnsentText.tsx)
+  "Unsent text": "未发送的文本",
+  "Text you had not sent when herdr restarted. A new herdr gives pane IDs out again, so it waits here rather than in a pane it was not written for. Nothing here is sent.": "herdr 重启时尚未发送的文本。新的 herdr 会重新分配面板 ID，因此这些文本保存在这里，而不会出现在不属于它的面板中。这里不会发送任何内容。",
+  "Put in message box": "放入输入框",
+  "Adds the text to this pane's message box. Nothing is sent.": "将文本添加到此面板的输入框中。不会发送。",
+  "Message box": "输入框",
+  "Terminal line": "终端输入行",
+  "Held message": "保留的消息",
+  "Held input": "保留的输入",
 };
 
 /** The parts ZH is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

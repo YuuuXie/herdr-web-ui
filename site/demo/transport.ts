@@ -14,7 +14,7 @@
  * a chat gets a demo answer.
  * What does not: files, images, push and remote PCs, which need a real machine.
  */
-import type { AgentIntegration, AgentStatus, CommandForm, CommandOutcome, ConversationTurn, IntegrationsResponse, Machine, MachineEvent, OmoActivity, OmoTask, PaneBackgroundAgentDetail, PaneDirection, PaneFindMatch, PaneFindRequest, PanePlan, PaneResized, PaneSplit, PaneSwapped, PaneZoomed, PendingMessage, PlanStep, PluginActionResult, PluginActions, PluginActionsResponse, PortalStatus, ServerMessage, SessionSnapshot, SlashCommand, TabMoved, UsageReport, WorkspaceCreated, WorkspaceInfo, WorktreeEntry, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../../shared/protocol.ts";
+import type { AgentIntegration, AgentStatus, CommandForm, CommandOutcome, ConversationTurn, IntegrationsResponse, Machine, MachineEvent, OmoActivity, OmoTask, PaneBackgroundAgentDetail, PaneDirection, PaneFindMatch, PaneFindRequest, PanePlan, PaneResized, PaneSplit, PaneSwapped, PaneZoomed, PendingMessage, PlanStep, PluginActionResult, PluginActions, PluginActionsResponse, PortalStatus, SecuritySummary, ServerMessage, SessionSnapshot, SlashCommand, TabMoved, TabMovedToWorkspace, UsageReport, WorkspaceCreated, WorkspaceInfo, WorktreeEntry, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../../shared/protocol.ts";
 import type { RepoBranchComparison, RepoDiffFile, RepoDiffFileList, RepoDiffFilePatch, RepoDiffRefs, RepoDiffRepository, RepoDiffScope, SessionHistoryAgent, SessionHistoryResponse, SessionResumeResponse } from "../../shared/protocol.ts";
 import { normalizeThemeChange, sharedPreferencesBody, type SharedPreferences } from "../../shared/preferences.ts";
 import { VOICE_DEFAULTS, type VoiceStatus } from "../../shared/voice.ts";
@@ -35,6 +35,27 @@ import commandsFixture from "./fixtures/commands.json";
 import panesFixture from "./fixtures/panes.json";
 import terminalFixture from "./fixtures/terminal.json";
 
+/**
+ * The fictional access facts the Phone & devices page shows, picked by `?demo_security=` when the
+ * demo loads, or by `ovis:demo-security` in this tab's sessionStorage, which a check changes to see
+ * the next answer replace the last (scripts/security-summary-demo-regression.ts); none of them is
+ * any real server's. `older` answers without facts, `error` fails the bridge health and `loading`
+ * never answers it.
+ */
+const DEMO_SECURITY_AT_LOAD = new URLSearchParams(location.search).get("demo_security") ?? "known";
+const demoSecurity = (): string => {
+  try { return sessionStorage.getItem("ovis:demo-security") ?? DEMO_SECURITY_AT_LOAD; } catch { return DEMO_SECURITY_AT_LOAD; }
+};
+const DEMO_SECURITY_FACTS: Record<string, SecuritySummary> = {
+  known: { token_configured: true, pairing_gate: "closed", bind_scope: "loopback", observed_ingress: "tailscale", public_exposure: "unknown" },
+  watch: { token_configured: true, pairing_gate: "closed", bind_scope: "loopback", observed_ingress: "tailscale", public_exposure: "unknown" },
+  unknown: { token_configured: false, pairing_gate: "open", bind_scope: "other", observed_ingress: "unknown", public_exposure: "unknown" },
+  proxy: { token_configured: false, pairing_gate: "open", bind_scope: "loopback", observed_ingress: "proxy", public_exposure: "unknown" },
+  gated: { token_configured: false, pairing_gate: "closed", bind_scope: "other", observed_ingress: "direct", public_exposure: "unknown" },
+  funnel: { token_configured: true, pairing_gate: "closed", bind_scope: "loopback", observed_ingress: "funnel", public_exposure: "observed" },
+  tailnet: { token_configured: true, pairing_gate: "closed", bind_scope: "tailnet", observed_ingress: "direct", public_exposure: "unknown" },
+  unavailable: { token_configured: false, pairing_gate: "unavailable", bind_scope: "other", observed_ingress: "direct", public_exposure: "unknown" },
+};
 /** Only an explicit `demo logs` command starts this fictional retained history. */
 const histories = new Map<string, DemoHistory>();
 const terminalGrids = new Map<string, { cols: number; rows: number }>();
@@ -67,6 +88,8 @@ const snapshot = (): SessionSnapshot => local.snapshot!;
 // Reloading the demo starts its in-memory server over, so IDs from the previous page cannot match.
 for (const machine of machines) if (machine.snapshot) {
   machine.snapshot.finish_epoch = crypto.randomUUID();
+  // each PC's one fictional herdr, the same on every load: what the demo stores stays its panes'
+  machine.snapshot.herdr_lifetime = `demo-${machine.id}`;
   for (const pane of machine.snapshot.panes) pane.finish_id = pane.agent_status === "done" ? 1 : 0;
 }
 /** pane id -> fixture key ("api", "web", …) */
@@ -1044,9 +1067,19 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
   const paneId = query.get("pane_id") ?? "";
 
   if (path === "/api/health") {
-    const auth = { required: false, authenticated: true };
-    if (query.get("scope") === "bridge") return json({ ok: true, auth, bridge_protocol: 1 });
-    return json({ ok: true, herdr: { version: "0.9.0", protocol: 22, terminal_attach: true }, auth, web_ui: { boot_id: orderOf(local.id).epoch, revision: null } });
+    const variant = demoSecurity();
+    const auth = variant === "watch" ? { required: false, authenticated: true, via: "device" as const, role: "watch" as const } : { required: false, authenticated: true };
+    const security = DEMO_SECURITY_FACTS[variant];
+    const facts = security ? { security } : {};
+    // only the herdr-free bridge scope fails or waits: the rest of the demo keeps answering
+    if (query.get("scope") === "bridge") {
+      if (variant === "loading") return await new Promise<Response>(() => undefined);
+      if (variant === "error") return error("server_unavailable", "The demo server is not answering.", 503);
+      return json({ ok: true, auth, bridge_protocol: 1, ...facts }, 200, { "cache-control": "no-store" });
+    }
+    // the LAN warning is drawn only where a real server would send it: an other-address bind, no token, nothing paired
+    const lan = variant === "unknown" ? { lan_exposure: { host: "0.0.0.0" } } : {};
+    return json({ ok: true, herdr: { version: "0.9.0", protocol: 22, terminal_attach: true }, auth, ...lan, ...facts, web_ui: { boot_id: orderOf(local.id).epoch, revision: null } }, 200, { "cache-control": "no-store" });
   }
   if (path === "/api/machines") {
     const asked = query.getAll("verify_source_boot");
@@ -1546,6 +1579,56 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     relabelAutoTabs(tab.workspace_id);
     structureChanged();
     return json({ ok: true, tabs } satisfies TabMoved);
+  }
+  // herdr gives the pane a new ID in its new workspace; the demo keeps it, so its chat goes with it
+  if (path === "/api/tab/move-to-workspace") {
+    const body = await bodyOf(init, input);
+    const snap = snapshot();
+    const tab = snap.tabs.find((t) => t.tab_id === body["tab_id"]);
+    if (!tab) return error("tab_not_found", "no such tab", 404);
+    const workspace = snap.workspaces.find((w) => w.workspace_id === body["workspace_id"]);
+    if (!workspace) return error("workspace_not_found", "no such workspace", 404);
+    if (workspace.workspace_id === tab.workspace_id) return error("same_workspace", "the tab is already in that workspace", 409);
+    const panes = snap.panes.filter((p) => p.tab_id === tab.tab_id);
+    if (panes.length !== 1) return error("multi_pane_tab", "only a tab with one pane can move to another workspace", 409);
+    const from = tab.workspace_id;
+    const to = workspace.workspace_id;
+    const number = Math.max(0, ...snap.tabs.filter((t) => t.workspace_id === to).map((t) => t.number)) + 1;
+    const tabId = `${to}:t${number}`;
+    // as the route does: a name herdr gave by the tab's place stays behind, and the new place names it
+    const place = snap.tabs.filter((t) => t.workspace_id === from).indexOf(tab) + 1;
+    const named = tab.label.trim();
+    const placeNamed = named === "" || named === String(place);
+    const label = placeNamed ? String(snap.tabs.filter((t) => t.workspace_id === to).length + 1) : tab.label;
+    snap.tabs = [...snap.tabs.filter((t) => t !== tab), { ...tab, tab_id: tabId, workspace_id: to, number, label, focused: false }];
+    snap.layouts = snap.layouts.filter((l) => l.tab_id !== tab.tab_id);
+    Object.assign(panes[0]!, { tab_id: tabId, workspace_id: to, focused: false });
+    const agent = snap.agents.find((entry) => entry.pane_id === panes[0]!.pane_id);
+    if (agent) Object.assign(agent, { tab_id: tabId, workspace_id: to });
+    addDemoLayout(to, tabId, panes[0]!.pane_id);
+    // a tab named by its place keeps being named by it there, as herdr renumbers it
+    if (autoTabs.delete(tab.tab_id) || placeNamed) autoTabs.add(tabId);
+    relabelAutoTabs(from);
+    relabelAutoTabs(to);
+    for (const w of snap.workspaces) {
+      w.tab_count = snap.tabs.filter((t) => t.workspace_id === w.workspace_id).length;
+      w.pane_count = snap.panes.filter((p) => p.workspace_id === w.workspace_id).length;
+    }
+    // a workspace's last tab takes the workspace with it; one that stays opens another tab
+    const left = snap.tabs.find((t) => t.workspace_id === from);
+    if (!left) snap.workspaces = snap.workspaces.filter((w) => w.workspace_id !== from);
+    else for (const w of snap.workspaces) if (w.active_tab_id === tab.tab_id) w.active_tab_id = left.tab_id;
+    // herdr's focus on the moved pane goes with it, as the demo keeps the pane's ID
+    if (snap.focused_tab_id === tab.tab_id) {
+      snap.focused_tab_id = tabId;
+      snap.focused_workspace_id = to;
+      workspace.active_tab_id = tabId;
+    }
+    panes[0]!.focused = panes[0]!.pane_id === snap.focused_pane_id;
+    for (const t of snap.tabs) t.focused = t.tab_id === snap.focused_tab_id;
+    for (const w of snap.workspaces) w.focused = w.workspace_id === snap.focused_workspace_id;
+    structureChanged();
+    return json({ ok: true, pane_id: panes[0]!.pane_id, tab_id: tabId } satisfies TabMovedToWorkspace);
   }
   if (path === "/api/tab/close") {
     const body = await bodyOf(init, input);

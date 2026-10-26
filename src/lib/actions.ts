@@ -30,11 +30,20 @@ export interface AppActions {
    * else the selected pane's. Nothing happens without a workspace to add the tab to.
    */
   openNewTab: (target?: { machineId: string; workspaceId: string }) => void;
+  /** The inline name field of the selected pane's tab, as the tab menu's Rename opens it; nothing while the tab strip is not drawn. */
+  renameTab: () => void;
   /**
    * A shell tab in the same workspace, at once and with no dialog, as herdr's own new tab: the
    * new pane opens unless another one was opened meanwhile. Rejects with herdr's refusal.
    */
   openTerminalTab: (target?: { machineId: string; workspaceId: string }) => Promise<void>;
+  /**
+   * A one-pane tab into a new tab at the end of another workspace on its PC, its process running.
+   * Where its pane is shown, in either half of a split, the app follows it there, and what was typed
+   * into it and not sent goes with it. Rejects with herdr's refusal; `notice` also says it over the
+   * pane, for a caller with no line of its own (the palette, which has closed).
+   */
+  moveTabToWorkspace: (target: { machineId: string; tabId: string; workspaceId: string; notice?: boolean }) => Promise<void>;
   /**
    * The earlier sessions of a workspace's folder (components/SessionHistory.tsx): the named
    * workspace's, listed for `agent` first (a pane's, or the row's), else the selected pane's

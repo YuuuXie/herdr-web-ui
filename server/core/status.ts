@@ -10,7 +10,7 @@ import { ClaudeSubagentStatus } from "../claude-subagents.ts";
 import { codexOpenRollout, paneCodexHome } from "../codex.ts";
 import { startStatusCollector } from "../collector.ts";
 import { CompletionTracker, type OmoRest } from "../completion.ts";
-import { Finishes } from "../finishes.ts";
+import { Finishes, herdrLifetime } from "../finishes.ts";
 import { claudePanePid, claudePaneSession, forgetPaneTranscriptState } from "../conversation.ts";
 import { releaseOpenCodePane, trackVerifiedOpenCodePanes } from "../opencode-native.ts";
 import type { DeviceStore } from "../devices.ts";
@@ -48,6 +48,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     backgroundWait?: { grace: number; limit: number };
     statusNow?: () => number;
     openCodeState?: OpenCodePromptState;
+    /** herdr's identity behind finish epochs and `herdr_lifetime` (server/finishes.ts); tests give their own */
+    herdrIdentity?: () => string | null;
     /** this server's workspace-order counter (server/order-sequence.ts); createServer makes the one there is */
     orderSequence?: OrderSequence;
   };
@@ -81,7 +83,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
 
   /** `done` for agents herdr loses track of (server/completion.ts), kept across restarts */
   const completions = new CompletionTracker(join(options.stateDir ?? defaultStateDir(), "completions.json"));
-  const finishes = new Finishes();
+  const finishes = new Finishes(options.herdrIdentity);
   /** OmO panes get their status from OmO's session files: herdr reports none for them (server/omo-status.ts) */
   const omo = new OmoStatus({
     discover: (panes) => omoPanes(panes),
@@ -143,11 +145,16 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     // and again by a read started afresh below
     const order = options.orderSequence?.read();
     const epoch = finishes.epoch;
+    const identity = finishes.herdrIdentity();
     const snapshot = await completions.readSnapshot(rawSnapshot);
     // A read spanning a proven daemon replacement belongs to neither generation. Read afresh.
     if (epoch !== finishes.epoch) return clientSnapshot();
+    // the same herdr before and after the read: its panes are that herdr's. Without that proof the
+    // snapshot names none, rather than give one herdr's pane IDs to another's drafts
+    const lifetime = identity !== null && identity === finishes.herdrIdentity() ? herdrLifetime(identity) : undefined;
     const settled = finishes.snapshot({
       ...snapshot,
+      ...(lifetime === undefined ? {} : { herdr_lifetime: lifetime }),
       panes: snapshot.panes.map((pane) => {
         const background = backgroundOf(pane.pane_id);
         const waiting = waits.waiting(pane.pane_id);
