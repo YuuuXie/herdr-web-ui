@@ -135,7 +135,6 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[]): Fore
           if (read !== bytes.length || hash === null || after.size !== stat.size
             || after.mtimeNs !== stat.mtimeNs || after.ctimeNs !== stat.ctimeNs) {
             if (cached) cached.readConflict = true;
-            owner.observed = observedBefore;
             return LOG_READ_CHANGED;
           }
           const text = bytes.subarray(0, read).toString("utf8");

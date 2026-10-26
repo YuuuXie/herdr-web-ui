@@ -666,6 +666,56 @@ for (const registered of [false, true]) {
   }
 }
 
+it.skipIf(process.platform !== "linux")("does not fall back to a stale marker when the first log read races and its descriptor disappears", async () => {
+  const fixture = await logFixture([session]);
+  const { root, log, environment, pid } = fixture;
+  const path = join(root, "session-state", session, "events.jsonl");
+  const read = () => copilotTranscriptFile(session, environment, ["copilot"], pid);
+  const realRead = fs.readSync;
+  const realLink = fs.readlinkSync;
+  let missing = false;
+  function concurrentRead(fd: number, buffer: NodeJS.ArrayBufferView, offset: number, length: number, position: fs.ReadPosition | null): number;
+  function concurrentRead(fd: number, buffer: NodeJS.ArrayBufferView, options?: fs.ReadSyncOptions): number;
+  function concurrentRead(fd: number, buffer: NodeJS.ArrayBufferView, offset?: number | fs.ReadSyncOptions, length?: number, position?: fs.ReadPosition | null): number {
+    const count = typeof offset === "number" ? realRead(fd, buffer, offset, length!, position ?? null) : realRead(fd, buffer, offset);
+    if (!missing && position === 0 && realLink(`/proc/self/fd/${fd}`) === log) {
+      appendFileSync(log, "concurrent ordinary append\n");
+      missing = true;
+    }
+    return count;
+  }
+  function currentLink(path: fs.PathLike, options?: fs.EncodingOption): string;
+  function currentLink(path: fs.PathLike, options: fs.BufferEncodingOption): Buffer<ArrayBuffer>;
+  function currentLink(path: fs.PathLike, options?: fs.EncodingOption | fs.BufferEncodingOption): string | Buffer<ArrayBuffer>;
+  function currentLink(path: fs.PathLike, options?: fs.EncodingOption | fs.BufferEncodingOption): string | Buffer<ArrayBuffer> {
+    const encoding = typeof options === "object" ? options?.encoding : options;
+    const target = encoding === "buffer" ? realLink(path, "buffer") : realLink(path, encoding);
+    if (missing && String(path).startsWith(`/proc/${pid}/fd/`) && target.toString() === log) {
+      throw Object.assign(new Error("fixture log descriptor closed"), { code: "ENOENT" });
+    }
+    return target;
+  }
+  let reads: ReturnType<typeof spyOn<typeof fs, "readSync">> | undefined;
+  let links: ReturnType<typeof spyOn<typeof fs, "readlinkSync">> | undefined;
+  try {
+    writeFileSync(path, start + prompt("stale held conversation"));
+    appendFileSync(log, register(other));
+    reads = spyOn(fs, "readSync").mockImplementation(concurrentRead);
+    links = spyOn(fs, "readlinkSync").mockImplementation(currentLink);
+    expect(read()).toBeNull();
+    expect(missing).toBe(true);
+    reads.mockRestore();
+    links.mockRestore();
+    await fixture.command("close");
+    expect(read()).toBeNull();
+    await fixture.command("open");
+    writeFileSync(log, "ordinary complete line\n");
+    expect(read()).toBeNull();
+    appendFileSync(log, register(session));
+    expect(read()).toBe(path);
+  } finally { reads?.mockRestore(); links?.mockRestore(); await fixture.close(); }
+});
+
 for (const scenario of ["rewrite", "gap"] as const) {
   it.skipIf(process.platform !== "linux")(`recovers foreground discovery after a log ${scenario}`, async () => {
     const fixture = await logFixture([]);
