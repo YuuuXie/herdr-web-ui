@@ -357,7 +357,7 @@ it("rejects offset refs after rewrite-and-growth, malformed records, and forged 
     if (part?.kind !== "tool" || !part.output_ref) throw new Error("missing tool ref");
     const oldRef = part.output_ref;
     expect(transcriptToolOutput("copilot-transcript", path, oldRef)).toBe("first ".repeat(900));
-    expect(transcriptToolOutput("copilot-transcript", path, oldRef.replace(/.$/, "0"))).toBeNull();
+    expect(transcriptToolOutput("copilot-transcript", path, oldRef.replace(/.$/, (last) => last === "0" ? "1" : "0"))).toBeNull();
     writeFileSync(path, start + prompt("request") + request + result("other ".repeat(900)) + prompt("more"));
     expect(transcriptToolOutput("copilot-transcript", path, oldRef)).toBeNull();
     writeFileSync(path, start + prompt("request") + request + result("first ".repeat(900)).slice(0, -5) + "\n");
