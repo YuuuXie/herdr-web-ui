@@ -26,7 +26,7 @@ try {
   });
   await page.goto(`http://127.0.0.1:${server.port}/`);
   for (const mode of ["workspace", "tab"]) {
-    if (mode === "workspace") await page.getByRole("button", { name: /^New workspace on / }).click();
+    if (mode === "workspace") await page.getByRole("button", { name: "New workspace", exact: true }).click();
     else {
       await page.locator(".tab-strip").getByRole("tab", { selected: true }).click({ button: "right" });
       await page.getByRole("menuitem", { name: "New tab with agent...", exact: true }).or(
