@@ -1121,16 +1121,19 @@ async function ompTranscriptPath(paneId: string, cwd: string): Promise<{ path: s
 }
 
 /** A process-owned lifecycle registration, or a trusted report plus a unique held marker. */
-async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[], previousClaims?: ReadonlySet<string>): Promise<{ path: string; binding: string; peerClaims: ReadonlySet<string> }> {
+async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[], previousClaims?: ReadonlySet<string>, peerInfo?: Map<string, Awaited<ReturnType<typeof paneProcessInfo>> | null>): Promise<{ path: string; binding: string; peerClaims: ReadonlySet<string> }> {
   const report = pane.agent_session;
   // A request shares its peer snapshot across the read; the pane's own process
   // and lifecycle evidence are still validated afresh before returning history.
+  // With `peerInfo`, peers' processes come from (and fill) that cache, while their
+  // lifecycle logs are read again here, after this pane's own binding.
   let peerClaims: Promise<ReadonlySet<string>> | undefined = previousClaims === undefined ? undefined : Promise.resolve(previousClaims);
   const gatherPeerClaims = async (): Promise<Set<string>> => {
     const claims = new Set<string>();
     for (const peer of panes) {
       if (peer.pane_id === pane.pane_id || peer.agent !== "copilot") continue;
-      const info = await paneProcessInfo(peer.pane_id).catch(() => null);
+      const info = peerInfo?.has(peer.pane_id) ? peerInfo.get(peer.pane_id) : await paneProcessInfo(peer.pane_id).catch(() => null);
+      peerInfo?.set(peer.pane_id, info ?? null);
       const processes = agentProcesses(info?.foreground_processes ?? [], "copilot");
       if (processes.length === 1 && typeof processes[0]?.pid === "number") {
         const live = copilotProcessSession(processEnviron(processes[0].pid), processes[0].argv ?? [], processes[0].pid);
@@ -1479,10 +1482,12 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
       const fresh = await sessionSnapshot();
       const pane = fresh.panes.find((candidate) => candidate.pane_id === paneId);
       if (pane === undefined) throw new ConversationUnavailable("no_session_id");
-      // Peer checks await herdr, and the session can switch meanwhile: read this
-      // pane's own binding again once they are in, so the comparison sees the latest.
-      const { peerClaims } = await copilotTranscriptPath(pane, fresh.panes);
-      const current = await copilotTranscriptPath(pane, fresh.panes, peerClaims);
+      // Peer checks await herdr, and either side can switch meanwhile: once every
+      // process is known, read this pane's binding and the peers' claims again with no
+      // herdr call between those reads and the comparison.
+      const peerInfo = new Map<string, Awaited<ReturnType<typeof paneProcessInfo>> | null>();
+      await copilotTranscriptPath(pane, fresh.panes, undefined, peerInfo);
+      const current = await copilotTranscriptPath(pane, fresh.panes, undefined, peerInfo);
       if (current.path !== resolved.path || current.binding !== resolved.binding || copilotHistoryIdentity(resolved.path) !== history) {
         throw new ConversationUnavailable("no_session_path");
       }
