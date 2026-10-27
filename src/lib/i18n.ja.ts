@@ -23,6 +23,8 @@ import { PALETTE_JA } from "./i18n/palette.ja.ts";
  * in English. Placeholders in braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "Goal": "目標",
+  "Waiting for your answer": "回答待ち",
   "Back": "戻る",
   "Scroll pane up": "ペインを上にスクロール",
   "Scroll pane down": "ペインを下にスクロール",
@@ -223,6 +225,14 @@ const BASE: Record<string, string> = {
   "…": "…",
   "Alerts": "通知",
   "Sending…": "送信中…",
+  // the alerts health notice over the pane and Settings → Alerts say these alike (lib/pushHealth.ts)
+  "This device's push subscription is missing. Turn alerts on again.": "このデバイスのプッシュ通知の登録がありません。通知をもう一度オンにしてください。",
+  "The push service retired this device's subscription. Turn alerts on again to make a new one.": "プッシュサービスがこのデバイスの登録を無効にしました。通知をもう一度オンにすると新しく登録します。",
+  "Turn alerts on again": "通知をもう一度オンにする",
+  "Turning alerts on…": "通知をオンにしています…",
+  "This device's push subscription was made for another server key. Turn alerts on again to make a new one.": "このデバイスのプッシュ通知の登録は別のサーバーキーで作られています。通知をもう一度オンにすると新しく登録します。",
+  "The push service refused the last alert to this device. Send a test to check whether it still does.": "プッシュサービスがこのデバイスへの最後の通知を拒否しました。テストを送って、今も拒否されるか確認してください。",
+  "This device can only watch.": "この端末は閲覧のみできます。",
   "Needs input": "入力が必要",
   "Finished": "完了",
   "Open pane": "ペインを開く",

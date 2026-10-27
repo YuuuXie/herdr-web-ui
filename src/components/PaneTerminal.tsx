@@ -1240,6 +1240,7 @@ export function PaneTerminal({
         unsaved={pendingMessages.isUnsaved(queueOwner)}
         isBusy={(id) => pendingMessages.isBusy(queueOwner, id)}
         onSendNow={(id) => actOnPending(id, "steer")}
+        onEdit={(id) => actOnPending(id, "edit")}
         onDiscard={(id) => actOnPending(id, "discard")}
       />}
       {/* The prompt card's place: under the held messages (which fold to their caption while it is

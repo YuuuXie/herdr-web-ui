@@ -51,7 +51,7 @@ const isClient = (owner: PendingOwner): owner is Client => owner !== FIRST_MESSA
 /** a first message's lease is the delivering connection's, taken at each attempt: none is kept on the record */
 type PendingItem = PendingRecord<PendingOwner, PendingLease | null>;
 type SubmitReply = { ok: boolean; pending?: PendingMessage; code?: string; message?: string };
-type PiTypedReceipt = { owner: Client; message: PendingMessage; identity: PendingIdentity; anchor: PiDeliveryAnchor | null };
+type PiTypedReceipt = { owner: Client; resumeKey?: string; message: PendingMessage; identity: PendingIdentity; anchor: PiDeliveryAnchor | null };
 /** a first message refused before anything was typed because its connection could not type it yet stays queued for its next attach or turn */
 const FIRST_MESSAGE_RETRY_CODES = new Set(["input_not_ready", "pending_lease_lost", "disconnected", "read_only"]);
 /** a first message whose page left before it went, or that named none: held for an explicit Send now or Discard */
@@ -59,7 +59,7 @@ const FIRST_MESSAGE_UNATTENDED = { code: "first_message_unattended", message: "T
 /** a first message whose pane runs something other than the agent launched for it, found at a pane's event */
 const TARGET_CHANGED = { code: "pending_target_changed", message: "The pane's terminal or agent session changed; review the message before sending it again" };
 /** a first message whose launched agent came up and left before it went: held for an explicit Send now or Discard */
-const LAUNCH_GONE = { code: "pending_target_changed", message: "The agent started for this message has ended; review the message before sending it" };
+const LAUNCH_GONE = { code: "first_message_launch_ended", message: "The agent started for this message has ended; review the message before sending it" };
 /** receipts of first messages kept per pane, so a connection that attaches later drops a stale copy */
 const FIRST_MESSAGE_RECEIPTS = 8;
 
@@ -84,7 +84,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   TYPED_SETTLE_MS: number;
 }) {
   const pendingAuthorities = new WeakMap<Client, Map<string, object>>();
-  const firstReceipts = new Map<string, Array<{ id: string; outcome: "sent" | "discarded" }>>();
+  const firstReceipts = new Map<string, Array<{ id: string; outcome: "sent" | "discarded" | "dismissed" }>>();
   /** the connections that could type into the pane now: attached, allowed to type, and with a ready lease */
   const typists = (paneId: string): Client[] => [...clients].filter((client) => {
     if (!client.data.attached.has(paneId)) return false;
@@ -102,15 +102,21 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
   let nextFirstRequestId = -1;
   /** first messages still learning the agent launched for them (queueFirstMessage, learnLaunched) */
   const launchBound = new WeakSet<PendingItem>();
+  /** the process name of the agent a launch-bound first message is bound to, read while it runs in front: an agent exec'd at the shell's pid keeps it */
+  const launchedNames = new WeakMap<PendingItem, string>();
+  /** the name one process read gives the foreground process `pid` */
+  const processName = (processes: ProcessInfo | undefined, pid: number | null | undefined): string | undefined =>
+    pid == null ? undefined : processes?.foreground_processes?.find((entry) => entry.pid === pid)?.name;
   /**
    * The pane's launch-bound first messages that are checked at its events: a queued one, and a held one
-   * until it is held for its launched agent having left or been replaced (pending_target_changed), the
-   * reason its card then gives; past that it reads the pane no more until its Send now (bindLaunched).
+   * until it is held for its launched agent having left (first_message_launch_ended) or been replaced
+   * (pending_target_changed), the reason its card then gives; past that it reads the pane no more until its
+   * Send now (bindLaunched).
    */
   const launchBoundIn = (paneId: string): PendingItem[] => pending.list(FIRST_MESSAGE_OWNER, paneId)
     .map((message) => pending.get(FIRST_MESSAGE_OWNER, paneId, message.id))
     .filter((item): item is PendingItem => item !== undefined && launchBound.has(item)
-      && (item.message.state === "queued" || (item.message.state === "held" && item.message.error?.code !== "pending_target_changed")));
+      && (item.message.state === "queued" || (item.message.state === "held" && item.message.error?.code !== TARGET_CHANGED.code && item.message.error?.code !== LAUNCH_GONE.code)));
   /** A first message held for `fault`: a queued one is held, a held one takes it as its reason. */
   const holdFor = (item: PendingItem, fault: { code: string; message: string }): void => {
     if (item.message.state === "held") pending.rehold(item, fault);
@@ -127,6 +133,30 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
 
   /** Ovis-origin text whose Enter reached Pi but whose durable user record has not appeared yet. */
   const piTyped = new Map<string, PiTypedReceipt[]>();
+  // Presentation only, bound to both the authenticated device and an opaque browser
+  // correlator. Retaining a receipt never retains permission to send input.
+  const PI_RESUME_MS = 10 * 60 * 1000, PI_RESUME_LIMIT = 1024;
+  const livePiOwner = (owner: Client): boolean => clients.has(owner) && !connectionOf(owner).closing;
+  const piCompleted: Array<{ paneId: string; key: string; id: string; at: number }> = [];
+  const resumeKey = (client: Client, paneId: string): string | undefined => {
+    const id = client.data.attached.get(paneId)?.receiptResumeId;
+    return id ? JSON.stringify([client.data.deviceId ?? null, id]) : undefined;
+  };
+  const prunePi = (): void => {
+    const cutoff = Date.now() - PI_RESUME_MS;
+    while (piCompleted.length && (piCompleted[0]!.at < cutoff || piCompleted.length > PI_RESUME_LIMIT)) piCompleted.shift();
+    let count = 0;
+    for (const [paneId, items] of piTyped) {
+      const kept = items.filter((item) => {
+        if (!livePiOwner(item.owner) && (Date.parse(item.message.created_at) < cutoff || ++count > PI_RESUME_LIMIT)) {
+          releasePiSlot(item); return false;
+        }
+        return true;
+      });
+      if (kept.length) piTyped.set(paneId, kept); else piTyped.delete(paneId);
+      if (!kept.some((item) => item.message.error?.code === "pi_transcript_pending")) piConsumed.delete(paneId);
+    }
+  };
   /** Shared by every owner until the pane has no receipt that could reuse an earlier append. */
   const piConsumed = new Map<string, Set<string>>();
   const piCapacity = new PiReceiptCapacity<Client>(options.piReceiptLimit ?? 256);
@@ -176,8 +206,9 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     if (anchor === undefined || !clients.has(owner) || connectionOf(owner).closing) return;
     if (anchor === null) piCapacity.release(reservation);
     else if (!piCapacity.retain(owner, reservation)) return;
+    prunePi();
     const receipt: PiTypedReceipt = {
-      owner, identity: { ...identity }, anchor,
+      owner, resumeKey: resumeKey(owner, paneId), identity: { ...identity }, anchor,
       message: { id: `pi:${crypto.randomUUID()}`, request_id: requestId, text, state: "uncertain", created_at: new Date().toISOString(),
         error: anchor === null
           ? { code: "transcript_unconfirmed", message: "Pi's exact transcript could not be resolved before Enter" }
@@ -189,12 +220,14 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     publishPi(paneId);
     void reconcilePiDeliveries(paneId);
   };
-  const failPi = (paneId: string, items: readonly PiTypedReceipt[]): void => {
+  const failPi = (paneId: string, items: readonly PiTypedReceipt[], unavailable = false): void => {
     let changed = false;
     for (const item of items) {
       if (!activePiReceipt(paneId, item)) continue;
       releasePiSlot(item);
-      item.message.error = { code: "pi_transcript_target_changed", message: "The Pi terminal or session changed before its transcript append was confirmed" };
+      item.message.error = unavailable
+        ? { code: "transcript_unconfirmed", message: "Pi's transcript exceeded the confirmation budget" }
+        : { code: "pi_transcript_target_changed", message: "The Pi terminal or session changed before its transcript append was confirmed" };
       changed = true;
     }
     if (changed) {
@@ -203,6 +236,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     }
   };
   async function reconcilePiDeliveries(paneId: string): Promise<void> {
+    prunePi();
     const items = piTyped.get(paneId);
     if (!items?.some((item) => item.message.error?.code === "pi_transcript_pending")) return;
     await serialize(paneId, async () => {
@@ -235,9 +269,14 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       }
       if (result.retry) return;
       failPi(paneId, matching.filter((item) => result.changed.includes(item.message.id)));
+      failPi(paneId, matching.filter((item) => result.unavailable?.includes(item.message.id)), true);
       if (result.consumed.length === 0) return;
       const consumed = new Set(matching.filter((item) => activePiReceipt(paneId, item) && result.consumed.includes(item.message.id)).map((item) => item.message.id));
-      for (const item of matching) if (consumed.has(item.message.id)) releasePiSlot(item);
+      for (const item of matching) if (consumed.has(item.message.id)) {
+        releasePiSlot(item);
+        if (item.resumeKey) piCompleted.push({ paneId, key: item.resumeKey, id: item.message.id, at: Date.now() });
+      }
+      prunePi();
       const retained = (piTyped.get(paneId) ?? []).filter((item) => !consumed.has(item.message.id));
       if (retained.length > 0) piTyped.set(paneId, retained); else piTyped.delete(paneId);
       if (!retained.some((item) => item.message.error?.code === "pi_transcript_pending")) piConsumed.delete(paneId);
@@ -370,7 +409,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     authorizePending(owner, paneId, lease);
     const { pane, identity: current, processes } = await currentIdentity(paneId, identity?.processPid ?? null);
     if (identity && !samePendingIdentity(identity, current)) {
-      throw new HerdrError("pending_target_changed", "The pane's terminal or agent session changed; review the message before sending it again");
+      throw new HerdrError(TARGET_CHANGED.code, TARGET_CHANGED.message);
     }
     if (identity) {
       // Keep newly learned parts so a replacement before Enter is checked against them too.
@@ -524,7 +563,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       return { ok: true };
     } catch (error) {
       watch?.cancel();
-      const fault = wrote ? { code: "submit_changed", message: "Pending-message delivery could not be confirmed. Check the terminal before sending again." } : pendingFault(error);
+      const fault = error instanceof HerdrError && error.code === "submit_changed" ? pendingFault(error)
+        : wrote ? { code: "submit_changed", message: "Pending-message delivery could not be confirmed. Check the terminal before sending again." } : pendingFault(error);
       if (automatic && !wrote && fault.code === "agent_blocked") pending.observe(paneId, "blocked", mark);
       return { ok: false, ...fault };
     } finally { piCapacity.release(piReservation); }
@@ -576,8 +616,11 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       const requester = requesters.get(item);
       const by = isClient(item.owner) ? item.owner : requester !== undefined && typists(paneId).includes(requester) ? requester : null;
       if (by === null) return;
-      // a launched agent herdr does not name yet is waited for: its next status event drains again
-      if (await bindLaunched(item) === "wait") return;
+      // a launched agent herdr does not name yet is waited for: its next status event drains again. One that
+      // came up and left holds its message, and the drain runs once more for the pane's next one
+      const bound = await bindLaunched(item);
+      if (bound === "wait") return;
+      if (bound === "ended") { holdFor(item, LAUNCH_GONE); drainAgain.add(paneId); return; }
       if (!pending.claim(item, true)) return;
       dispatched = true;
       await dispatchPending(item, true, arrivedAt, false, by);
@@ -601,7 +644,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       // bound to the terminal and the kind launched there, and to the process the launch left in front when
       // it is not the shell: a replacement of the same kind is not what the message was sent to. Right after
       // a launch herdr may name no agent yet; that binding is completed when it does (bindLaunched)
-      const { pane, identity, shellPid } = await currentIdentity(paneId, launchedPid);
+      const { pane, identity, shellPid, processes } = await currentIdentity(paneId, launchedPid);
       // The launch's own word wins: a shell-started agent's launch says which process it came up as, which
       // may have ended already, and then an agent the user starts later is not the one launched
       const launchedProcess = launchedPid !== null
@@ -615,6 +658,8 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       const item = pending.enqueue(FIRST_MESSAGE_OWNER, paneId, nextFirstRequestId--, text, null,
         { agent: kind, terminalId: pane.terminal_id, ...sessions, ...launchedProcess });
       launchBound.add(item);
+      // this read learns as an event's would: an agent it sees in front under its kind is named before it can leave
+      learn(item, identity, shellPid, processes);
       // no page to type it, or one that closed meanwhile: held before any drain could see it queued
       if (page === undefined || !present(page)) pending.holdItem(item, FIRST_MESSAGE_UNATTENDED);
       else {
@@ -633,13 +678,16 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
    * never replaced, so a later session or process of the same kind is another; pendingContext holds the
    * message for it with pending_target_changed.
    */
-  function learn(item: PendingItem, identity: PendingIdentity, shellPid: number | null): void {
+  function learn(item: PendingItem, identity: PendingIdentity, shellPid: number | null, processes: ProcessInfo | undefined): void {
     if (identity.terminalId !== item.identity.terminalId || identity.agent !== item.identity.agent || !samePendingIdentity(item.identity, identity)) return;
     item.identity.session ??= identity.session;
     // the shell itself is never the launched process: with it still in front, the launch is not known yet
     if (identity.processPid !== shellPid) {
       item.identity.processPid ??= identity.processPid;
       item.identity.processBirth ??= identity.processBirth;
+      // bound here or at its queueing, the launched process is named as it runs under its kind (an exec renames it)
+      const name = identity.processPid === item.identity.processPid ? processName(processes, identity.processPid) : undefined;
+      if (name) launchedNames.set(item, name);
     }
     item.identity.omoSession ??= identity.omoSession;
     item.identity.claudeSession ??= identity.claudeSession;
@@ -650,41 +698,50 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     if (items.length === 0) return;
     // read for each message's own bound process (a pane holds one first message, so one read in practice)
     for (const item of items) {
-      const { identity, shellPid } = await currentIdentity(paneId, item.identity.processPid ?? null);
+      const { identity, shellPid, processes } = await currentIdentity(paneId, item.identity.processPid ?? null);
       // its agent came up and left, or what herdr names there is not what was launched for it: held at once, as
       // pendingContext would hold it at a send, which a pane that is not at rest never gets to
-      if (launchGone(item, identity)) holdFor(item, LAUNCH_GONE);
+      if (launchGone(item, identity, shellPid, processes)) holdFor(item, LAUNCH_GONE);
       else if (targetChanged(item, identity)) holdFor(item, TARGET_CHANGED);
-      else learn(item, identity, shellPid);
+      else learn(item, identity, shellPid, processes);
     }
   }
   /**
    * A first message before a send. While herdr names no agent in its terminal it waits ("wait") only for a
    * launch still coming up: no process learned yet, or the learned one still in front. A launched agent
-   * that came up and left is no longer waited for: pendingContext finds no agent of its kind there and
-   * holds the message with pending_target_changed. Otherwise it learns from what runs there (learn) and
-   * goes to pendingContext's checks ("bound").
+   * that came up and left is no longer waited for ("ended"): the message is held with
+   * first_message_launch_ended. Otherwise it learns from what runs there (learn) and goes to
+   * pendingContext's checks ("bound").
    */
-  async function bindLaunched(item: PendingItem): Promise<"bound" | "wait"> {
+  async function bindLaunched(item: PendingItem): Promise<"bound" | "wait" | "ended"> {
     if (!launchBound.has(item)) return "bound";
-    const { identity, shellPid } = await currentIdentity(item.paneId, item.identity.processPid ?? null);
-    if (identity.terminalId === item.identity.terminalId && identity.agent === null && !launchGone(item, identity)) return "wait";
-    learn(item, identity, shellPid);
+    const { identity, shellPid, processes } = await currentIdentity(item.paneId, item.identity.processPid ?? null);
+    if (launchGone(item, identity, shellPid, processes)) return "ended";
+    if (identity.terminalId === item.identity.terminalId && identity.agent === null) return "wait";
+    learn(item, identity, shellPid, processes);
     return "bound";
   }
-  /**
-   * Whether the agent launched for a first message came up and left: herdr names no agent in its terminal
-   * and the process learned for it is no longer the one in front.
-   */
   /** Whether what runs in a first message's pane is not what was launched for it: another terminal, or an agent herdr names that disagrees. */
   function targetChanged(item: PendingItem, identity: PendingIdentity): boolean {
     return identity.terminalId !== item.identity.terminalId || (identity.agent !== null && !samePendingIdentity(item.identity, identity));
   }
-  function launchGone(item: PendingItem, identity: PendingIdentity): boolean {
+  /**
+   * Whether the agent launched for a first message came up and left: the process learned for it is no longer
+   * the one in front, and herdr names no agent in its terminal, or still names the launched kind while the
+   * pane's shell itself is back in front (herdr's name can outlast the process). An exec keeps the shell's
+   * pid, so the process there counts as the shell only under a name other than the launched agent's. Any
+   * other process in front under that name is another agent (targetChanged).
+   */
+  function launchGone(item: PendingItem, identity: PendingIdentity, shellPid: number | null, processes: ProcessInfo | undefined): boolean {
     const launched = item.identity.processPid;
-    if (launched == null || identity.terminalId !== item.identity.terminalId || identity.agent !== null) return false;
+    if (launched == null || identity.terminalId !== item.identity.terminalId) return false;
+    const front = processName(processes, identity.processPid);
+    const launchedName = launchedNames.get(item);
+    const shellBack = shellPid !== null && identity.processPid === shellPid && identity.agent === item.identity.agent
+      && front !== undefined && launchedName !== undefined && front !== launchedName;
+    if (identity.agent !== null && !shellBack) return false;
     return identity.processPid !== launched
-      // macOS reads a birth to the whole second (samePendingIdentity)
+      // macOS allows a second, as samePendingIdentity does
       || (item.identity.processBirth != null && identity.processBirth != null
         && Math.abs(identity.processBirth - item.identity.processBirth) > (process.platform === "darwin" ? 1000 : 0));
   }
@@ -693,17 +750,53 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
     pending.close(client);
     holdRequested(client);
     requested.delete(client);
-    // The browser retains a non-resendable local copy. Without this exact connection there is no
-    // authenticated server owner to receive transcript content or a later consumption receipt.
+    // Keep bounded presentation-only receipts across transient loss, not input authority.
+    // Revocation/read-only transitions do not retain a resumable presentation.
+    let resumable = true;
+    try { authorizeSocket(client); } catch { resumable = false; }
     for (const [paneId, items] of piTyped) {
-      for (const item of items) if (item.owner === client) releasePiSlot(item);
-      const retained = items.filter((item) => item.owner !== client);
+      const drop = (item: PiTypedReceipt): boolean => item.owner === client && (!resumable || !item.resumeKey);
+      for (const item of items) if (drop(item)) releasePiSlot(item);
+      const retained = items.filter((item) => !drop(item));
       if (retained.length > 0) piTyped.set(paneId, retained); else piTyped.delete(paneId);
       if (!retained.some((item) => item.message.error?.code === "pi_transcript_pending")) piConsumed.delete(paneId);
+      // Reload can attach its successor before the old socket's close reaches us.
+      // Rebind presentation only; never call drainPending or recover an input lease.
+      for (const successor of clients) if (successor !== client && livePiOwner(successor) && successor.data.attached.has(paneId)) {
+        if (resumePi(successor, paneId, client)) {
+          publishPi(paneId);
+          void reconcilePiDeliveries(paneId);
+        }
+      }
     }
+    prunePi();
+  }
+  function resumePi(client: Client, paneId: string, closing?: Client): boolean {
+    let rebound = false;
+    const key = resumeKey(client, paneId);
+    if (key && connectionOf(client).mode !== "observe") {
+      try {
+        authorizeSocket(client);
+        for (const item of piTyped.get(paneId) ?? []) {
+          if (item.resumeKey !== key || livePiOwner(item.owner) && item.owner !== closing) continue;
+          if (piSlots.has(item)) {
+            if (!piCapacity.retain(client)) continue;
+            piCapacity.remove(item.owner);
+          }
+          item.owner = client;
+          rebound = true;
+        }
+        const removed = piCompleted.filter((item) => item.paneId === paneId && item.key === key)
+          .map(({ id }) => ({ id, outcome: "consumed" as const }));
+        if (removed.length) send(client, { type: "pending-messages", pane_id: paneId, messages: [], removed });
+      } catch { /* failed authorization cannot resume even presentation */ }
+    }
+    return rebound;
   }
   /** A connection that attached the pane: it sees the pane's first messages and their receipts, and may be the one to type them. */
   function attached(client: Client, paneId: string): void {
+    prunePi();
+    resumePi(client, paneId);
     const messages = [...pending.list(FIRST_MESSAGE_OWNER, paneId), ...piMessages(paneId, client)];
     const removed = firstReceipts.get(paneId) ?? [];
     if ((messages.length > 0 || removed.length > 0) && connectionOf(client).mode !== "observe") {
@@ -852,13 +945,18 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
       return;
     },
     async "pending-action"(client: Client, message: Frame<"pending-action">): Promise<void> {
-      const result = (reply: SubmitReply) => send(client, { type: "pending-result", id: message.id, pane_id: message.pane_id, pending_id: message.pending_id, ...reply });
+      // a client that does not tell a launch that ended apart takes its code as maybe typed: it gets the code it knows
+      const known = (reply: SubmitReply): SubmitReply => reply.code === LAUNCH_GONE.code && message.launch_ended !== true ? { ...reply, code: TARGET_CHANGED.code } : reply;
+      const result = (reply: SubmitReply) => send(client, { type: "pending-result", id: message.id, pane_id: message.pane_id, pending_id: message.pending_id, ...known(reply) });
       if (!Number.isSafeInteger(message.id) || typeof message.pane_id !== "string" || !message.pane_id
         || typeof message.pending_id !== "string" || !message.pending_id || !["steer", "discard"].includes(message.action)) {
         result({ ok: false, code: "invalid_pending_action", message: "Use steer or discard with a pending-message id" }); return;
       }
       if (message.resend_generation !== undefined && (!Number.isSafeInteger(message.resend_generation) || message.resend_generation < 0)) {
         result({ ok: false, code: "invalid_pending_action", message: "A resend generation must be a nonnegative integer" }); return;
+      }
+      if (message.withdrawal_only !== undefined && (message.withdrawal_only !== true || message.action !== "discard")) {
+        result({ ok: false, code: "invalid_pending_action", message: "Withdrawal-only applies to discarding unsent input" }); return;
       }
       const arrivedAt = Date.now();
       try {
@@ -872,6 +970,7 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
           const piReceipt = client.data.attached.has(message.pane_id)
             ? piTyped.get(message.pane_id)?.find((candidate) => candidate.owner === client && candidate.message.id === message.pending_id) : undefined;
           if (piReceipt) {
+            if (message.withdrawal_only) return { ok: false, code: "pending_uncertain", message: "This receipt cannot prove withdrawal" };
             if (message.action === "steer") return { ok: false, code: "pending_sent", message: "This message was already sent to Pi" };
             return discardPiReceipt(client, message.pane_id, message.pending_id)
               ? { ok: true } : { ok: false, code: "pending_busy", message: "Pi transcript confirmation is still pending" };
@@ -881,25 +980,30 @@ export function createPendingDelivery({ options, clients, attachments, sight, se
             ?? (client.data.attached.has(message.pane_id) ? pending.get(FIRST_MESSAGE_OWNER, message.pane_id, message.pending_id) : undefined);
           if (!item) return replayPendingOutcome(client, message.pane_id, message.pending_id)
             ? { ok: true } : { ok: false, code: "pending_not_found", message: "This pending message does not belong to this connection" };
-          if (message.action === "discard") return pending.discard(item) ? { ok: true } : { ok: false, code: "pending_busy", message: "This message is already being sent" };
+          if (message.action === "discard") return pending.discard(item, message.withdrawal_only) ? { ok: true }
+            : item.message.state === "uncertain" ? { ok: false, code: "pending_uncertain", message: "Check the terminal before changing this message" }
+            : { ok: false, code: "pending_busy", message: "This message is already being sent" };
           if (item.message.state === "uncertain") return { ok: false, code: "pending_uncertain", message: "Check the terminal before sending this message again" };
           let dispatched = false;
           const reply = await pending.resend(item.paneId, item.message.id,
             new Bun.CryptoHasher("sha256").update(item.message.text).digest("hex"), async (): Promise<SubmitReply> => {
               try {
-                if (await bindLaunched(item) === "wait") return { ok: false, code: "input_not_ready", message: "The agent started for this message is not up yet" };
+                const bound = await bindLaunched(item);
+                if (bound === "wait") return { ok: false, code: "input_not_ready", message: "The agent started for this message is not up yet" };
+                if (bound === "ended") return { ok: false, ...LAUNCH_GONE };
                 await pendingContext(client, item.paneId, lease!, item.identity);
                 if (!pending.claim(item, false)) return { ok: false, code: "pending_busy", message: "This message is already being sent" };
                 if (isClient(item.owner)) item.lease = lease!;
                 dispatched = true;
                 return await dispatchPending(item, false, arrivedAt, true, client);
               } catch (error) { return { ok: false, ...pendingFault(error) }; }
-            }, message.resend_generation);
+            }, message.resend_generation, (code) => code === "submit_changed");
           // A saved copy may already have completed this ID on another connection.
           if (!dispatched && pending.get(client, item.paneId, item.message.id) === item && pending.claim(item, false))
             pending.settle(item, reply.ok ? undefined : { code: reply.code!, message: reply.message! }, reply.code === "submit_changed");
-          // a pane's first message refused because what runs there is not what was launched for it: its card says so
-          if (!dispatched && !isClient(item.owner) && reply.code === "pending_target_changed") pending.rehold(item, { code: reply.code, message: reply.message! });
+          // a pane's first message refused because what runs there is not what was launched for it, or that agent
+          // ended: its card says so
+          if (!dispatched && !isClient(item.owner) && (reply.code === TARGET_CHANGED.code || reply.code === LAUNCH_GONE.code)) pending.rehold(item, { code: reply.code, message: reply.message! });
           return reply;
         });
         result(answer);

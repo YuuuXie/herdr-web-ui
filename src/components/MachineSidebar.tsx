@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { ChevronDown, ChevronRight, Download, Monitor, Plus, Settings, SlidersHorizontal, X } from "lucide-react";
-import type { Machine, MachineState, MachineUpdate } from "../../shared/machines.ts";
+import type { Machine, MachineState, MachineUpdate, RemoteOvis } from "../../shared/machines.ts";
+import { copyText } from "../lib/clipboard.ts";
 import { MachineContext } from "../lib/machineContext.tsx";
 import { answerMachineSetup, machineRequest } from "../lib/api.ts";
 import { describeProgress } from "../lib/bridgeProgress.ts";
@@ -234,7 +235,7 @@ function MachineActionNotice({ machine, onSetup }: { machine: Machine; onSetup(m
   if (machine.updating) {
     const updating = machine.updating;
     return <div className="machine-action is-updating" role="status">
-      <p className="machine-action-text"><strong>{t("Updating the bridge")}</strong><span>{t("You can keep using the app; this PC reconnects when it is done.")}</span></p>
+      <p className="machine-action-text"><strong>{t(updating.ovis ? "Updating this PC's Ovis" : "Updating the bridge")}</strong><span>{t("You can keep using the app; this PC reconnects when it is done.")}</span></p>
       <BridgeUpdateProgress update={updating} />
       <button type="button" className="btn" disabled={busy} onClick={() => void run(() => answerMachineSetup(updating.job_id, { action: "cancel" }))}>{t("Cancel update")}</button>
       {error && <p className="machine-error" role="alert">{error}</p>}
@@ -249,6 +250,28 @@ function MachineActionNotice({ machine, onSetup }: { machine: Machine; onSetup(m
   if (machine.action_required === "bridge_conflict") return <div className="machine-action" role="alert">
     <p className="machine-action-text"><strong>{t("Bridge connection conflict")}</strong><span>{t("Update the apps connected to this PC to the same version, or disconnect the other app, then reconnect here. Sessions keep running.")}</span>{machine.error && <span className="machine-action-reason">{machineErrorText(machine.error, t)}</span>}</p>
     <button type="button" className="btn btn-primary" onClick={() => onSetup(machine, false)}>{t("Reconnect")}</button>
+  </div>;
+  // the PC's own Ovis, older than this app: it updates itself when asked, or the card says why it cannot
+  const own = ownOvisAction(machine);
+  if (own?.updatable) return <div className="machine-action" role="alert">
+    <p className="machine-action-text">
+      <strong>{t("This PC's Ovis is older than this app")}</strong>
+      <span>{t("It updates itself through its own updater, then this PC reconnects; herdr sessions keep running.")}</span>
+    </p>
+    <div className="machine-action-buttons">
+      <button type="button" className="btn btn-primary" disabled={busy} onClick={() => void run(() => machineRequest(`/${encodeURIComponent(machine.id)}/update-bridge`, "POST").catch((e) => { if (!machine.herdr_profile_id) throw e; onSetup(machine, true); }))}>{own.latest_version ? t("Update this PC's Ovis to v{version}", { version: own.latest_version }) : t("Update this PC's Ovis")}</button>
+      <button type="button" className="btn btn-ghost" disabled={busy} onClick={() => onSetup(machine, true)}>{t("Sign in and update…")}</button>
+    </div>
+    {error && <p className="machine-error" role="alert">{error}</p>}
+  </div>;
+  if (own) return <div className="machine-action is-setup" role="status">
+    <p className="machine-action-text">
+      <strong>{t("Update this PC's Ovis on that PC")}</strong>
+      <span>{t("It is older than this app and runs on its own, so it cannot be updated from here.")}</span>
+      {own.reason && <span className="machine-action-reason">{machineErrorText(own.reason, t)}</span>}
+    </p>
+    <OwnOvisAddress own={own} />
+    <button type="button" className="btn" onClick={() => onSetup(machine, false)}>{t("Reconnect")}</button>
   </div>;
   const update = machine.action_required === "update_bridge";
   return <div className={`machine-action${update ? "" : " is-setup"}`} role={update ? "alert" : "status"}>
@@ -268,6 +291,42 @@ function MachineActionNotice({ machine, onSetup }: { machine: Machine; onSetup(m
   </div>;
 }
 
+/**
+ * Where a PC's own Ovis answers, to open it there: an address the PC gave as a link (an https one
+ * only), else its host and port as text to copy, since nothing here proves that address opens from
+ * this device (a server bound to that PC's loopback answers only there or through its own tailnet).
+ */
+export function OwnOvisAddress({ own }: { own: Pick<RemoteOvis, "address" | "url"> }) {
+  const t = useT();
+  const [copied, setCopied] = useState(false);
+  const field = useRef<HTMLElement>(null);
+  // the host it named is shown with the link: an address that PC chose, which the link text alone would hide
+  if (own.url) return <p className="machine-own-address"><a href={own.url} target="_blank" rel="noopener noreferrer">{t("Open that PC's Ovis")}</a><code>{urlHost(own.url)}</code></p>;
+  return <div className="machine-own-address">
+    <span>{t("Open it on that PC or through its own tailnet address:")}</span>
+    <span className="machine-own-address-row">
+      <code ref={field}>{own.address}</code>
+      <button type="button" className="btn btn-ghost" onClick={() => void copyText(own.address, field.current).then(setCopied)}>{t(copied ? "Copied" : "Copy address")}</button>
+    </span>
+  </div>;
+}
+
+/**
+ * The PC's own Ovis, when what it said matches what the PC waits for: an update it can run itself,
+ * or a setup because it cannot. Anything else (an update of it that ended in another refusal) is
+ * told the usual way, so the card and the line under the header never offer an action the PC is not
+ * waiting for.
+ */
+export function ownOvisAction(machine: Pick<Machine, "remote_ovis" | "action_required">): RemoteOvis | null {
+  const own = machine.remote_ovis;
+  if (!own) return null;
+  return (machine.action_required === "update_bridge" && own.updatable) || (machine.action_required === "setup" && !own.updatable) ? own : null;
+}
+
+function urlHost(url: string): string {
+  try { return new URL(url).host; } catch { return url; }
+}
+
 /** The app-wide line for PCs that wait on the user, so a closed drawer on a phone still says so. */
 export function MachineActionBanner({ machines, onSetup }: { machines: Machine[]; onSetup(machine: Machine, update?: boolean): void }) {
   const t = useT();
@@ -282,7 +341,7 @@ export function MachineActionBanner({ machines, onSetup }: { machines: Machine[]
   if (running?.updating) {
     const view = describeProgress(running.updating.progress);
     return <div className="update-notice" role="status">
-      <span>{t("Updating the bridge on {name}", { name: running.name })}{view ? ` · ${t(view.label)}${view.percent === null ? "" : ` ${view.percent}%`}` : "…"}</span>
+      <span>{t(running.updating.ovis ? "Updating {name}'s own Ovis" : "Updating the bridge on {name}", { name: running.name })}{view ? ` · ${t(view.label)}${view.percent === null ? "" : ` ${view.percent}%`}` : "…"}</span>
     </div>;
   }
   const waiting = waitingMachines(machines, dismissed);
@@ -291,9 +350,10 @@ export function MachineActionBanner({ machines, onSetup }: { machines: Machine[]
   const conflict = first.action_required === "bridge_conflict";
   const update = first.action_required === "update_bridge";
   const others = waiting.length > 1 ? t(" (+{n} more)", { n: waiting.length - 1 }) : "";
+  const own = ownOvisAction(first);
   return <div className="update-notice" role="status">
-    <span>{t(conflict ? "{name} has a bridge connection conflict{others}." : update ? "{name} needs a bridge update to reconnect{others}." : "{name} needs web access setup{others}.", { name: first.name, others })}</span>
-    <button type="button" className="btn" onClick={() => update ? void machineRequest(`/${encodeURIComponent(first.id)}/update-bridge`, "POST").catch(() => onSetup(first, true)) : onSetup(first, false)}>{t(conflict ? "Reconnect" : update ? "Update bridge" : "Set up web access")}</button>
+    <span>{own ? t(own.updatable ? "{name}'s own Ovis needs an update to reconnect{others}." : "{name}'s own Ovis needs an update on that PC{others}.", { name: first.name, others }) : t(conflict ? "{name} has a bridge connection conflict{others}." : update ? "{name} needs a bridge update to reconnect{others}." : "{name} needs web access setup{others}.", { name: first.name, others })}</span>
+    <button type="button" className="btn" onClick={() => update ? void machineRequest(`/${encodeURIComponent(first.id)}/update-bridge`, "POST").catch(() => onSetup(first, true)) : onSetup(first, false)}>{own ? t(own.updatable ? "Update this PC's Ovis" : "Reconnect") : t(conflict ? "Reconnect" : update ? "Update bridge" : "Set up web access")}</button>
     <button type="button" className="icon-button update-notice-dismiss" aria-label={t("Dismiss")} title={t("Dismiss")} onClick={() => { const next = [...dismissed, ...waiting.map(noticeKey)]; setDismissed(next); writeDismissed(next); }}><X /></button>
   </div>;
 }

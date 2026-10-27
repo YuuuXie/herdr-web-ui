@@ -533,3 +533,32 @@
 
 .machine-action.is-setup { border-color: var(--border); }
 .machine-action.is-setup .machine-action-text strong { color: var(--text); }
+
+/* where a PC's own Ovis answers: a link it gave, or its address to copy */
+.machine-own-address {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  color: var(--text-dim);
+}
+
+.machine-own-address-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+p.machine-own-address {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.machine-own-address code {
+  overflow-wrap: anywhere;
+  color: var(--text-strong);
+  font-family: var(--font-mono);
+}

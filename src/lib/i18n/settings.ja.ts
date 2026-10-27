@@ -109,6 +109,7 @@ export const SETTINGS_JA: Record<string, string> = {
   "Show {name} in sidebar": "サイドバーに {name} を表示",
   "hide PCs on this device": "このデバイスで PC を非表示にする",
   "Connect another PC over an SSH alias or user@host. Its workspaces join the sidebar.": "SSH エイリアスまたは user@host で別の PC を接続します。接続した PC のワークスペースはサイドバーに並びます。",
+  "Saved PC data was damaged and could not be read when the app started. It was set aside as {files}; add any missing PC again.": "保存された PC のデータが壊れていたため、アプリの起動時に読み込めませんでした。{files} として退避したので、見つからない PC はもう一度追加してください。",
   "Update PC bridges automatically": "PC ブリッジを自動更新",
   "When an app update needs a newer bridge, PCs that connect with their saved key are updated in the background. PCs that need a password ask first.": "アプリの更新で新しいブリッジが必要になった場合、保存済みのキーで接続する PC はバックグラウンドで更新されます。パスワードが必要な PC では先に確認します。",
   "Sign out": "サインアウト",

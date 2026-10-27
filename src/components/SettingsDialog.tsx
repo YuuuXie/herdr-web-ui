@@ -938,7 +938,7 @@ function AccessFacts({ facts }: { facts: SecurityFacts }) {
   );
 }
 
-function DevicesPage({ auth, security, onSignOut }: { auth: HealthAuth | null; security: SecurityFacts; onSignOut: (() => Promise<void>) | null }) {
+function DevicesPage({ auth, security, onSignOut, onRevokedAll }: { auth: HealthAuth | null; security: SecurityFacts; onSignOut: (() => Promise<void>) | null; onRevokedAll: () => void }) {
   const { settings, update } = useSettings();
   const t = useT();
   const installPrompt = useInstallPrompt();
@@ -977,7 +977,7 @@ function DevicesPage({ auth, security, onSignOut }: { auth: HealthAuth | null; s
       <PortalPanel readOnly={auth?.role === "watch"} />
 
       <SettingsGroup title={t("Devices")} section="devices">
-        <div className="settings-item"><DevicesPanel pairUrl={pairUrl} auth={auth} /></div>
+        <div className="settings-item"><DevicesPanel pairUrl={pairUrl} auth={auth} onRevokedAll={onRevokedAll} /></div>
         {onSignOut && (
           <SettingsRow label={t("Sign out")} description={t("Forget this browser's sign-in. Getting back in takes the access token or a pairing code.")}>
             <button type="button" className="btn" onClick={() => setConfirmSignOut(true)}>{t("Sign out")}</button>
@@ -1032,6 +1032,10 @@ function RemotePcsPage({ actions, machines, pcSettings, pcSettingsError, onPcSet
           <Toggle label={t("Update PC bridges automatically")} checked={pcSettings.auto_update_bridges} onChange={(auto_update_bridges) => onPcSettings({ auto_update_bridges })} />
         </SettingsRow>
       )}
+      {/* a crash can leave the saved PCs unreadable: the server set the file aside and started without them */}
+      {pcSettings?.set_aside && pcSettings.set_aside.length > 0 && <p className="settings-item settings-hint">
+        {t("Saved PC data was damaged and could not be read when the app started. It was set aside as {files}; add any missing PC again.", { files: pcSettings.set_aside.join(", ") })}
+      </p>}
       {pcSettingsError && <p className="settings-item settings-hint" role="alert">{pcSettingsError}</p>}
     </SettingsGroup>
     <SidebarPcsGroup machines={machines} />
@@ -1280,7 +1284,8 @@ function OpenSettingsDialog({ section = null, linkPage = null, linkSection = nul
       case "voice": return <VoicePage />;
       case "usage": return <UsageSettings onLocalLogin={onUsageLogin} />;
       case "shortcuts": return <ShortcutsPage />;
-      case "devices": return <DevicesPage auth={auth} security={security} onSignOut={actions.lock} />;
+      // after every device went, its own pairing included, a browser asks the server where it stands: the roster answers, or the gate does
+      case "devices": return <DevicesPage auth={auth} security={security} onSignOut={actions.lock} onRevokedAll={actions.refresh} />;
       case "remote": return <RemotePcsPage actions={actions} machines={machines} pcSettings={pcSettings} pcSettingsError={pcSettingsError} onPcSettings={(patch) => void updatePcSettings(patch)} />;
       case "integrations": return <IntegrationsPage />;
       case "about": return <AboutPage updates={updates} herdrVersion={herdrVersion} bridgesFollow={pcSettings?.auto_update_bridges === true} />;

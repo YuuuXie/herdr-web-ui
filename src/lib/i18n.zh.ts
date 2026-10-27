@@ -25,6 +25,8 @@ import { PALETTE_ZH } from "./i18n/palette.zh.ts";
  * Placeholders in braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "Goal": "目标",
+  "Waiting for your answer": "等待你的回答",
   "Back": "返回",
   "Scroll pane up": "向上滚动面板",
   "Scroll pane down": "向下滚动面板",
@@ -225,6 +227,14 @@ const BASE: Record<string, string> = {
   "…": "…",
   "Alerts": "提醒",
   "Sending…": "正在发送…",
+  // the alerts health notice over the pane and Settings → Alerts say these alike (lib/pushHealth.ts)
+  "This device's push subscription is missing. Turn alerts on again.": "此设备的推送订阅不存在。请重新开启提醒。",
+  "The push service retired this device's subscription. Turn alerts on again to make a new one.": "推送服务已停用此设备的订阅。重新开启提醒即可创建新的订阅。",
+  "Turn alerts on again": "重新开启提醒",
+  "Turning alerts on…": "正在开启提醒…",
+  "This device's push subscription was made for another server key. Turn alerts on again to make a new one.": "此设备的推送订阅是用另一个服务器密钥创建的。请重新开启提醒以创建新的订阅。",
+  "The push service refused the last alert to this device. Send a test to check whether it still does.": "推送服务拒绝了发往此设备的上一条提醒。请发送测试，看看是否仍被拒绝。",
+  "This device can only watch.": "此设备只能查看。",
   "Needs input": "需要输入",
   "Finished": "已完成",
   "Open pane": "打开窗格",

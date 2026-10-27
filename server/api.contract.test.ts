@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeAll, afterAll, spyOn } from "bun:test";
+import { CLEAR_LEGACY_DEVICE_COOKIE, DEVICE_COOKIE_CLEARED } from "./auth.ts";
 import { Database } from "bun:sqlite";
 import { appendFileSync, chmodSync, closeSync, constants as fsConstants, copyFileSync, mkdirSync, mkdtempSync, existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, openSync, rmSync, statSync, symlinkSync, unlinkSync, utimesSync, watch, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -30,7 +31,7 @@ import { testShellEnv } from "../scripts/test-shell.ts";
 import { PendingInputError, PendingInputs } from "./pending-input.ts";
 import { loginPathProbe, ShellAgentLocator, type LoginPathProbe } from "./shell-agent.ts";
 import { DeviceStore } from "./devices.ts";
-import type { MachineEvent } from "../shared/machines.ts";
+import type { MachineEvent, MachineSettings } from "../shared/machines.ts";
 import { MAX_MUTED_PANES, type SharedPreferences } from "../shared/preferences.ts";
 
 /**
@@ -709,6 +710,33 @@ describe("update API", () => {
     } finally { protectedServer.stop(); rmSync(protectedState, { recursive: true, force: true }); }
   });
 
+  it("lets the connection server's bridge token read the update status and install the offer, and nothing else of it", async () => {
+    // this PC's own Ovis, gated by its own token, reached by another PC's app through SSH
+    const offered = "a".repeat(40);
+    const bridge = "b".repeat(64);
+    const requests: unknown[] = [];
+    const status: UpdateStatus = { ...unmanagedUpdateStatus(), managed: true, blocked_reason: null, available: true, latest_revision: offered, latest_version: "9.9.9", revision_bound_install: true };
+    const ownState = mkdtempSync(join(tmpdir(), "herdr-update-bridge-"));
+    const own = createServer({ port: 0, stateDir: ownState, token: "own-token", bridgeToken: bridge,
+      updates: { status: () => status, notes: noUpdateNotes, installed: noInstalledNotes, request: (request) => { requests.push(request); } } });
+    const call = (path: string, authorization: string, body?: string) => fetch(`http://127.0.0.1:${own.port}${path}`, {
+      method: body === undefined && path !== "/api/updates/check" ? "GET" : "POST", ...(body === undefined ? {} : { body }),
+      headers: { authorization, "x-herdr-update": "1", "content-type": "application/json" },
+    });
+    try {
+      expect(await (await call("/api/updates", `Bearer ${bridge}`)).json()).toMatchObject({ managed: true, available: true, latest_revision: offered });
+      // the install still names the offer, as from the app's own controls
+      expect((await call("/api/updates/install", `Bearer ${bridge}`, "{}")).status).toBe(400);
+      expect(requests).toEqual([]);
+      expect((await call("/api/updates/install", `Bearer ${bridge}`, JSON.stringify({ expected_revision: offered }))).status).toBe(202);
+      expect(requests).toEqual([{ command: "install", expected_revision: offered }]);
+      // a wrong bridge token is refused like any other, and the token opens no other update route
+      expect((await call("/api/updates", `Bearer ${"c".repeat(64)}`)).status).toBe(401);
+      for (const path of ["/api/updates/notes", "/api/updates/installed", "/api/updates/check", "/api/herdr/update"]) expect((await call(path, `Bearer ${bridge}`)).status).toBe(401);
+      expect(requests).toHaveLength(1);
+    } finally { own.stop(); rmSync(ownState, { recursive: true, force: true }); }
+  });
+
   it("offers no herdr update on a server started without the updater", async () => {
     const response = await fetch(`${base()}/api/herdr/update`);
     expect(response.headers.get("cache-control")).toBe("no-store");
@@ -1303,6 +1331,27 @@ describe("agent rename", () => {
       expect(Array.isArray(((await res.json()) as { commands: unknown[] }).commands)).toBeTrue();
     } finally {
       bridge.stop();
+      rmSync(state, { recursive: true, force: true });
+    }
+  });
+
+  // #2044: a crash left machines.json its old length in NULs, and the server would not start
+  it("starts on saved PCs that are not JSON and names the file it set aside in the PC settings, read only", async () => {
+    const state = mkdtempSync(join(tmpdir(), "ovis-machines-set-aside-"));
+    writeFileSync(join(state, "machines.json"), Buffer.alloc(353));
+    const error = spyOn(console, "error").mockImplementation(() => {});
+    let app: ReturnType<typeof createServer> | undefined;
+    try {
+      app = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: state, tailscaleOwner: null });
+      const url = `http://127.0.0.1:${app.port}/api/machines/settings`;
+      const settings = await (await fetch(url)).json() as MachineSettings;
+      expect(settings).toEqual({ auto_update_bridges: true, set_aside: [expect.stringMatching(/^machines\.json\.corrupt-\S+$/)] });
+      expect(readdirSync(state)).toContain(settings.set_aside![0]!);
+      const patched = await fetch(url, { method: "PATCH", headers: { "content-type": "application/json", "x-herdr-machine": "1" }, body: JSON.stringify({ auto_update_bridges: false, set_aside: [] }) });
+      expect(patched.status).toBe(200);
+      expect(await patched.json()).toEqual({ auto_update_bridges: false, set_aside: settings.set_aside });
+    } finally {
+      app?.stop(); error.mockRestore();
       rmSync(state, { recursive: true, force: true });
     }
   });
@@ -4015,6 +4064,39 @@ describe("pairing and identity", () => {
     expect(await auth({ ...proxied(), cookie })).toMatchObject({ authenticated: false, reason: "pairing_required" });
     expect(await auth(proxied())).toMatchObject({ authenticated: false, reason: "pairing_required" });
     expect(await auth()).toMatchObject({ authenticated: true, via: "local" });
+  });
+
+  it("revokes every device in one answer that clears the caller's own cookie, and takes revoke-all for no device id", async () => {
+    const pair = async (label: string) => {
+      const { code } = (await (await fetch(`${base()}/api/devices/pair/start`, { method: "POST", headers: guard })).json()) as { code: string };
+      const paired = await fetch(`${base()}/api/devices/pair`, { method: "POST", headers: { ...guard, ...proxied() }, body: JSON.stringify({ code, label }) });
+      expect(paired.status).toBe(204);
+      return paired.headers.get("set-cookie")!.split(";")[0]!;
+    };
+    const phone = await pair("Phone");
+    const tablet = await pair("Tablet");
+    expect(await auth({ ...proxied(), cookie: tablet })).toMatchObject({ authenticated: true, via: "device" });
+    // the route comes before the device ids: another method on it is refused as a method, never read as a device
+    const asDevice = await fetch(`${base()}/api/devices/revoke-all`, { method: "DELETE", headers: guard });
+    expect([asDevice.status, ((await asDevice.json()) as ApiError).error.code]).toEqual([400, "method_not_allowed"]);
+    expect((await fetch(`${base()}/api/devices/revoke-all`, { method: "POST" })).status).toBe(403); // the mutation guard
+    // from a paired device: everything paired goes, that device's own pairing included, and its cookie with the answer
+    const revoked = await fetch(`${base()}/api/devices/revoke-all`, { method: "POST", headers: { ...guard, ...proxied(), cookie: tablet } });
+    expect(revoked.status).toBe(200);
+    expect(revoked.headers.get("content-type")).toContain("application/json");
+    expect(revoked.headers.get("cache-control")).toBe("no-store");
+    expect(await revoked.json()).toEqual({ revoked: 2 });
+    expect(revoked.headers.getSetCookie()).toEqual([DEVICE_COOKIE_CLEARED, CLEAR_LEGACY_DEVICE_COOKIE]);
+    for (const cookie of [phone, tablet]) expect(await auth({ ...proxied(), cookie })).toMatchObject({ authenticated: false, reason: "pairing_required" });
+    expect(((await (await fetch(`${base()}/api/devices`)).json()) as { devices: unknown[] }).devices).toEqual([]);
+    // the gate stays shut to strangers; this PC and the PC's Tailscale login are in as before
+    expect(await auth(proxied())).toMatchObject({ authenticated: false, reason: "pairing_required" });
+    expect(await auth()).toMatchObject({ authenticated: true, via: "local" });
+    expect(await auth(proxied(OWNER))).toMatchObject({ authenticated: true, via: "tailscale" });
+    // with nothing left to revoke the answer is the same shape, and still a durable write
+    const again = await fetch(`${base()}/api/devices/revoke-all`, { method: "POST", headers: guard });
+    expect([again.status, await again.json()]).toEqual([200, { revoked: 0 }]);
+    expect(JSON.parse(readFileSync(join(openState, "devices.json"), "utf8"))).toEqual({ gate_closed_at: expect.any(String), devices: [] });
   });
 
   it("the plugin script prints a code a headless PC's owner can hand to a phone", async () => {

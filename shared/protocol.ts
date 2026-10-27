@@ -74,7 +74,7 @@ export type SessionSnapshot = Omit<HerdrSnapshot, "panes"> & {
 };
 export type { WorkspaceMoved } from "./workspace-lifecycle.ts";
 
-export type { Machine, MachineEvent, MachineRoster, PaneTarget, SetupJob, SetupRequest, SetupAction, BridgeIdentity, BridgeHealth } from "./machines.ts";
+export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarget, SetupJob, SetupRequest, SetupAction, BridgeIdentity, BridgeHealth } from "./machines.ts";
 
 /** Machine API (same token gate; mutations require X-Herdr-Machine: 1 + same origin)
  * GET /api/health?scope=bridge -> BridgeHealth, never waits for herdr
@@ -327,12 +327,20 @@ export type { Machine, MachineEvent, MachineRoster, PaneTarget, SetupJob, SetupR
  *  POST   /api/devices/pair { code, label? } -> 204 + Set-Cookie ovis_device (public, like /api/auth;
  *         401 invalid_code when the code is wrong, spent after five tries, or expired)
  *  PATCH  /api/devices/:id  { label }    -> PairedDevice;  DELETE /api/devices/:id -> 204 (revoked at its next request)
+ *  POST   /api/devices/revoke-all        -> DevicesRevokedAll + Set-Cookie clearing ovis_device and its old name
+ *         (X-Herdr-Machine: 1 + same origin, a client that can drive: 403 invalid_origin / read_only;
+ *         500 internal_error when the write fails, and then nothing was revoked)
  *  GET    /api/push                      -> PushKey (the VAPID application server key)
- *  POST   /api/push/subscribe { subscription }  -> 204 (a browser PushSubscription JSON; upsert by endpoint)
+ *  POST   /api/push/subscribe { subscription }  -> 204 (a browser PushSubscription JSON; upsert by endpoint;
+ *         a browser without a stream key is issued one: "Browser stream keys" below)
  *         | 410 subscription_gone (its push service answered 404/410 for that endpoint since the server
  *         started: the browser must unsubscribe and subscribe anew; an older server never says it)
  *  DELETE /api/push/subscribe { endpoint }      -> 204
  *  POST   /api/push/test      { endpoint }      -> 204 | 404 subscription_not_found | 410 subscription_gone | 502 push_failed
+ *  POST   /api/push/status    { subscription }  -> PushSubscriptionStatus: this browser's own subscription (its JSON, never an
+ *         endpoint in a URL or a list); 404 subscription_not_found alike for an unknown one, another owner's
+ *         and one whose keys do not match, so nothing is enumerated; 403 status_unavailable to the open LAN, which
+ *         signs in as no device and so owns no record (asked before any subscription is looked at)
  *  GET    /api/usage[?refresh=1]         -> UsageReport (plan limits of the AI subscriptions signed in on this PC)
  *  Errors: non-2xx with { error: { code, message } }
  *
@@ -359,9 +367,46 @@ export type { CLIProxyStatus, CLIProxyProvider, CLIProxyLogin, CLIProxyLoginStat
 
 export type { AccessVia, AccessRefusal, DeviceRole, HealthAuth, LanExposure, BindScope, ObservedIngress, SecuritySummary, PairedDevice, PairingCode, RemoteAccess, TailscaleAccess } from "./access.ts";
 
+/**
+ * Browser stream keys: how the server tells one browser from another without a credential, so a
+ * device a browser pairs itself is not announced back to it (`DevicePairedEvent`, and the push
+ * "New device paired" notice).
+ *
+ * - Issuance: an answer to GET /api/machines/events or POST /api/push/subscribe that is served
+ *   (2xx) to a request carrying no valid key adds one: `Set-Cookie: ovis_stream_<key>=1;
+ *   Path=/; HttpOnly; SameSite=Strict; Max-Age=31536000` (plus `Secure` over https), `<key>` 32
+ *   lowercase hex characters from 16 random bytes. A request that carries one is issued nothing.
+ * - Format: the key is in the cookie's NAME and the value is always `1`. Tabs that open at once,
+ *   before the browser held a key, each get one; since the names differ the browser keeps them
+ *   all, and every later request carries every key. At most eight are read from one request. A
+ *   cookie with the prefix whose key is not 32 lowercase hex, or whose value is not `1`, is not a
+ *   key and is ignored (never refused); a request with none is treated as a browser without one.
+ * - Lifetime: one year, like the device cookie, so a push subscription and the browser that made
+ *   it keep matching. Nothing revokes a key: it names a browser and grants nothing.
+ * - No authority: a key never lets a request in, never selects an owner or a role, and is not read
+ *   by the gate. Losing one only means that browser may hear of its own next pairing.
+ * - Role in POST /api/devices/pair: the keys the pairing request carries are the enrollment's
+ *   origin (kept with a first-pair credential until its first return). The `device-paired` event
+ *   then skips every machines event stream opened with one of those keys, and the push notice
+ *   skips every subscription registered with one, whatever access it came through (token, this
+ *   PC, Tailscale or a paired device).
+ */
+export const STREAM_COOKIE_PREFIX = "ovis_stream_";
+
 export type { PortalStatus } from "./portal.ts";
 
-export type { PushKey, PushPayload } from "./push.ts";
+/**
+ * POST /api/devices/revoke-all: every paired device lost its pairing access in one durable write,
+ * the caller's own included (its device cookie is cleared by the answer). Only pairing ends: the
+ * access token, this PC itself and the PC's Tailscale login get in as before, and the gate stays
+ * closed to strangers.
+ */
+export interface DevicesRevokedAll {
+  /** how many devices were paired before */
+  readonly revoked: number;
+}
+
+export type { PushDeliveryFailure, PushKey, PushPayload, PushSubscriptionStatus } from "./push.ts";
 
 /** One turn of a structured agent conversation (the chat lens source). */
 export interface ConversationTurn {
@@ -564,7 +609,7 @@ export interface CommandForm {
 
 /** What the bridge knows about a command a user sent: accepted is never the same as done. */
 export interface CommandOutcome {
-  /** the outcome's own id, referenced by PendingMessage.outcome_id */
+  /** the outcome's own id */
   id: string;
   /** the pane the command was sent to */
   pane_id: string;
@@ -653,6 +698,29 @@ export interface InteractivePrompt {
   fallback?: true;
   /** Claude's plan file behind a plan card, whose whole text is then the body: opened in the file viewer */
   plan_file?: string;
+  /**
+   * The card's own words, which the bridge wrote rather than read off the agent's screen (an Esc
+   * offered as Close, a fallback card's title): for each such field above, its English as a key with
+   * its values (shared/card-text.ts), so the client shows it in the user's language. A field not
+   * named here is the agent's own text, shown as it is; an older bridge names none.
+   */
+  own_text?: {
+    title?: CardText;
+    question?: CardText;
+    body?: CardText;
+    /** by index into `options` */
+    labels?: Record<number, CardText>;
+    /** by index into `options` */
+    descriptions?: Record<number, CardText>;
+    /** by index into `steps` */
+    steps?: Record<number, CardText>;
+  };
+}
+
+/** Card text the bridge wrote itself: an English key of the client's dictionaries, and the values of its `{placeholders}`, which may be card text too. */
+export interface CardText {
+  key: string;
+  vars?: Record<string, string | number | CardText>;
 }
 
 export interface InteractivePromptStep {
@@ -730,13 +798,11 @@ export interface PendingMessage {
   state: "queued" | "sending" | "held" | "uncertain";
   created_at: string;
   error?: { code: string; message: string };
-  /** the CommandOutcome this message's command is tracked by */
-  outcome_id?: string;
 }
 
 export type ClientMessage =
   /** keep_size: the grid is covered (the chat lens), so the attach leaves the shared pty's size as it is */
-  | { type: "attach"; pane_id: string; cols: number; rows: number; flow_control?: "ack"; keep_size?: boolean }
+  | { type: "attach"; pane_id: string; cols: number; rows: number; flow_control?: "ack"; keep_size?: boolean; /** Opaque browser UUID for device-bound Pi presentation receipts only; never input authority. */ receipt_resume_id?: string }
   | { type: "detach"; pane_id: string }
   /** Native invalidations require "conversation-watch" and an attachment; observers may subscribe.
    * Detaching clears interest, so reconnect/reattach must enable it again. REST remains authoritative. */
@@ -774,11 +840,21 @@ export type ClientMessage =
    * `clear_draft`.
    * `resend_id`: stable held-copy ID for immediate chat resends across connections; the bridge
    * shares the first outcome for 60 seconds after settlement. `resend_generation` defaults to 0;
-   * only a definitive no-input refusal permits the next attempt generation. Not with `send_anyway`:
+   * only a definitive no-input refusal permits the next attempt generation. A retained withdrawal
+   * overrides every generation with `pending_discarded`; the client drops that exact saved copy.
+   * Older clients treat this unknown refusal as uncertain and retain non-resendable text.
+   * A retained ambiguous resend or dismissed uncertain row refuses new attempts with
+   * `pending_uncertain`, including other generations of the same stable ID.
+   * Not with `send_anyway`:
    * that combination returns invalid_delivery before reserving or replaying an ID. No `clear_draft`.
    * Older peers ignore it. */
   | { type: "submit"; id: number; pane_id: string; text: string; payload: string; typed?: boolean; delivery?: "immediate" | "queue" | "hold"; clear_draft?: string; send_anyway?: true; resend_id?: string; resend_generation?: number }
-  | { type: "pending-action"; id: number; pane_id: string; pending_id: string; action: "steer" | "discard"; resend_generation?: number }
+  /** `withdrawal_only`: Edit's discard may withdraw only queued/held input; uncertain text stays
+   * with its owner and returns pending_uncertain, rather than being dismissed. Older servers ignore
+   * this optional field and retain their existing discard behaviour, without this protection.
+   * `launch_ended`: the client tells first_message_launch_ended apart; an older one, which would take that
+   * unknown code as maybe typed, is answered pending_target_changed for it */
+  | { type: "pending-action"; id: number; pane_id: string; pending_id: string; action: "steer" | "discard"; resend_generation?: number; launch_ended?: true; withdrawal_only?: true }
   /** the terminal's input line typed into the pane without Enter (feature "terminal-insert"), answered
    * with an insert-result of the same id once herdr has the bytes. `text` is one line of the draft,
    * as written: a line break is refused (`unsafe_multiline`), since nothing reports whether the pane's
@@ -882,8 +958,10 @@ export type ServerMessage =
    * took or ran them; a refusal names why and nothing was typed, except `insert_failed`, whose bytes
    * may or may not have arrived. Older bridges never send it. */
   | { type: "insert-result"; id: number; pane_id: string; ok: boolean; code?: string; message?: string }
-  /** Owner-only receipt and state; only an explicit removed outcome permits deleting a retained client message. */
-  | { type: "pending-messages"; pane_id: string; messages: PendingMessage[]; removed?: Array<{ id: string; outcome: "sent" | "discarded" | "consumed" }> }
+  /** Owner-only receipt and state; only an explicit removed outcome permits deleting a retained client message.
+   * `dismissed` removes an uncertain copy, never proves withdrawal or delivery. Existing clients
+   * remove owned IDs for any explicit outcome; Edit restores only `discarded`. */
+  | { type: "pending-messages"; pane_id: string; messages: PendingMessage[]; removed?: Array<{ id: string; outcome: "sent" | "discarded" | "consumed" | "dismissed" }> }
   | { type: "secret-result"; id: number; pane_id: string; ok: boolean; code?: string }
   /** agent-status push for ANY pane, attached or not (server-side status collector) */
   | { type: "pane-status"; pane_id: string; agent_status: AgentStatus; finish_id?: number; finish_epoch?: string; /** a pane's running background tasks (OmO's, or a Claude Code pane's subagents and commands), when the frame is about them: it changes no status */ background_tasks?: number; /** every frame says it: absent, the pane does not wait on its turn's background work */ background_wait?: true; /** a pane's plan, when the frame is about it (null: it keeps none now); it changes no status */ plan?: PlanSummary | null }

@@ -3,8 +3,8 @@ import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer as tcpServer } from "node:net";
 import { hostname } from "node:os";
-import { join } from "node:path";
-import { BRIDGE_PROTOCOL, LOCAL_MACHINE, REMOTE_BUNDLE_VERSION, type BridgeIdentity, type Machine, type MachineAction, type MachineEvent, type MachineSettings, type SetupAction, type SetupJob, type SetupProgress, type SetupRequest, type SshTarget } from "../shared/machines.ts";
+import { basename, join } from "node:path";
+import { BRIDGE_PROTOCOL, LOCAL_MACHINE, REMOTE_BUNDLE_VERSION, type BridgeIdentity, type RemoteOvis, type Machine, type MachineAction, type MachineEvent, type MachineSettings, type SetupAction, type SetupJob, type SetupProgress, type SetupRequest, type SshTarget } from "../shared/machines.ts";
 import type { ServerMessage, SessionSnapshot, HerdrPane } from "../shared/protocol.ts";
 import type { PushService } from "./push.ts";
 import { alertStatus } from "../shared/notify-policy.ts";
@@ -16,9 +16,12 @@ import type { CompletionTracker } from "./completion.ts";
 import { HerdrProfileState, herdrMachineId } from "./herdr-profile-state.ts";
 import { sameSshSession, type HerdrMachineProfile } from "./herdr-profiles.ts";
 import { validateTarget } from "./machine-security.ts";
-import { detectHost, HERDR_INSTALL_CMD, installLockOwner } from "./remote-host.ts";
+import { writePrivateState } from "./private-state.ts";
+import { holdsDocument, readStateDocument, setAsideDamaged } from "./state-document.ts";
+import { detectHost, HERDR_INSTALL_CMD, installLockOwner, type RemoteHost } from "./remote-host.ts";
+import { REVISION, type UpdateStatus } from "../shared/update.ts";
 import { discard, readCappedJson, REMOTE_LIMITS } from "./remote-json.ts";
-import { SshConnection } from "./ssh.ts";
+import { SshConnection, sshClient } from "./ssh.ts";
 
 interface StoredMachine { id: string; name: string; target: SshTarget; enabled: boolean; snapshot?: SessionSnapshot | null }
 interface Runtime {
@@ -59,6 +62,8 @@ interface JobState {
   timer: ReturnType<typeof setTimeout>;
   /** the registered PC a bridge update is for, which shows it as `updating` */
   runtime?: Runtime;
+  /** the PC's own Ovis updates itself in this job, asked by it (MachineManager.runOwnUpdate) */
+  own?: boolean;
   stageStartedAt: number;
   finished: Promise<void>;
 }
@@ -97,6 +102,20 @@ function verificationFailure(status: number, body: unknown): string {
   return `Bridge verification failed (${status}). Reconnect after checking the remote bridge.`;
 }
 
+/** how long verifying a bridge waits for its answer through the tunnel */
+const BRIDGE_ANSWER_MS = 15_000;
+/**
+ * What the person adding the PC is told when the request through the standing tunnel to its bridge
+ * fails (#1960): ssh resets the connection when nothing listens on the PC's 127.0.0.1 at that port,
+ * as with an Ovis older than this fix that runs with HOST set to another address.
+ */
+function bridgeUnreachable(descriptor: BridgeDescriptor, error: unknown): string {
+  const at = `127.0.0.1:${descriptor.port}`;
+  if (descriptor.managed_remote) return `The bridge on this PC does not answer at ${at} through SSH. Reconnect after checking the remote bridge.`;
+  if ((error as Error | null)?.name === "TimeoutError") return `This PC's Ovis did not answer at ${at} through SSH within ${BRIDGE_ANSWER_MS / 1000} seconds. Reconnect after checking that it runs.`;
+  return `This PC's Ovis does not answer at ${at} through SSH. If it runs with HOST set to another address, update it or set HOST=127.0.0.1 there, restart it, then add the PC again.`;
+}
+
 async function freePort(): Promise<number> {
   const server = tcpServer();
   await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
@@ -124,6 +143,31 @@ const newerBridge = (version: string): string => `This PC uses a newer bridge (v
 const independentBridge = (version: string): string => newerBundle(version)
   ? `This socket uses an independently managed web server of a newer version (v${version}); this app requires v${REMOTE_BUNDLE_VERSION}. Update this app in Settings → Updates, then reconnect; that server was left running.`
   : "This socket uses an independently managed web server. Update it through its own Settings, then reconnect; it was left running.";
+
+/** how long an update of a PC's own Ovis may take until it answers on its new version: its updater downloads, installs dependencies, typechecks and builds */
+export const OWN_UPDATE_MS = 15 * 60_000;
+/** how often that update looks at the PC while it runs */
+const OWN_UPDATE_POLL_MS = 2000;
+/** how long a PC's own Ovis may stay idle after it was asked to update before the update counts as never started */
+export const OWN_UPDATE_START_MS = 60_000;
+/** the steps a PC's own updater names (shared/update.ts UPDATE_STEPS), in the words its progress shows */
+const OWN_UPDATE_STEPS: Record<string, string> = { download: "downloading", dependencies: "installing dependencies", typecheck: "type-checking", build: "building", restart: "restarting" };
+/** an install of its update runs there; a check for releases (its own, every 5 minutes) is not one */
+const ownInstallRunning = (status: Partial<Pick<UpdateStatus, "phase">> | null): boolean => status?.phase === "building" || status?.phase === "restarting";
+/** how long a check for releases there is waited out before its status is taken as it stands */
+const OWN_CHECK_WAIT_MS = 30_000;
+/** a check for releases that outlasts that wait: news soon, so the PC tries again on its own */
+const OWN_CHECK_RUNNING = "That PC's Ovis is still checking for updates; this PC tries again shortly.";
+/** the host an SSH destination names, without its user: where that PC's own Ovis is opened */
+function sshHost(destination: string): string { return destination.slice(destination.lastIndexOf("@") + 1); }
+/** a release version as a PC's updater tells it (`0.4.18`), or null */
+const releaseVersion = (value: unknown): string | null => typeof value === "string" && /^\d{1,6}\.\d{1,6}\.\d{1,6}$/.test(value) ? value : null;
+/** another PC's own words, kept to one short line */
+const remoteWords = (value: unknown): string | null => typeof value === "string" && value.trim() !== "" ? value.trim().replace(/\s+/g, " ").slice(0, 300) : null;
+/** An independently managed web server older than this app, which can install its own update: updating this PC asks it to. */
+const ownUpdateOffered = (offer: RemoteOvis): string => `This PC runs its own Ovis${offer.version ? ` v${offer.version}` : ""}, older than this app. Update it${offer.latest_version ? ` to v${offer.latest_version}` : ""} to reconnect; it updates itself, and herdr sessions keep running.`;
+/** One that cannot: today's words, and why not. */
+const ownUpdateRefused = (offer: RemoteOvis): string => `${independentBridge(REMOTE_BUNDLE_VERSION)} It cannot be updated from here: ${offer.reason}`;
 
 /** A connection that retrying cannot fix: the PC waits for the user instead of reconnecting. */
 export class MachineActionRequired extends Error {
@@ -188,6 +232,10 @@ export class MachineManager {
   private saveTimer?: ReturnType<typeof setTimeout>;
   private profileState: HerdrProfileState;
   private statePath: string;
+  /** machines.json as this manager last wrote it (persist) */
+  private written: string | undefined;
+  /** the state files that were not JSON at startup, by the name they were moved to (settings) */
+  private setAside: string[] = [];
   private sshDir: string;
   private local: Machine = { id: LOCAL_MACHINE, name: hostname(), kind: "local", enabled: true, state: "connecting", error: null, snapshot: null };
   private localDiagnostics = new ConnectionDiagnostics("machine.local");
@@ -207,10 +255,17 @@ export class MachineManager {
   private sourceToken = 0;
   /** each PC's last health-call start, kept across reconnects for as long as this manager lives */
   private sourceStarts = new Map<string, number>();
+  /** runOwnUpdate's poll interval and how long it waits for the install to start; tests shorten them */
+  private ownUpdatePollMs: number;
+  private ownUpdateStartMs: number;
+  private ownUpdateCheckMs: number;
 
   constructor(readonly stateDir: string, private push: PushService, private completions: CompletionTracker, private readLocal: () => Promise<SessionSnapshot> = () => this.completions.readSnapshot(sessionSnapshot, labelOmoPanes),
-    options: { bootId?: string; now?: () => number } = {}) {
+    options: { bootId?: string; now?: () => number; ownUpdate?: { pollMs?: number; startMs?: number; checkMs?: number } } = {}) {
     this.bootId = options.bootId;
+    this.ownUpdatePollMs = options.ownUpdate?.pollMs ?? OWN_UPDATE_POLL_MS;
+    this.ownUpdateStartMs = options.ownUpdate?.startMs ?? OWN_UPDATE_START_MS;
+    this.ownUpdateCheckMs = options.ownUpdate?.checkMs ?? OWN_CHECK_WAIT_MS;
     this.now = options.now ?? (() => performance.now());
     if (this.bootId) this.local.source_boot_id = this.bootId;
     this.profileState = new HerdrProfileState(stateDir);
@@ -225,8 +280,17 @@ export class MachineManager {
         : error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : "read failed";
       if (cause !== "ENOENT") console.error(`Cannot read ${this.settingsPath}; remote PC settings start empty`, cause);
     }
-    if (existsSync(this.statePath)) {
-      const saved: unknown = JSON.parse(readFileSync(this.statePath, "utf8"));
+    if (this.profileState.setAside !== null) this.setAside.push(basename(this.profileState.setAside));
+    // bytes that are not JSON (a crash can leave the file all NULs) are moved aside and the app starts
+    // without saved PCs; JSON that is not a list of PCs still refuses to start, so nothing replaces it
+    const read = readStateDocument(this.statePath);
+    if (read.kind === "malformed") {
+      const aside = setAsideDamaged(this.statePath);
+      this.setAside.push(basename(aside));
+      console.error(`${this.statePath} is not JSON; it was set aside as ${aside}, and the app starts without the PCs added here`);
+    }
+    if (read.kind === "json") {
+      const saved = read.value;
       if (!Array.isArray(saved)) throw new Error("Invalid machines.json; registrations were preserved");
       for (const item of saved as StoredMachine[]) {
         if (!/^[a-f0-9-]{36}$/.test(item.id) || typeof item.name !== "string" || typeof item.enabled !== "boolean") throw new Error("Invalid machine registration");
@@ -415,17 +479,22 @@ export class MachineManager {
     this.saveTimer = setTimeout(() => { this.saveTimer = undefined; if (!this.stopped) { try { this.persist(); } catch (e) { console.error("PC state could not be saved:", e instanceof Error ? e.message : "write failed"); } } }, 1000);
     this.saveTimer.unref();
   }
+  /**
+   * The registrations cannot be recomputed, so they are written durably (writePrivateState): a
+   * crash after a plain rename can leave the file its old length in NULs. Every refresh of a remote
+   * PC saves soon, mostly with the same snapshot, so only a document that differs from the one on
+   * disk pays for the write and its fsync.
+   */
   private persist(): void {
-    mkdirSync(this.stateDir, { recursive: true, mode: 0o700 });
     const data: StoredMachine[] = [...this.machines.values()].filter(({ machine }) => !machine.herdr_profile_id).map(({ machine: m }) => ({ id: m.id, name: m.name, target: m.target!, enabled: m.enabled, snapshot: m.snapshot }));
-    const tmp = this.statePath + ".tmp";
-    writeFileSync(tmp, JSON.stringify(data), { mode: 0o600 });
-    chmodSync(tmp, 0o600); renameSync(tmp, this.statePath);
+    const text = JSON.stringify(data);
+    // the file on disk may have been deleted or replaced since this manager wrote it
+    if (text !== this.written || !holdsDocument(this.statePath, text)) { writePrivateState(this.statePath, data); this.written = text; }
     for (const { machine } of this.machines.values()) if (machine.herdr_profile_id) this.profileState.saveSnapshot(machine.herdr_profile_id, machine.snapshot);
     this.profileState.flush();
   }
   job(id: string): SetupJob | undefined { return this.jobs.get(id)?.public; }
-  settings(): MachineSettings { return { ...this.preferences }; }
+  settings(): MachineSettings { return { ...this.preferences, ...(this.setAside.length > 0 ? { set_aside: [...this.setAside] } : {}) }; }
   updateSettings(patch: Record<string, unknown>): MachineSettings {
     if (patch["auto_update_bridges"] !== undefined) {
       if (typeof patch["auto_update_bridges"] !== "boolean") throw new Error("auto_update_bridges must be boolean");
@@ -573,7 +642,7 @@ export class MachineManager {
   /** Mirror a bridge update onto its PC, so the sidebar and header show it without the dialog. */
   private showUpdate(job: JobState): void {
     if (!job.runtime) return;
-    job.runtime.machine.updating = { job_id: job.public.id, step: job.public.step, progress: job.public.progress ?? null };
+    job.runtime.machine.updating = { job_id: job.public.id, step: job.public.step, progress: job.public.progress ?? null, ...(job.own ? { ovis: true } : {}) };
     // progress arrives per chunk: a few events a second are plenty
     if (!this.emitTimer) { this.emitTimer = setTimeout(() => { this.emitTimer = undefined; this.emit(); }, 250); this.emitTimer.unref(); }
   }
@@ -614,6 +683,8 @@ export class MachineManager {
     const session = runtime.machine.target!.session;
     const { host, inspection } = await detectHost(ssh, session);
     const { platform, expectedSocket } = inspection;
+    // what the PC's own Ovis said is read anew on every try: it may have been updated or replaced since
+    runtime.machine.remote_ovis = null;
     let { herdrPath } = inspection;
     if (herdrPath) {
       const version = await host.herdrVersion(ssh, herdrPath);
@@ -646,14 +717,29 @@ export class MachineManager {
     // an independently managed web server is not this app's to update or to wait for: it keeps
     // its own message below, which names the side that is behind
     if (descriptor && descriptor.managed_remote && newerBundle(descriptor.bundle_version)) throw new MachineActionRequired(newerBridge(descriptor.bundle_version), "bridge_conflict");
+    // an older one may update itself: asked through its own updater, never by replacing its files
+    let ownUpdate: RemoteOvis | undefined;
     if (descriptor && (update || descriptor.bridge_protocol !== BRIDGE_PROTOCOL || descriptor.bundle_version !== REMOTE_BUNDLE_VERSION)) {
-      if (!descriptor.managed_remote) throw new MachineActionRequired(independentBridge(descriptor.bundle_version), "setup");
-      if (!update) throw new MachineActionRequired("This PC runs a bridge from a different version. Update the bridge to reconnect; herdr sessions keep running.", "update_bridge");
+      if (!descriptor.managed_remote) {
+        if (newerBundle(descriptor.bundle_version)) throw new MachineActionRequired(independentBridge(descriptor.bundle_version), "setup");
+        const offer = await this.ownOffer(ssh, descriptor, runtime.machine.target!, job?.abort.signal);
+        if (runtime.generation !== generation || this.stopped || job?.abort.signal.aborted) throw new Error("Setup cancelled");
+        runtime.machine.remote_ovis = offer;
+        if (job) job.public.remote_ovis = offer;
+        // a check still running there is no refusal: the PC tries again on its own instead of waiting for a tap
+        if (!offer.updatable) throw offer.reason === OWN_CHECK_RUNNING ? new Error(OWN_CHECK_RUNNING) : new MachineActionRequired(ownUpdateRefused(offer), "setup");
+        if (!update) throw new MachineActionRequired(ownUpdateOffered(offer), "update_bridge");
+        ownUpdate = offer;
+        // nothing of this app's is installed or restarted on that PC: its own updater does it
+        update = false;
+        if (job) job.own = true;
+      } else if (!update) throw new MachineActionRequired("This PC runs a bridge from a different version. Update the bridge to reconnect; herdr sessions keep running.", "update_bridge");
     }
     const hasBundle = inspection.bundleReady;
     // a runtime from another bundle version and no bridge running (the PC rebooted since): an update
     if (!descriptor && !hasBundle && inspection.bundleOlder && !job) throw new MachineActionRequired("This PC has the bridge runtime of a different version. Update the bridge to reconnect; herdr sessions keep running.", "update_bridge");
     const installs: string[] = [];
+    if (ownUpdate) installs.push(`Ask this PC's own Ovis to install its update${ownUpdate.latest_version ? ` v${ownUpdate.latest_version}` : ""} through its own updater, then reconnect (herdr sessions keep running)`);
     if (update) installs.push("Download and verify the bridge runtime, then restart this bridge (herdr sessions keep running)");
     if (!descriptor && !hasBundle) installs.push(host.bundleDescription);
     if (!descriptor && !herdrPath) installs.push(host.installHerdr ? `herdr 0.9.3 through its own installer (${HERDR_INSTALL_CMD})` : "Bundled herdr 0.9.3 (existing installations are preserved)");
@@ -679,7 +765,7 @@ export class MachineManager {
           const directory = mkdtempSync(join(this.sshDir, "keygen-"));
           const temporary = join(directory, "key");
           try {
-            const keygen = Bun.spawn(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", `ovis:${runtime.machine.id}`, "-f", temporary], { stdout: "ignore", stderr: "pipe" });
+            const keygen = Bun.spawn([sshClient().keygen, "-q", "-t", "ed25519", "-N", "", "-C", `ovis:${runtime.machine.id}`, "-f", temporary], { stdout: "ignore", stderr: "pipe" });
             if (await keygen.exited !== 0) throw new Error("Could not generate the dedicated SSH key");
             if (job.abort.signal.aborted || runtime.generation !== generation || this.stopped) throw new Error("Setup cancelled");
             renameSync(temporary + ".pub", path + ".pub");
@@ -692,6 +778,15 @@ export class MachineManager {
         // A separate master proves the new key actually works without a password.
         const proof = new SshConnection({ ...runtime.machine.target!, identity_file: path }, this.sshDir, path, true);
         try { await proof.start(); await (host.kind === "windows" ? proof.runPowerShell("Write-Output ok") : proof.run("true")); } finally { proof.close(); }
+      }
+    }
+    if (ownUpdate && job && descriptor) {
+      try { descriptor = await this.runOwnUpdate(job, ssh, host, descriptor, expectedSocket, ownUpdate); }
+      catch (error) {
+        // it updated itself into a refusal (another version than this app's): what it offered no longer holds,
+        // and an update it can run is never told beside a setup (shared/machines.ts remote_ovis)
+        if (error instanceof MachineActionRequired) { runtime.machine.remote_ovis = null; job.public.remote_ovis = null; }
+        throw error;
       }
     }
     if (update && job && descriptor) {
@@ -732,14 +827,168 @@ export class MachineManager {
     runtime.endpoint = verified.endpoint;
     runtime.machine.herdr = verified.identity.herdr;
   }
-  private async verify(ssh: SshConnection, descriptor: BridgeDescriptor, expectedSocket: string, forReplacement = false): Promise<{ endpoint: { url: string; token: string }; identity: BridgeIdentity }> {
+  /** A tunnel to the bridge a descriptor names, on the PC's 127.0.0.1, with that bridge's token. */
+  private async tunnel(ssh: SshConnection, descriptor: BridgeDescriptor): Promise<{ url: string; token: string }> {
     if (!Number.isInteger(descriptor.port) || descriptor.port < 1 || descriptor.port > 65535 || typeof descriptor.token !== "string" || !/^[a-f0-9]{64}$/.test(descriptor.token)) throw new Error("Invalid bridge credentials");
     const port = await freePort();
     await ssh.forward(port, descriptor.port);
-    const endpoint = { url: `http://127.0.0.1:${port}`, token: descriptor.token };
-    const response = await fetch(`${endpoint.url}/api/bridge`, { headers: { authorization: `Bearer ${endpoint.token}` }, signal: AbortSignal.timeout(15_000) });
+    return { url: `http://127.0.0.1:${port}`, token: descriptor.token };
+  }
+  /**
+   * What the PC's own Ovis (an independently managed web server older than this app) says of its own
+   * update, asked through the tunnel with the token its descriptor holds. A server of this app's
+   * version takes that token on its update routes (server/index.ts); an older one without OVIS_TOKEN
+   * takes the tunnel's loopback connection as its own PC's. One that wants its OVIS_TOKEN refuses,
+   * and that token is never read from its files: it is updated on that PC.
+   */
+  /** one poll's wait, cut short when `signal` aborts */
+  private pause(signal?: AbortSignal): Promise<void> {
+    return new Promise((resolve) => {
+      const done = () => { clearTimeout(timer); signal?.removeEventListener("abort", done); resolve(); };
+      const timer = setTimeout(done, this.ownUpdatePollMs);
+      signal?.addEventListener("abort", done, { once: true });
+    });
+  }
+  private async ownOffer(ssh: SshConnection, descriptor: BridgeDescriptor, target: SshTarget, signal?: AbortSignal): Promise<RemoteOvis> {
+    const endpoint = await this.tunnel(ssh, descriptor);
+    // never followed: a redirect would leave the tunnel for wherever it names, this PC's own loopback included
+    const get = (path: string) => fetch(endpoint.url + path, { headers: { authorization: `Bearer ${endpoint.token}` }, redirect: "manual",
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(BRIDGE_ANSWER_MS)]) : AbortSignal.timeout(BRIDGE_ANSWER_MS) });
+    let port = descriptor.port;
+    let url: string | null = null;
+    // where it answers, as it tells it: a relayed bridge (#1960) registers another port than its own.
+    // A server that wants its token tells nothing, and the descriptor's port stands
+    try {
+      const response = await get("/api/access");
+      if (response.ok) {
+        const access = await readCappedJson<{ port?: unknown; tailscale?: { serving_url?: unknown } } | null>(response, REMOTE_LIMITS.ownUpdates);
+        if (typeof access?.port === "number" && Number.isInteger(access.port) && access.port >= 1 && access.port <= 65535) port = access.port;
+        const serving = access?.tailscale?.serving_url;
+        if (typeof serving === "string" && serving.length <= 300 && /^https:\/\/[^\s/?#@]+(?:\/[^\s]*)?$/.test(serving)) url = serving;
+      } else await discard(response);
+    } catch { /* the address stays the descriptor's */ }
+    const answer = (status: Partial<UpdateStatus> | null, reason: string | null): RemoteOvis => ({
+      version: releaseVersion(status?.current_version), latest_version: releaseVersion(status?.latest_version),
+      updatable: reason === null, reason, address: `${sshHost(target.destination)}:${port}`, url,
+    });
+    const there = "Update it on that PC (Settings → Updates), then reconnect.";
+    const read = async (): Promise<{ status: Partial<UpdateStatus> | null } | { refused: string }> => {
+      let response: Response;
+      try { response = await get("/api/updates"); }
+      catch (error) { return { refused: bridgeUnreachable(descriptor, error) }; }
+      // an older Ovis takes the tunnel as this PC's own connection only on its loopback and without OVIS_TOKEN (server/access.ts)
+      if (response.status === 401 || response.status === 403) { await discard(response); return { refused: `That PC's Ovis refused this app's request: it asks for its own access token (OVIS_TOKEN) or a paired device, and this app has neither. ${there}` }; }
+      if (!response.ok) { await discard(response); return { refused: `That PC's Ovis did not tell its update status (${response.status}). ${there}` }; }
+      try { return { status: await readCappedJson<Partial<UpdateStatus> | null>(response, REMOTE_LIMITS.ownUpdates) }; }
+      catch { return { refused: `That PC's Ovis did not tell its update status. ${there}` }; }
+    };
+    // a check for releases (its own, every 5 minutes) offers nothing while it runs: its answer is waited for
+    let told = await read();
+    for (const until = Date.now() + this.ownUpdateCheckMs; "status" in told && told.status?.phase === "checking" && Date.now() < until && !signal?.aborted;) { await this.pause(signal); told = await read(); }
+    if ("refused" in told) return answer(null, told.refused);
+    const status = told.status;
+    if (status?.managed !== true) return answer(status, `That PC's Ovis does not update itself: ${remoteWords(status?.blocked_reason) ?? "it was not started by its updater."}`);
+    const blocked = remoteWords(status.blocked_reason);
+    if (blocked) return answer(status, `That PC's Ovis cannot update itself now: ${blocked}`);
+    if (status.revision_bound_install !== true) return answer(status, `That PC's Ovis is too old to take an update asked for from another PC. ${there}`);
+    if (status.phase === "checking") return answer(status, OWN_CHECK_RUNNING);
+    // one already installing is followed, not asked again (runOwnUpdate)
+    if (ownInstallRunning(status)) return answer(status, null);
+    if (status.available !== true || typeof status.latest_revision !== "string" || !REVISION.test(status.latest_revision)) {
+      return answer(status, `That PC's Ovis has no newer release on offer${status.current_version ? ` than v${releaseVersion(status.current_version) ?? "?"}` : ""}, and it is still older than this app. ${there}`);
+    }
+    return answer(status, null);
+  }
+  /**
+   * Has the PC's own Ovis install the update its updater offers, through its own update route, then
+   * waits until it answers on the new version: its new bridge registers anew (another process, another
+   * token), which is returned. Nothing of it is stopped or replaced from here, and a cancel ends only
+   * the waiting: an install that started there runs to its end.
+   */
+  private async runOwnUpdate(job: JobState, ssh: SshConnection, host: RemoteHost, descriptor: BridgeDescriptor, expectedSocket: string, offer: RemoteOvis): Promise<BridgeDescriptor> {
+    const to = offer.latest_version ? ` to v${offer.latest_version}` : "";
+    this.stage(job, "installing", `Asking this PC's own Ovis to update itself${to}…`);
+    const endpoint = await this.tunnel(ssh, descriptor);
+    const updates = (install?: string) => fetch(`${endpoint.url}/api/updates${install ? "/install" : ""}`, {
+      ...(install ? { method: "POST", body: JSON.stringify({ expected_revision: install }) } : {}),
+      headers: { authorization: `Bearer ${endpoint.token}`, "x-herdr-update": "1", ...(install ? { "content-type": "application/json" } : {}) },
+      // never followed: a redirect would take the install request out of the tunnel, to this PC's own loopback too
+      redirect: "manual",
+      signal: AbortSignal.any([job.abort.signal, AbortSignal.timeout(BRIDGE_ANSWER_MS)]),
+    });
+    const read = async (): Promise<Partial<UpdateStatus>> => {
+      const response = await updates();
+      if (!response.ok) { await discard(response); throw new Error(`That PC's Ovis did not tell its update status (${response.status})`); }
+      return await readCappedJson<Partial<UpdateStatus> | null>(response, REMOTE_LIMITS.ownUpdates) ?? {};
+    };
+    // a check for releases running there is no install, and offers nothing until it ends
+    const settled = async (): Promise<Partial<UpdateStatus>> => {
+      let status = await read();
+      for (const until = Date.now() + this.ownUpdateCheckMs; status.phase === "checking" && Date.now() < until && !job.abort.signal.aborted;) { await this.pause(job.abort.signal); status = await read(); }
+      return status;
+    };
+    let before = await settled();
+    // an error an earlier install left: its supervisor tells the bridge over IPC, so a status read
+    // right after the 202 may still carry it. Only an error seen once this install ran, or one in
+    // other words, is this install's
+    const earlierError = before.phase === "error" ? remoteWords(before.error) : null;
+    let started = ownInstallRunning(before);
+    for (let attempt = 1; !started; attempt++) {
+      if (before.phase === "checking") throw new Error(OWN_CHECK_RUNNING);
+      const revision = before.latest_revision;
+      if (before.available !== true || typeof revision !== "string" || !REVISION.test(revision)) throw new Error("That PC's Ovis has no update on offer any more. Check its Settings → Updates there, then reconnect.");
+      const response = await updates(revision);
+      if (response.status === 202) { await discard(response); break; }
+      const refusal = (await readCappedJson<{ error?: { code?: unknown; message?: unknown } } | null>(response, REMOTE_LIMITS.bridgeError).catch(() => null))?.error;
+      // busy: an install of it (its own Settings, another app) runs, and is followed; or a check that
+      // started since the status was read, and the install is asked for again once it ends
+      if (refusal?.code !== "update_busy" || attempt >= 3) throw new Error(`That PC's Ovis refused to update (${typeof refusal?.code === "string" ? remoteWords(refusal.code) : response.status}): ${remoteWords(refusal?.message) ?? "no reason given"}`);
+      before = await settled();
+      started = ownInstallRunning(before);
+    }
+    const deadline = Date.now() + OWN_UPDATE_MS;
+    const startBy = Date.now() + this.ownUpdateStartMs;
+    for (;;) {
+      if (job.abort.signal.aborted || this.stopped) throw new Error("Setup cancelled");
+      if (Date.now() >= deadline) throw new Error(`This PC's Ovis did not come back on its new version within ${OWN_UPDATE_MS / 60_000} minutes. Check its Settings → Updates there, then reconnect.`);
+      // the new version registers its own bridge: another process than the one asked. Its pid goes
+      // into a command on that PC (host.alive), so only a process id is taken
+      const next = (await host.descriptors(ssh)).find((d) => d.socket_path === expectedSocket && Number.isSafeInteger(d.pid) && d.pid > 0 && d.pid !== descriptor.pid);
+      if (next && await host.alive(ssh, next.pid)) {
+        if (next.bundle_version !== REMOTE_BUNDLE_VERSION && !newerBundle(next.bundle_version)) throw new MachineActionRequired(`This PC's Ovis updated itself, but its version still differs from this app's (v${remoteWords(next.bundle_version)}; this app requires v${REMOTE_BUNDLE_VERSION}). Update it on that PC (Settings → Updates), then reconnect; it was left running.`, "setup");
+        this.stage(job, "starting", "Connecting to this PC's updated Ovis…");
+        return next;
+      }
+      let status: Partial<UpdateStatus> | null = null;
+      // while it restarts nothing answers, until its new bridge registers
+      try { status = await read(); } catch { if (job.abort.signal.aborted) throw new Error("Setup cancelled"); }
+      if (ownInstallRunning(status)) started = true;
+      if (status?.phase === "error" && (started || remoteWords(status.error) !== earlierError)) throw new Error(`That PC's Ovis could not update itself: ${remoteWords(status.error) ?? "no reason given"} Check its Settings → Updates there, then reconnect.`);
+      if (status && ownInstallRunning(status)) {
+        const step = OWN_UPDATE_STEPS[status.step ?? ""] ?? status.phase;
+        const text = `This PC's own Ovis is updating itself${to}: ${step}…`;
+        if (job.public.step !== text) { job.public.step = text; this.showUpdate(job); }
+      }
+      // only an answer that it has not started counts against the limit: one that fails says nothing
+      if (!started && status && Date.now() >= startBy) throw new Error(`This PC's Ovis did not start its update within ${Math.max(1, Math.round(this.ownUpdateStartMs / 1000))} seconds of being asked. Check its Settings → Updates there, then reconnect.`);
+      // a Cancel ends the wait at once, not after the poll's interval
+      await this.pause(job.abort.signal);
+    }
+  }
+  private async verify(ssh: SshConnection, descriptor: BridgeDescriptor, expectedSocket: string, forReplacement = false): Promise<{ endpoint: { url: string; token: string }; identity: BridgeIdentity }> {
+    const endpoint = await this.tunnel(ssh, descriptor);
+    let response: Response;
+    // one deadline for the answer, its body included: a bridge that stops halfway timed out too
+    const deadline = AbortSignal.timeout(BRIDGE_ANSWER_MS);
+    try { response = await fetch(`${endpoint.url}/api/bridge`, { headers: { authorization: `Bearer ${endpoint.token}` }, signal: deadline }); }
+    catch (error) { throw new Error(bridgeUnreachable(descriptor, error), { cause: error }); }
     if (!response.ok) throw new Error(verificationFailure(response.status, await readCappedJson(response, REMOTE_LIMITS.bridgeError).catch(() => null)));
-    const identity = await readCappedJson<BridgeIdentity>(response, REMOTE_LIMITS.bridgeIdentity);
+    let identity: BridgeIdentity;
+    try { identity = await readCappedJson<BridgeIdentity>(response, REMOTE_LIMITS.bridgeIdentity); }
+    catch (error) {
+      if (deadline.aborted) throw new Error(bridgeUnreachable(descriptor, deadline.reason), { cause: error });
+      throw error;
+    }
     // An approved replacement only reads this stable identity endpoint. It never uses the
     // old bridge's pane protocol; the new bridge must pass the strict version check below.
     if (!forReplacement && (identity.bridge_protocol !== BRIDGE_PROTOCOL || identity.bundle_version !== REMOTE_BUNDLE_VERSION)) {
@@ -804,7 +1053,7 @@ export class MachineManager {
     const generation = runtime.generation;
     await this.refresh(runtime);
     if (generation !== runtime.generation || this.stopped) throw new Error("Connection cancelled");
-    runtime.machine.state = "connected"; runtime.machine.action_required = null; runtime.attempts = 0; runtime.updateCancelled = false;
+    runtime.machine.state = "connected"; runtime.machine.action_required = null; runtime.machine.remote_ovis = null; runtime.attempts = 0; runtime.updateCancelled = false;
     const endpoint = runtime.endpoint!;
     const ws = authenticatedWebSocket(endpoint.url.replace("http:", "ws:") + "/ws", endpoint.token);
     runtime.observer = ws;

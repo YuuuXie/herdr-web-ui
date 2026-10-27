@@ -16,7 +16,6 @@ const FOREGROUND_EVENT = new RegExp(String.raw`^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.
 const VERIFIED_UNREGISTER = Symbol("verified unregister");
 const LOG_READ_CHANGED = Symbol("log read changed");
 interface ForegroundBinding { sessionId: string; generation: string }
-type ForegroundResult = ForegroundBinding | null | undefined | typeof VERIFIED_UNREGISTER;
 interface ForegroundCheckpoint {
   dev: bigint; ino: bigint; path: string; size: number; observedSize: number; mtimeNs: bigint; ctimeNs: bigint; checkedAtNs: bigint; pendingSwitch: boolean;
   hash: Hash; epoch: string; binding: ForegroundBinding | null | undefined; unregistered: ForegroundBinding | null; readConflict?: true;
@@ -37,7 +36,7 @@ function logPrefix(fd: number, size: number): Hash | null {
 }
 
 /** The latest complete lifecycle event in the CLI's own open log, never the newest transcript. */
-function loggedForeground(pid: number, logDirectories: readonly string[]): ForegroundResult {
+function loggedForeground(pid: number, logDirectories: readonly string[]): ForegroundBinding | null | undefined | typeof VERIFIED_UNREGISTER {
   for (let attempt = 0; attempt < 2; attempt++) {
     const result = scanForegroundLog(pid, logDirectories);
     if (result !== LOG_READ_CHANGED) return result;
@@ -45,7 +44,7 @@ function loggedForeground(pid: number, logDirectories: readonly string[]): Foreg
   return undefined;
 }
 
-function scanForegroundLog(pid: number, logDirectories: readonly string[]): ForegroundResult | typeof LOG_READ_CHANGED {
+function scanForegroundLog(pid: number, logDirectories: readonly string[]): ForegroundBinding | null | undefined | typeof VERIFIED_UNREGISTER | typeof LOG_READ_CHANGED {
   const started = processStartedAt(pid);
   if (started === null) return undefined;
   let owner = foregroundLogProcesses.get(pid);

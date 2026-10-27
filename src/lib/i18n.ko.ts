@@ -21,6 +21,8 @@ import { PALETTE_KO } from "./i18n/palette.ko.ts";
  * braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "Goal": "목표",
+  "Waiting for your answer": "답변을 기다리는 중",
   "Back": "뒤로",
   "Scroll pane up": "패널 위로 스크롤",
   "Scroll pane down": "패널 아래로 스크롤",
@@ -221,6 +223,14 @@ const BASE: Record<string, string> = {
   "…": "…",
   "Alerts": "알림",
   "Sending…": "보내는 중…",
+  // the alerts health notice over the pane and Settings → Alerts say these alike (lib/pushHealth.ts)
+  "This device's push subscription is missing. Turn alerts on again.": "이 기기의 푸시 구독이 없습니다. 알림을\u00a0다시\u00a0켜세요.",
+  "The push service retired this device's subscription. Turn alerts on again to make a new one.": "푸시 서비스가 이 기기의 구독을 끝냈습니다. 알림을\u00a0다시\u00a0켜세요.",
+  "Turn alerts on again": "알림 다시 켜기",
+  "Turning alerts on…": "알림을 켜는 중…",
+  "This device's push subscription was made for another server key. Turn alerts on again to make a new one.": "이 기기의 푸시 구독은 다른 서버 키로 만들어졌습니다. 새로 만들려면 알림을\u00a0다시\u00a0켜세요.",
+  "The push service refused the last alert to this device. Send a test to check whether it still does.": "푸시 서비스가 이 기기로 보낸 마지막 알림을 거부했습니다. 테스트를 보내 지금도\u00a0그런지\u00a0확인하세요.",
+  "This device can only watch.": "이 기기는 보기만 할 수 있습니다.",
   "Needs input": "입력 필요",
   "Finished": "작업 완료",
   "Open pane": "패널 열기",

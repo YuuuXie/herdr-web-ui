@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { HerdrPane, InteractivePrompt, InteractivePromptOption, PanePromptResponse, PromptAnswer, SessionSnapshot, SlashCommand } from "../shared/protocol.ts";
+import type { HerdrPane, InteractivePrompt, PanePromptResponse, PromptAnswer, SessionSnapshot, SlashCommand } from "../shared/protocol.ts";
 import { builtinCommands, cachedPaneCommands } from "./commands.ts";
 import { agentProcesses, readCommandTranscript } from "./conversation.ts";
 import { agentProcessInFront } from "./agent-process.ts";
@@ -15,12 +15,14 @@ import { claudePlanFile } from "./claude-plan.ts";
 import { listPendingQuestionForms, openCodeService, replyOpenCodeForm } from "./opencode-service.ts";
 import { opencodeSessionId } from "./opencode.ts";
 import { registry } from "./dialogs/registry.ts";
-import { ANSI_RE, type AnswerStep, KEY, type OmoAsk, type ParsedPrompt, finishPrompt, keySteps, navigationKeys, parsedByPublicPrompt, publicPrompt } from "./dialogs/shared.ts";
+import { ANSI_RE, type AnswerStep, KEY, type OmoAsk, type ParsedPrompt, type PromptDraft, finishPrompt, keySteps, navigationKeys, own, parsedByPublicPrompt, publicPrompt } from "./dialogs/shared.ts";
 import { executeInteractionPlan } from "./dialogs/interaction-plan.ts";
 import { liveScreen, parsePrompt, promptTailIsActive } from "./dialogs/live.ts";
 import { sameText } from "./dialogs/omo.ts";
 import { INVISIBLE_CHAR_RE } from "./dialogs/claude.ts";
 import { parsePiDialog } from "./dialogs/pi.ts";
+import { pendingPiQuestionnaires } from "./pi-questionnaire.ts";
+import { isPiQuestionnaireScreen, parsePiQuestionnaire, piQuestionnaireInputMatches, piQuestionnaireOf } from "./dialogs/pi-questionnaire.ts";
 import { parsePiAsk } from "./dialogs/pi-ask.ts";
 import { navigatePiAsk } from "./dialogs/pi-ask-navigate.ts";
 import { gjcCustomEditorMatches, parseFallbackPrompt } from "./dialogs/fallback.ts";
@@ -378,6 +380,7 @@ class InvalidAnswer extends Error {}
 export function answerKeys(prompt: InteractivePrompt, answer: Pick<PromptAnswer, "option_index" | "option_indices" | "custom_text">): AnswerStep[] {
   const parsed = parsedByPublicPrompt.get(prompt);
   if (!parsed) throw new InvalidAnswer("The prompt was not produced by parseInteractivePrompt.");
+  if (parsed.piQuestionnaireInput !== undefined) throw new InvalidAnswer("Finish or cancel the terminal-owned questionnaire draft in the terminal.");
   const supplied = [answer.option_index !== undefined, answer.option_indices !== undefined, answer.custom_text !== undefined].filter(Boolean).length;
   if (supplied !== 1) throw new InvalidAnswer("Exactly one answer is required.");
 
@@ -385,7 +388,7 @@ export function answerKeys(prompt: InteractivePrompt, answer: Pick<PromptAnswer,
     if (typeof answer.custom_text !== "string") throw new InvalidAnswer("Custom text must be a string.");
     // A raw newline/control in rpiv's inline input can submit it and type into the next
     // question, review, or composer. Validate before trimming and before any navigation.
-    if (parsed.responder === "pi-ask-question" && /[\u0000-\u001f\u007f-\u009f]/.test(answer.custom_text)) {
+    if ((parsed.responder === "pi-ask-question" || parsed.responder === "pi-questionnaire-question") && /[\u0000-\u001f\u007f-\u009f]/.test(answer.custom_text)) {
       throw new InvalidAnswer("Pi custom answers must be one line without control characters.");
     }
     const text = answer.custom_text.trim();
@@ -595,7 +598,7 @@ async function readPrompt(paneId: string, codexHome?: string, openCodeStateDir?:
   // outlive the widget, but that is no input to offer as fallback keys. Known next steps still
   // show immediately; only an unrecognized screen waits for this bounded settling window.
   const settling = Date.now() - (formsAnswered.get(paneId) ?? 0) < FORM_SETTLE_MS;
-  if (known.prompt !== null || status !== "blocked" || !agent || settling) {
+  if (known.prompt !== null || known.suppressFallback || status !== "blocked" || !agent || settling) {
     fallbackLogged.delete(paneId);
     return { agent, status, prompt: asked(paneId, known.prompt, turns), pane, panes, snapshot, screen: known.screen, inputUnverified: known.inputUnverified };
   }
@@ -626,7 +629,7 @@ async function readKnownPrompt(
   openCodeStateDir?: string,
   openCodeState = defaultOpenCodeState,
   signal?: AbortSignal,
-): Promise<{ prompt: InteractivePrompt | null; screen?: string; stale?: boolean; inputUnverified?: true }> {
+): Promise<{ prompt: InteractivePrompt | null; screen?: string; stale?: boolean; inputUnverified?: true; suppressFallback?: true }> {
   // no native card (no session herdr reports, no verified v2 service, no pending form): OpenCode
   // v1's own question prompt is read off the screen below (dialogs/opencode.ts, #1386)
   native: if (agent === "opencode") {
@@ -681,11 +684,11 @@ async function readKnownPrompt(
     const rawOptions = field.options ?? [];
     const customAllowed = field.custom === true || rawOptions.length === 0;
 
-    let options: InteractivePromptOption[];
+    let options: PromptDraft["options"];
     let customOptionIndex: number | null = null;
 
     if (rawOptions.length === 0) {
-      options = [{ label: "Type your answer", description: null }];
+      options = [{ label: own("Type your answer"), description: null }];
       customOptionIndex = 0;
     } else {
       options = rawOptions.map((opt) => ({
@@ -693,16 +696,16 @@ async function readKnownPrompt(
         description: opt.description ?? null,
       }));
       if (customAllowed) {
-        options.push({ label: "Type your own answer", description: null });
+        options.push({ label: own("Type your own answer"), description: null });
         customOptionIndex = options.length - 1;
       }
     }
 
-    const title = field.title && field.title !== field.description ? field.title : (form.title || "Question");
+    const title = field.title && field.title !== field.description ? field.title : (form.title || own("Question"));
     const question = field.description || field.title || form.title || "";
     const steps = form.fields.length > 1
       ? form.fields.map((f, i) => ({
-          label: f.title || `Question ${i + 1}`,
+          label: f.title || own("Question {n}", { n: i + 1 }),
           answered: i < stepIndex,
           current: i === stepIndex,
         }))
@@ -773,7 +776,9 @@ async function readKnownPrompt(
 
   if (!["claude", "omp", "codex", "omo", "pi", "gjc", "hermes", "cmd", "opencode", ""].includes(agent)) return { prompt: null };
   let screen = await liveScreen(paneId);
-  const piTabs = agent === "pi" && /^\s*←.*✓ Submit\s*→$/m.test(screen) && /Enter to select · ↑\/↓ to navigate/.test(screen);
+  const questionnaire = agent === "pi" && isPiQuestionnaireScreen(screen);
+  const piTabs = agent === "pi" && (questionnaire && /[□■]/.test(screen)
+    || /^\s*←.*✓ Submit\s*→$/m.test(screen) && /Enter to select · ↑\/↓ to navigate/.test(screen));
   let inputUnverified: true | undefined;
   if (piTabs) {
     // Detection text has no styles. Background or neutral-vs-dim/green text identifies
@@ -797,7 +802,23 @@ async function readKnownPrompt(
   // on the user, or the session's pending call is the form on screen
   const omoTrusted = (agent !== "claude" && agent !== "") || pane.agent_status === "blocked";
   let piNative: ParsedPrompt | null = null;
-  if (piTabs) {
+  if (agent === "pi") {
+    const transcript = await piTranscriptPath(paneId).catch(() => null);
+    if (transcript && "path" in transcript) {
+      try {
+        const calls = pendingPiQuestionnaires(transcript.path);
+        if (calls === null && questionnaire) return { prompt: null, screen, suppressFallback: true };
+        const matches = (calls ?? []).flatMap(call => {
+          const source = piQuestionnaireOf(`${transcript.path}\0${call.id}`, call.args);
+          const parsed = source && parsePiQuestionnaire(screen, source);
+          return parsed ? [parsed] : [];
+        });
+        if (matches.length === 1) piNative = matches[0]!;
+        else if (calls?.length) return { prompt: null, screen, suppressFallback: true }; // never guess keys for a partial custom widget
+      } catch { /* Missing or replaced session: no authorization from a screen alone. */ }
+    }
+  }
+  if (piTabs && !questionnaire && !piNative) {
     // A saved custom answer replaces the Other label. Only the pane's verified pending call
     // can prove that last row is still input, not a clipped third/fourth ordinary option.
     const transcript = await piTranscriptPath(paneId).catch(() => null);
@@ -1204,7 +1225,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             read: async () => {
               if (!active()) return null;
               const live = await readPrompt(body.pane_id, options.codexHome, options.openCodeStateDir, openCodeState, deadline);
-              return !live.inputUnverified && live.agent === "pi" && live.status === "blocked" && live.prompt ? parsedByPublicPrompt.get(live.prompt) ?? null : null;
+              return !live.inputUnverified && live.agent === "pi" && (live.status === "blocked" || live.status === "idle" && parsedPrompt.responder.startsWith("pi-questionnaire-")) && live.prompt ? parsedByPublicPrompt.get(live.prompt) ?? null : null;
             },
           });
           if (!moved) return promptChanged();
@@ -1303,7 +1324,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             const dialog = parsePiDialog(screen, true);
             return dialog?.id === parsed.id && dialog.selectedIndex === cursor && promptTailIsActive(dialog, screen);
           }
-          return shown?.id === parsed.id && shown.selectedIndex === cursor;
+          return shown?.id === parsed.id && shown.selectedIndex === cursor
+            && (responder !== "pi-questionnaire-question" || shown.piQuestionnaireInput === undefined);
         };
         /**
          * Waits for the screen to show the card's own menu with the cursor where the moves sent
@@ -1344,6 +1366,13 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         let customTyped = false;
         const customEditorReady = async (draft: string): Promise<boolean> => {
           const deadline = Date.now() + SETTLE_MS;
+          if (responder === "pi-questionnaire-question") {
+            const read = await readKnownPrompt(body.pane_id, pane, agent, options.codexHome, panes, options.openCodeStateDir);
+            const shown = read.prompt ? parsedByPublicPrompt.get(read.prompt) : null;
+            return !read.inputUnverified && asks() && !request.signal.aborted && Date.now() < deadline
+              && shown?.id === parsed.id && piQuestionnaireInputMatches(shown, draft)
+              && shown.selectedIndex === parsed.customMenuIndex;
+          }
           if (responder === "pi-ask-question") {
             // Clear, text and submit each await an RPC: the editor may disappear between them.
             const reading = readKnownPrompt(body.pane_id, pane, agent, options.codexHome, panes, options.openCodeStateDir);
@@ -1388,12 +1417,12 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
             const move = step.keys?.every((key) => key === KEY.up || key === KEY.down || (sideways && (key === KEY.left || key === KEY.right))) ?? false;
             // the asking ended under the answer: no further key, whatever the screen shows
             if (!asks()) return promptChanged();
-            if ((responder === "fallback-gjc-menu" || responder === "pi-ask-question") && body.custom_text !== undefined && committed) {
+            if ((responder === "fallback-gjc-menu" || responder === "pi-ask-question" || responder === "pi-questionnaire-question") && body.custom_text !== undefined && committed) {
               if (!(await customEditorReady(customTyped ? body.custom_text.trim() : ""))) return promptChanged();
               if (step.text !== undefined) customTyped = true;
             }
             // GJC's selector can close under the answer: its composer must not take the moves.
-            if (move && walked && (list || responder === "fallback-gjc-menu") && !(await onRow())) return promptChanged();
+            if (move && walked && (list || reader?.reread === "each-move" || responder === "fallback-gjc-menu") && !(await onRow())) return promptChanged();
             if (!move && !committed) {
               // The first irreversible step goes only once the menu shows the expected cursor.
               // Later keys follow as before: the menu itself changes under them.
@@ -1439,7 +1468,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
       }
       const responder = parsedByPublicPrompt.get(target)?.responder;
       if (responder === "omo-question" || responder === "omo-review" || responder === "omo-typing" || responder === "omo-pending"
-        || responder === "pi-ask-question" || responder === "pi-ask-submit") {
+        || responder === "pi-ask-question" || responder === "pi-ask-submit"
+        || responder === "pi-questionnaire-question" || responder === "pi-questionnaire-submit") {
         formsAnswered.set(body.pane_id, Date.now());
         if (formsAnswered.size > 64) formsAnswered.delete(formsAnswered.keys().next().value!);
       }

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import { describeProgress } from "../src/lib/bridgeProgress.ts";
@@ -108,6 +108,9 @@ describe("independently managed bridge updates", () => {
     const socket = "/home/u/.config/herdr/herdr.sock";
     const descriptor = { pid: process.pid, port: 7317, token: "a".repeat(64), socket_path: socket, bridge_protocol: 1, bundle_version: "older", managed_remote: false };
     const commands: string[] = [];
+    // that PC's own Ovis answers through the tunnel as a server its updater did not start
+    const tunnels: ReturnType<typeof Bun.serve>[] = [];
+    const asked: string[] = [];
     const ssh = { run: async (script: string) => {
       commands.push(script);
       if (script.includes("uname")) return `Linux\nx86_64\n/home/u\n/home/u/.config\n/usr/bin/herdr\nbundle-older\n${JSON.stringify(descriptor)}\n`;
@@ -115,16 +118,24 @@ describe("independently managed bridge updates", () => {
       if (script.includes("--version")) return "herdr 0.9.3";
       if (script.includes("kill -0")) return "live";
       throw new Error("Unexpected remote mutation");
+    }, forward: async (local: number) => {
+      tunnels.push(Bun.serve({ hostname: "127.0.0.1", port: local, fetch(request) {
+        asked.push(`${request.method} ${new URL(request.url).pathname}`);
+        if (new URL(request.url).pathname === "/api/updates") return Response.json({ managed: false, phase: "idle", available: false, blocked_reason: "Start with bun run start or the herdr plugin to enable updates." });
+        return new Response("not found", { status: 404 });
+      } }));
     } } as unknown as SshConnection;
     const prepare = (manager as unknown as { prepare(runtime: unknown, job?: unknown): Promise<void> }).prepare.bind(manager);
     const runtime = { generation: 0, ssh, machine: { target: { destination: "pc" } } };
     try {
-      await expect(prepare(runtime)).rejects.toMatchObject({ action: "setup" });
+      await expect(prepare(runtime)).rejects.toMatchObject({ action: "setup", message: expect.stringContaining("does not update itself") });
       await expect(prepare(runtime, { update: true, auto: true, public: { installations: [] }, abort: new AbortController() })).rejects.toMatchObject({ action: "setup" });
+      // it was only asked how it updates, never to install anything
+      expect(asked.every((request) => request.startsWith("GET "))).toBe(true);
       descriptor.managed_remote = true;
       await expect(prepare(runtime)).rejects.toMatchObject({ action: "update_bridge" });
       expect(commands.every(script => script.includes("uname") || script.includes("socket=") || script.includes("--version") || script.includes("kill -0"))).toBe(true);
-    } finally { manager.stop(); rmSync(dir, { recursive: true, force: true }); }
+    } finally { manager.stop(); for (const tunnel of tunnels) tunnel.stop(true); rmSync(dir, { recursive: true, force: true }); }
   });
 });
 
@@ -885,6 +896,17 @@ describe("bridge verification failures", () => {
     const verify = (manager as unknown as { verify(ssh: SshConnection, descriptor: BridgeDescriptor, socket: string): Promise<unknown> }).verify.bind(manager);
     return verify(ssh, descriptor, socket).then(() => "verified", (error: Error) => error.message);
   }
+  /** what verifying `fields` says when nothing answers at the end of the tunnel, and the arguments forward() got */
+  async function unanswered(fields: Record<string, unknown>): Promise<{ told: string; forwards: unknown[][] }> {
+    const manager = new MachineManager(temp(), {} as PushService, {} as CompletionTracker);
+    stops.push(() => manager.stop());
+    const forwards: unknown[][] = [];
+    const ssh = { forward: async (...args: unknown[]) => { forwards.push(args.slice(1)); } } as unknown as SshConnection;
+    const descriptor = { port: 18472, token: TOKEN, pid: process.pid, socket_path: "/s", bridge_protocol: 0, bundle_version: "", ...fields } as BridgeDescriptor;
+    const verify = (manager as unknown as { verify(ssh: SshConnection, descriptor: BridgeDescriptor, socket: string): Promise<unknown> }).verify.bind(manager);
+    const told = await verify(ssh, descriptor, "/s").then(() => "verified", (error: Error) => error.message);
+    return { told, forwards };
+  }
 
   // Evaluate the entrypoint's actual socket setup without starting its daemon.
   const entryLines = readFileSync(new URL("./remote-entry.ts", import.meta.url), "utf8").split("\n");
@@ -1001,5 +1023,110 @@ describe("bridge verification failures", () => {
     expect(await told(answering(500, JSON.stringify({ error: { code: "internal_error", message: "EACCES: permission denied, stat '/home/u/x'" } })))).toBe(GENERIC(500));
     expect(await told(answering(503, "<html>proxy</html>"))).toBe(GENERIC(503));
     expect(await told(answering(500, "null"))).toBe(GENERIC(500));
+  });
+
+  // #1960: an Ovis older than its loopback relay, with HOST set to another address, answers nothing on the PC's 127.0.0.1
+  it("says what to change when nothing answers on the PC's loopback, not the connection's raw error", async () => {
+    expect((await unanswered({})).told).toBe("This PC's Ovis does not answer at 127.0.0.1:18472 through SSH. If it runs with HOST set to another address, update it or set HOST=127.0.0.1 there, restart it, then add the PC again.");
+    expect((await unanswered({ managed_remote: true })).told).toBe("The bridge on this PC does not answer at 127.0.0.1:18472 through SSH. Reconnect after checking the remote bridge.");
+  });
+
+  it("says a bridge that did not answer in time timed out, without HOST advice", async () => {
+    const timedOut = spyOn(globalThis, "fetch").mockRejectedValue(new DOMException("The operation timed out.", "TimeoutError"));
+    try {
+      expect((await unanswered({})).told).toBe("This PC's Ovis did not answer at 127.0.0.1:18472 through SSH within 15 seconds. Reconnect after checking that it runs.");
+    } finally { timedOut.mockRestore(); }
+  });
+
+  it("says a bridge that stops halfway through its answer timed out", async () => {
+    // the deadline is what is tested: 200 ms here, not 15 s
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+    const short = spyOn(AbortSignal, "timeout").mockImplementation(() => realTimeout(200));
+    const manager = new MachineManager(temp(), {} as PushService, {} as CompletionTracker);
+    stops.push(() => manager.stop());
+    // its headers and the start of a body, then nothing
+    const ssh = { forward: async (local: number) => {
+      const stalled = Bun.listen({ hostname: "127.0.0.1", port: local, socket: { data(socket) { socket.write("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 1000\r\n\r\n{\"pid\""); } } });
+      stops.push(() => stalled.stop(true));
+    } } as unknown as SshConnection;
+    const descriptor = { port: 18472, token: TOKEN, pid: process.pid, socket_path: "/s", bridge_protocol: 0, bundle_version: "" } as BridgeDescriptor;
+    const verify = (manager as unknown as { verify(ssh: SshConnection, descriptor: BridgeDescriptor, socket: string): Promise<unknown> }).verify.bind(manager);
+    try {
+      expect(await verify(ssh, descriptor, "/s").then(() => "verified", (error: Error) => error.message)).toBe("This PC's Ovis did not answer at 127.0.0.1:18472 through SSH within 15 seconds. Reconnect after checking that it runs.");
+    } finally { short.mockRestore(); }
+  });
+
+  it("tunnels only to the PC's loopback, whatever address a descriptor names", async () => {
+    expect((await unanswered({ host: "203.0.113.99" })).forwards).toEqual([[18472]]);
+  });
+});
+
+// A crash can leave machines.json its old length in NULs (#2044): the app must still start.
+describe("saved PCs that cannot be read", () => {
+  const offline = async () => { throw new Error("local offline"); };
+  const dirs: string[] = [];
+  afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
+  const directory = () => { const dir = mkdtempSync(join(tmpdir(), "herdr-machines-state-")); dirs.push(dir); return dir; };
+
+  it("sets a file of NULs aside and starts without the PCs it held", () => {
+    const dir = directory();
+    const zeros = Buffer.alloc(353);
+    writeFileSync(join(dir, "machines.json"), zeros);
+    const error = spyOn(console, "error").mockImplementation(() => {});
+    let manager: MachineManager | undefined;
+    try {
+      manager = new MachineManager(dir, {} as PushService, new CompletionTracker(null), offline);
+      const aside = readdirSync(dir).filter((name) => name.startsWith("machines.json.corrupt-"));
+      expect(aside).toHaveLength(1);
+      expect(aside[0]).not.toContain(":");
+      expect(readFileSync(join(dir, aside[0]!))).toEqual(zeros);
+      expect(existsSync(join(dir, "machines.json"))).toBe(false);
+      expect(manager.list().map((machine) => machine.kind)).toEqual(["local"]);
+      expect(manager.settings()).toEqual({ auto_update_bridges: true, set_aside: aside });
+      expect(String(error.mock.calls[0]?.[0])).toContain(aside[0]!);
+      // the next save makes a readable file again
+      (manager as unknown as { persist(): void }).persist();
+      expect(JSON.parse(readFileSync(join(dir, "machines.json"), "utf8"))).toEqual([]);
+    } finally { manager?.stop(); error.mockRestore(); }
+  });
+
+  it("sets aside herdr's approvals that are not JSON, and says so with the PCs' settings", () => {
+    const dir = directory();
+    writeFileSync(join(dir, "herdr-profile-state.json"), Buffer.alloc(120));
+    const error = spyOn(console, "error").mockImplementation(() => {});
+    let manager: MachineManager | undefined;
+    try {
+      manager = new MachineManager(dir, {} as PushService, new CompletionTracker(null), offline);
+      expect(manager.settings().set_aside).toEqual([expect.stringMatching(/^herdr-profile-state\.json\.corrupt-/)]);
+    } finally { manager?.stop(); error.mockRestore(); }
+  });
+
+  it("writes an unchanged list again when its file was deleted or replaced on disk", () => {
+    const dir = directory(), path = join(dir, "machines.json");
+    writeFileSync(path, JSON.stringify([{ id: "11111111-1111-1111-1111-111111111111", name: "Saved PC", target: { destination: "BuildBox" }, enabled: false, snapshot: null }]));
+    const manager = new MachineManager(dir, {} as PushService, new CompletionTracker(null), offline);
+    try {
+      const persist = () => (manager as unknown as { persist(): void }).persist();
+      persist();
+      const saved = readFileSync(path, "utf8");
+      rmSync(path);
+      persist();
+      expect(readFileSync(path, "utf8")).toBe(saved);
+      writeFileSync(path, "[]");
+      persist();
+      expect(readFileSync(path, "utf8")).toBe(saved);
+      // the same length, other bytes
+      writeFileSync(path, saved.replace("Saved PC", "Other PC"));
+      persist();
+      expect(readFileSync(path, "utf8")).toBe(saved);
+    } finally { manager.stop(); }
+  });
+
+  it("still refuses to start on JSON that is not a list of PCs, leaving it in place", () => {
+    const dir = directory();
+    writeFileSync(join(dir, "machines.json"), "{}");
+    expect(() => new MachineManager(dir, {} as PushService, new CompletionTracker(null), offline)).toThrow("Invalid machines.json");
+    expect(readFileSync(join(dir, "machines.json"), "utf8")).toBe("{}");
+    expect(readdirSync(dir).filter((name) => name.includes("corrupt"))).toEqual([]);
   });
 });
