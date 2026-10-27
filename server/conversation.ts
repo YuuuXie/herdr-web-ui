@@ -47,7 +47,7 @@ import { CODEX_IMAGE_REF, CODEX_TOOL_IMAGE_REF, codexOutputPicture, codexTranscr
 import { AmbiguousClaudeStore, claudeAttachSession, claudeProcessSession, claudeTranscriptFile, defaultClaudeConfigDir, forgetClaudeSessionFile, forgetClaudeSessions, isClaudeProcess, processClaudeConfigDir } from "./claude-store.ts";
 import { forgetGjcPane, forgetGjcState, gjcPidUnderShell, gjcTranscriptForPane, isGjcProcess, storeRelative } from "./gjc-runtime.ts";
 import { isOmoProcess, omoProcessIdentity, omoSessionForPane, processEnviron } from "./omo.ts";
-import { processStartedAtAsync } from "./process-start.ts";
+import { processAlive, processStartedAtAsync } from "./process-start.ts";
 import { ompBlobStore, ompPaneRoute, ompRouteOwns, ompRouteStore, ompRouteTranscript } from "./omp.ts";
 import { forgetOpencodeRead, forgetOpencodeState, OPENCODE_IMAGE_REF, opencodeConversation, opencodeDatabasePath, opencodeImage, opencodeReadKey, opencodeSessionId, opencodeToolOutput } from "./opencode.ts";
 import { piTranscriptPath, unwrittenSession } from "./pi.ts";
@@ -1132,9 +1132,12 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
     const claims = new Set<string>();
     for (const peer of panes) {
       if (peer.pane_id === pane.pane_id || peer.agent !== "copilot") continue;
-      const info = peerInfo?.has(peer.pane_id) ? peerInfo.get(peer.pane_id) : await paneProcessInfo(peer.pane_id).catch(() => null);
+      const cached = peerInfo?.has(peer.pane_id) === true;
+      const info = cached ? peerInfo!.get(peer.pane_id) : await paneProcessInfo(peer.pane_id).catch(() => null);
       peerInfo?.set(peer.pane_id, info ?? null);
       const processes = agentProcesses(info?.foreground_processes ?? [], "copilot");
+      // A cached peer process that has exited may have been replaced by one we never asked about.
+      if (cached && processes.some((entry) => typeof entry.pid === "number" && !processAlive(entry.pid))) throw new ConversationUnavailable("no_session_path");
       if (processes.length === 1 && typeof processes[0]?.pid === "number") {
         const live = copilotProcessSession(processEnviron(processes[0].pid), processes[0].argv ?? [], processes[0].pid);
         if (live?.logged) {

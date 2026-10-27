@@ -525,7 +525,7 @@ it.skipIf(process.platform !== "linux")("does not retain the old history when th
   }
 });
 
-it.skipIf(process.platform !== "linux")("does not retain the old history when a peer claims its session during the failed read's recheck", async () => {
+it.skipIf(process.platform !== "linux").each([false, true])("does not retain the old history when a peer claims its session during the failed read's recheck (peer replaced: %p)", async (replaced) => {
   const root = mkdtempSync(join(tmpdir(), "copilot-peer-recheck-"));
   const transcript = join(root, "session-state", session, "events.jsonl");
   mkdirSync(join(root, "session-state", session), { recursive: true });
@@ -535,10 +535,17 @@ it.skipIf(process.platform !== "linux")("does not retain the old history when a 
   const held = fs.openSync(ownLog, "a");
   appendFileSync(ownLog, register(session));
   // A peer Copilot that holds its own lifecycle log open, on another session.
-  const peer = Bun.spawn([process.execPath, "-e", `require("node:fs").openSync(process.argv[1] + "/logs/process-100-" + process.pid + ".log", "a"); console.log("ready"); process.stdin.resume();`, root], { stdin: "pipe", stdout: "pipe" });
-  expect(new TextDecoder().decode((await peer.stdout.getReader().read()).value)).toContain("ready");
-  const peerLog = join(root, "logs", `process-100-${peer.pid}.log`);
-  appendFileSync(peerLog, register(other));
+  const copilot = async () => {
+    const child = Bun.spawn([process.execPath, "-e", `require("node:fs").openSync(process.argv[1] + "/logs/process-100-" + process.pid + ".log", "a"); console.log("ready"); process.stdin.resume();`, root], { stdin: "pipe", stdout: "pipe" });
+    expect(new TextDecoder().decode((await child.stdout.getReader().read()).value)).toContain("ready");
+    const log = join(root, "logs", `process-100-${child.pid}.log`);
+    appendFileSync(log, register(other));
+    return { child, log };
+  };
+  const peer = await copilot();
+  // With `replaced`, the peer pane's Copilot exits and a new one there claims the session.
+  const successor = await copilot();
+  let active = peer;
   let failing = false;
   let failed = false;
   let ownChecks = 0;
@@ -546,8 +553,12 @@ it.skipIf(process.platform !== "linux")("does not retain the old history when a 
   const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } });
   const info = spyOn(herdr, "paneProcessInfo").mockImplementation(async (paneId) => {
     // The recheck's last own-process call comes after the peers were asked: the peer claims the session then.
-    if (failed && paneId === "own" && ++ownChecks === 2) { appendFileSync(peerLog, register(session)); switched = true; }
-    return { pane_id: paneId, foreground_processes: [{ pid: paneId === "own" ? process.pid : peer.pid, name: "copilot", argv: ["copilot"] }] };
+    if (failed && paneId === "own" && ++ownChecks === 2) {
+      if (replaced) { peer.child.kill(); await peer.child.exited; active = successor; }
+      appendFileSync(active.log, register(session));
+      switched = true;
+    }
+    return { pane_id: paneId, foreground_processes: [{ pid: paneId === "own" ? process.pid : active.child.pid, name: "copilot", argv: ["copilot"] }] };
   });
   const environment = spyOn(omo, "processEnviron").mockReturnValue([`COPILOT_HOME=${root}`]);
   const snapshots = spyOn(herdr, "sessionSnapshot").mockResolvedValue({
@@ -570,7 +581,9 @@ it.skipIf(process.platform !== "linux")("does not retain the old history when a 
     expect(switched).toBe(true);
   } finally {
     reads.mockRestore(); snapshots.mockRestore(); environment.mockRestore(); info.mockRestore(); rpc.mockRestore();
-    fs.closeSync(held); peer.kill(); await peer.exited; forgetTranscriptState();
+    fs.closeSync(held);
+    for (const { child } of [peer, successor]) { child.kill(); await child.exited; }
+    forgetTranscriptState();
     rmSync(root, { recursive: true, force: true });
   }
 });
