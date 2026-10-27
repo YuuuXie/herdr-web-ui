@@ -141,10 +141,12 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[]): Fore
           if (read !== bytes.length || hash === null || after.size !== stat.size
             || after.mtimeNs !== stat.mtimeNs || after.ctimeNs !== stat.ctimeNs) {
             if (cached) cached.readConflict = true;
-            else if (!observedBefore && start === 0 && read === bytes.length && hash !== null) {
+            // A later raced read extends the protected prefix while it still starts with the first one,
+            // so a rewrite back to an earlier prefix cannot drop lifecycle lines read in between.
+            else if ((!observedBefore || initialContinues) && start === 0 && read === bytes.length && hash !== null) {
               owner.initialRead = { dev: stat.dev, ino: stat.ino, path: target, size,
                 hash: hash.copy().update(bytes).digest("hex") };
-            }
+            } else delete owner.initialRead;
             return LOG_READ_CHANGED;
           }
           const text = bytes.subarray(0, read).toString("utf8");
