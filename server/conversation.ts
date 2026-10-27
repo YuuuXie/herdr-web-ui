@@ -1479,8 +1479,12 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
     answer = transcriptPage(resolved.source, resolved.path, prefix === null ? page : copilotPage(page, prefix), resolved.codexHome ?? codexHome, resolved.piAgentDir);
   } catch (error) {
     if (resolved.source !== "copilot-transcript" || prefix === null || !(error instanceof ConversationUnavailable) || error.message !== "transcript_missing") throw error;
+    const paged = page.before !== undefined || page.since !== undefined || page.from !== undefined;
+    // Unpaged refreshes otherwise carry no proof of which history is on screen: older
+    // clients without it keep their fail-closed fallback, with no recheck to wait on.
+    if (page.history_id === undefined && !paged) throw error;
     // A read failure is not an empty conversation. Only a fresh, matching binding
-    // and file generation permit retaining the view; never reuse peer claims here.
+    // and file generation permit retaining the view; never reuse the request's earlier peer claims.
     try {
       const fresh = await sessionSnapshot();
       const pane = fresh.panes.find((candidate) => candidate.pane_id === paneId);
@@ -1495,13 +1499,10 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
         throw new ConversationUnavailable("no_session_path");
       }
     } catch (cause) {
-      if (cause instanceof ConversationUnavailable && (page.before !== undefined || page.since !== undefined || page.from !== undefined)) throw new HistoryChanged();
+      if (cause instanceof ConversationUnavailable && paged) throw new HistoryChanged();
       throw cause;
     }
-    // Unpaged refreshes otherwise carry no proof of which history is on screen.
-    // Older clients without it keep their fail-closed fallback behavior.
     if (page.history_id !== undefined && !page.history_id.startsWith(prefix)) throw new HistoryChanged();
-    if (page.history_id === undefined && page.before === undefined && page.since === undefined && page.from === undefined) throw error;
     throw new ConversationReadPending();
   }
   const status = snapshot.panes.find((pane) => pane.pane_id === paneId)?.agent_status;

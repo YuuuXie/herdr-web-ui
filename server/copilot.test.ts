@@ -516,6 +516,13 @@ it.skipIf(process.platform !== "linux")("does not retain the old history when th
     expect(shown.source).toBe("copilot-transcript");
     appendFileSync(transcript(session), answer("long ".repeat(15000)));
     failing = true;
+    // A client that names no history keeps its fallback, with no recheck that herdr can fail.
+    const answered = await herdr.sessionSnapshot();
+    snapshots.mockImplementation(async () => { throw new Error("herdr is busy"); });
+    snapshots.mockResolvedValueOnce(answered);
+    await expect(paneConversation("own")).rejects.toMatchObject({ name: "ConversationUnavailable", message: "transcript_missing" });
+    expect(switched).toBe(false);
+    snapshots.mockResolvedValue(answered);
     await expect(paneConversation("own", undefined, { history_id: shown.history_id })).rejects.toMatchObject({ name: "ConversationUnavailable" });
     expect(switched).toBe(true);
   } finally {
