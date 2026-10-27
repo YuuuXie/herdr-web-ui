@@ -64,7 +64,7 @@ import { forgetAllPiIndexes, forgetPiIndex, piAbandonedTurns, piBranchRecords, p
 import { copilotOffsetOutput, copilotOutput, copilotRootRecord, parseCopilotTranscript } from "./copilot.ts";
 import { copilotExplicitResume, copilotHandoffSession, copilotProcessSession, copilotTranscriptFile, copilotUnwrittenSession, openCopilotFile } from "./copilot-store.ts";
 import { parseConversationMetadata } from "./conversation-metadata.ts";
-import { answerVersion, ConversationNotStarted, ConversationUnavailable, type ConversationPage, HistoryChanged, type RecognizedConversation, type StreamSource, TRANSCRIPT_WINDOW_BYTES } from "./conversation-shared.ts";
+import { answerVersion, ConversationNotStarted, ConversationReadPending, ConversationUnavailable, type ConversationPage, HistoryChanged, type RecognizedConversation, type StreamSource, TRANSCRIPT_WINDOW_BYTES } from "./conversation-shared.ts";
 import { forgetHermesTranscriptState, hermesConversationPage, hermesToolOutput, hermesTranscriptForPane } from "./hermes.ts";
 
 import { createOmpTranscriptParser, isContextClear, MAX_TURNS, omoTaskResults, parseOmpTranscript, PI_IMAGE_REF, PI_PROMPT_IMAGE_REF, piImageBlock, piMessage, piNotice, piPromptImages, piResults, type TranscriptParser } from "./transcript-records.ts";
@@ -80,7 +80,7 @@ import { devinSessionForPane, isDevinProcess } from "./devin-session.ts";
 export { isOmoProcess } from "./omo.ts";
 export { devinSessionForPane, isDevinProcess } from "./devin-session.ts";
 export { createClaudeTranscriptParser, parseClaudeTranscript, unwrapPastes } from "./claude-transcript.ts";
-export { TRANSCRIPT_WINDOW_BYTES, ConversationUnavailable, ConversationNotStarted, HistoryChanged, answerVersion, type RecognizedConversation, type ConversationPage } from "./conversation-shared.ts";
+export { TRANSCRIPT_WINDOW_BYTES, ConversationReadPending, ConversationUnavailable, ConversationNotStarted, HistoryChanged, answerVersion, type RecognizedConversation, type ConversationPage } from "./conversation-shared.ts";
 
 const PI_PAGE_CACHE_BYTES = 4 * 1024 * 1024;
 
@@ -1468,7 +1468,27 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
   rememberPaneRead(paneId, resolved.path);
   const history = resolved.source === "copilot-transcript" ? copilotHistoryIdentity(resolved.path) : null;
   const prefix = history !== null && resolved.source === "copilot-transcript" ? copilotPrefix(paneId, `${resolved.binding}\0${history}`) : null;
-  const answer = transcriptPage(resolved.source, resolved.path, prefix === null ? page : copilotPage(page, prefix), resolved.codexHome ?? codexHome, resolved.piAgentDir);
+  let answer: RecognizedConversation;
+  try {
+    answer = transcriptPage(resolved.source, resolved.path, prefix === null ? page : copilotPage(page, prefix), resolved.codexHome ?? codexHome, resolved.piAgentDir);
+  } catch (error) {
+    if (resolved.source !== "copilot-transcript" || prefix === null || !(error instanceof ConversationUnavailable) || error.message !== "transcript_missing") throw error;
+    // A read failure is not an empty conversation. Only a fresh, matching binding
+    // and file generation permit retaining the view; never reuse peer claims here.
+    const fresh = await sessionSnapshot();
+    const pane = fresh.panes.find((candidate) => candidate.pane_id === paneId);
+    if (pane === undefined) throw new ConversationUnavailable("no_session_id");
+    const current = await copilotTranscriptPath(pane, fresh.panes);
+    if (current.path !== resolved.path || current.binding !== resolved.binding || copilotHistoryIdentity(resolved.path) !== history) {
+      if (page.before !== undefined || page.since !== undefined || page.from !== undefined) throw new HistoryChanged();
+      throw new ConversationUnavailable("no_session_path");
+    }
+    // Unpaged refreshes otherwise carry no proof of which history is on screen.
+    // Older clients without it keep their fail-closed fallback behavior.
+    if (page.history_id !== undefined && !page.history_id.startsWith(prefix)) throw new HistoryChanged();
+    if (page.history_id === undefined && page.before === undefined && page.since === undefined && page.from === undefined) throw error;
+    throw new ConversationReadPending();
+  }
   const status = snapshot.panes.find((pane) => pane.pane_id === paneId)?.agent_status;
   if (resolved.source === "grok-transcript" && answer.turns.length === 0 && page.before === undefined
     && (status === "working" || status === "blocked")) {
@@ -1732,7 +1752,7 @@ function transcriptPageRead(source: StreamSource, path: string, page: Conversati
     if (live === null && page.before === undefined && start > stream.floor) head = metadataHead(path, stream, source, start);
     cursor = formatCursor(stream, start);
   } catch (error) {
-    if (error instanceof HistoryChanged) throw error;
+    if (error instanceof HistoryChanged || error instanceof ConversationUnavailable) throw error;
     throw new ConversationUnavailable("transcript_missing");
   }
 
