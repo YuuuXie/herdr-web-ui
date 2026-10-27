@@ -148,9 +148,9 @@ class Pc {
     if (existing !== null || !wait) return existing;
 
     // polled, not watched: a PC busy with other checks can be out of inotify instances (EMFILE)
-    for (const deadline = Date.now() + RUN_ENDS_WITHIN_MS; ;) {
+    for (const deadline = performance.now() + RUN_ENDS_WITHIN_MS; ;) {
       const value = readCalls();
-      if (value !== null || Date.now() > deadline) return value;
+      if (value !== null || performance.now() > deadline) return value;
       await Bun.sleep(25);
     }
   }
@@ -225,7 +225,7 @@ class Pc {
       // the terminal's output ends with the installer (or when deadline() ends script(1))
       for await (const chunk of child.stdout) {
         out += decoder.decode(chunk, { stream: true });
-        if (askedAt === null && out.includes(QUESTION)) askedAt = Date.now();
+        if (askedAt === null && out.includes(QUESTION)) askedAt = performance.now();
         if (answered || typed === null || !out.includes(QUESTION)) continue;
         answered = true;
         type(typed);
@@ -556,9 +556,9 @@ describe.skipIf(platform() !== "linux" || !Bun.which("script"))("install.sh at a
 
   it.concurrent("goes on by itself when nobody is at the terminal", async () => {
     const pc = new Pc("not");
-    const started = Date.now();
+    const started = performance.now();
     const { asked, askedAt, exitCode } = await pc.atTerminal(null);
-    const ended = Date.now();
+    const ended = performance.now();
     expect(asked).toBe(true);
     expect(exitCode).toBe(0);
     expect(pc.answerRead()).toBeGreaterThan(128);
