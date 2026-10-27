@@ -1100,7 +1100,7 @@ it.each([
     writeFileSync(path, start);
     expect(transcriptPage("copilot-transcript", path).turns).toEqual([]);
     appendFileSync(path, record);
-    expect(() => transcriptPage("copilot-transcript", path)).toThrow(ConversationUnavailable);
+    expect(() => transcriptPage("copilot-transcript", path)).toThrow("transcript_unreadable");
   } finally { forgetTranscriptState(); rmSync(dir, { recursive: true, force: true }); }
 });
 

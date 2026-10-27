@@ -1409,7 +1409,10 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
           pages.unshift(page.turns);
           before = page.cursor;
         }
-      } catch {
+      } catch (cause) {
+        // Failed gap reads keep the same timeline, just as a failed newest-page
+        // read does. Only a rejected cursor means these pages cannot be joined.
+        if (!(cause instanceof ApiError) || cause.status !== 409) throw cause;
         return null;
       }
       return before === held ? pages.flat() : null;
@@ -1418,7 +1421,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
       const readKey = presentationRef.current;
       const finish = finishRef.current;
       const previousAnswer = lastAnswer.current ?? undefined;
-      const page = { ...(heldFrom.current === null ? {} : { from: heldFrom.current }), fresh: readKey !== validatedPresentation.current };
+      const page = { ...(heldFrom.current === null ? {} : { from: heldFrom.current }), history_id: previousAnswer?.history_id, fresh: readKey !== validatedPresentation.current };
       let generation = olderGeneration.current;
       try {
         let conversation;
@@ -1426,7 +1429,7 @@ export const ChatView = memo(function ChatView({ paneId, presentationKey, finish
           conversation = await fetchPaneConversation(paneId, page);
         } catch (cause) {
           // a new session or a Codex backtrack replaced the transcript the older pages came from
-          if (heldFrom.current === null || !(cause instanceof ApiError) || cause.status !== 409) throw cause;
+          if (!(cause instanceof ApiError) || cause.status !== 409) throw cause;
           if (cancelled || generation !== olderGeneration.current) return;
           dropOlder(); setState(EMPTY_STATE); setLoaded(false); signature.current = ""; lastAnswer.current = null;
           generation = olderGeneration.current;
