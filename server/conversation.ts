@@ -1479,7 +1479,10 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
       const fresh = await sessionSnapshot();
       const pane = fresh.panes.find((candidate) => candidate.pane_id === paneId);
       if (pane === undefined) throw new ConversationUnavailable("no_session_id");
-      const current = await copilotTranscriptPath(pane, fresh.panes);
+      // Peer checks await herdr, and the session can switch meanwhile: read this
+      // pane's own binding again once they are in, so the comparison sees the latest.
+      const { peerClaims } = await copilotTranscriptPath(pane, fresh.panes);
+      const current = await copilotTranscriptPath(pane, fresh.panes, peerClaims);
       if (current.path !== resolved.path || current.binding !== resolved.binding || copilotHistoryIdentity(resolved.path) !== history) {
         throw new ConversationUnavailable("no_session_path");
       }

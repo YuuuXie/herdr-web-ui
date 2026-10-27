@@ -475,6 +475,56 @@ it.skipIf(process.platform !== "linux")("reuses peer claims across conversation 
   }
 });
 
+it.skipIf(process.platform !== "linux")("does not retain the old history when the session switches while a failed read rechecks its peers", async () => {
+  const root = mkdtempSync(join(tmpdir(), "copilot-recheck-"));
+  const transcript = (id: string) => join(root, "session-state", id, "events.jsonl");
+  for (const id of [session, other]) {
+    mkdirSync(join(root, "session-state", id), { recursive: true });
+    writeFileSync(transcript(id), start + prompt(id));
+  }
+  mkdirSync(join(root, "logs"));
+  const log = join(root, "logs", `process-100-${process.pid}.log`);
+  // The lifecycle log counts only while this process holds it open, as Copilot does.
+  const held = fs.openSync(log, "a");
+  appendFileSync(log, register(session));
+  let failing = false;
+  let failed = false;
+  let switched = false;
+  const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } });
+  const info = spyOn(herdr, "paneProcessInfo").mockImplementation(async (paneId) => {
+    // The peer check of the recheck, after the read failed, is where the switch lands.
+    if (paneId === "peer") {
+      if (failed && !switched) { appendFileSync(log, register(other)); switched = true; }
+      return { pane_id: paneId, foreground_processes: [] };
+    }
+    return { pane_id: paneId, foreground_processes: [{ pid: process.pid, name: "copilot", argv: ["copilot"] }] };
+  });
+  const environment = spyOn(omo, "processEnviron").mockReturnValue([`COPILOT_HOME=${root}`]);
+  const snapshots = spyOn(herdr, "sessionSnapshot").mockResolvedValue({
+    panes: ["own", "peer"].map((pane_id) => ({ pane_id, agent: "copilot", cwd: root })), agents: [],
+  } as unknown as SessionSnapshot);
+  const readSync = fs.readSync;
+  const reads = spyOn(fs, "readSync").mockImplementation(((fd: number, ...rest: [NodeJS.ArrayBufferView, number, number, number | null]) => {
+    if (failing && rest[2] > 65536 && fs.readlinkSync(`/proc/self/fd/${fd}`) === transcript(session)) {
+      failed = true;
+      throw Object.assign(new Error("EIO"), { code: "EIO" });
+    }
+    return readSync(fd, ...rest);
+  }) as typeof fs.readSync);
+  try {
+    const shown = await paneConversation("own");
+    expect(shown.source).toBe("copilot-transcript");
+    appendFileSync(transcript(session), answer("long ".repeat(15000)));
+    failing = true;
+    await expect(paneConversation("own", undefined, { history_id: shown.history_id })).rejects.toMatchObject({ name: "ConversationUnavailable" });
+    expect(switched).toBe(true);
+  } finally {
+    reads.mockRestore(); snapshots.mockRestore(); environment.mockRestore(); info.mockRestore(); rpc.mockRestore();
+    fs.closeSync(held); forgetTranscriptState();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 it.skipIf(process.platform !== "linux")("uses only the process home and a canonical regular file with the matching native header", async () => {
   const root = mkdtempSync(join(tmpdir(), "copilot-store-"));
   const custom = join(root, "custom");
