@@ -5,7 +5,7 @@ import type { SeenFinish } from "./seen.ts";
 
 export const LOCAL_MACHINE = "local";
 export const BRIDGE_PROTOCOL = 1;
-export const REMOTE_BUNDLE_VERSION = "37";
+export const REMOTE_BUNDLE_VERSION = "38";
 export interface PaneTarget { machine_id: string; pane_id: string }
 export type MachineState = "connecting" | "connected" | "reconnecting" | "disconnected" | "error";
 export interface SshTarget {
@@ -63,6 +63,11 @@ export interface RemoteOvis {
   /** the HTTPS address it says Tailscale already serves it at, when it says so */
   url: string | null;
 }
+/**
+ * How a PC's error starts while its own Ovis is offered an update it can run (server/machines.ts ownUpdateOffered).
+ * Any other error beside that offer says why its last update failed, and the card shows it.
+ */
+export const OWN_UPDATE_OFFER = "This PC runs its own Ovis";
 /** GET /api/machines: with ?verify_source_boot=<id>, also that PC's freshly proved boot id */
 export interface MachineRoster { machines: Machine[]; verified_source_boot?: { machine_id: string; boot_id: string } }
 /**

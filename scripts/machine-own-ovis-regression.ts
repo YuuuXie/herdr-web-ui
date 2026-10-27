@@ -9,6 +9,8 @@ import { chromePath } from "./chrome-path.ts";
 // A PC whose own Ovis is older than this app: the card offers "Update this PC's Ovis to vX" when that
 // server can update itself, and shows the update running under its own title; when it cannot, the
 // card says why and where it answers: an https address it gave as a link, else its host and port to copy.
+// An update of it that failed is offered again with why it failed, and one that ended on another version
+// keeps where it answers (#2054).
 const snapshot = { version: "0.9.3", protocol: 22, focused_workspace_id: null, focused_tab_id: null, focused_pane_id: null, workspaces: [], tabs: [], panes: [], layouts: [], agents: [] };
 const local = { id: "local", name: "QA host", kind: "local", state: "connected", enabled: true, error: null, snapshot } as Machine;
 const updatable: RemoteOvis = { version: "0.4.16", latest_version: "0.4.18", updatable: true, reason: null, address: "qa.invalid:7317", url: null };
@@ -17,6 +19,8 @@ const offered: Machine = { ...local, id: "qa-remote", name: "QA remote", kind: "
   error: "This PC runs its own Ovis v0.4.16, older than this app. Update it to v0.4.18 to reconnect; it updates itself, and herdr sessions keep running." };
 const refused = (url: string | null): Machine => ({ ...offered, action_required: "setup", remote_ovis: { ...updatable, updatable: false, reason: refusal, url },
   error: `This socket uses an independently managed web server. Update it through its own Settings, then reconnect; it was left running. It cannot be updated from here: ${refusal}` });
+const failure = "That PC's Ovis could not update itself: bun install failed (exit 1) Check its Settings → Updates there, then reconnect.";
+const differs = "This PC's Ovis updated itself, but its version still differs from this app's (v36; this app requires v37). Update it on that PC (Settings → Updates), then reconnect; it was left running.";
 const updates: string[] = [];
 let roster: Machine[] = [local, offered];
 const streams = new Set<ReadableStreamDefaultController<Uint8Array>>();
@@ -59,12 +63,34 @@ try {
   await card.getByText("This PC's Ovis is older than this app", { exact: true }).waitFor({ timeout: 10_000 });
   await page.locator(".update-notice").getByText("QA remote's own Ovis needs an update to reconnect.", { exact: true }).waitFor();
   assert.equal(await page.getByText("Bridge update needed", { exact: true }).count(), 0, "not called a bridge this app installs");
+  // the offer's own sentence is not repeated as a reason
+  assert.equal(await card.locator(".machine-action-reason").count(), 0, "a plain offer shows no reason");
   await page.screenshot({ path: `${shots}/offer.png` });
   await card.getByRole("button", { name: "Update this PC's Ovis to v0.4.18", exact: true }).click();
   await card.getByText("Updating this PC's Ovis", { exact: true }).waitFor();
   await page.locator(".update-notice").getByText("Updating QA remote's own Ovis", { exact: false }).waitFor();
   assert.deepEqual(updates, [`/api/machines/${offered.id}/update-bridge`]);
   await page.screenshot({ path: `${shots}/updating.png` });
+
+  // its update failed: the card says so and why, and offers it again; the line under the header says it failed
+  roster = [local, { ...offered, error: failure }];
+  await page.reload();
+  await card.getByText("Updating this PC's Ovis failed", { exact: true }).waitFor({ timeout: 10_000 });
+  await card.getByText(failure, { exact: true }).waitFor();
+  await card.getByRole("button", { name: "Update this PC's Ovis to v0.4.18", exact: true }).waitFor();
+  await page.locator(".update-notice").getByText("Updating QA remote's own Ovis failed.", { exact: true }).waitFor();
+  assert.equal(await page.locator(".update-notice span[title]").getAttribute("title"), failure, "the line under the header holds why on hover");
+  await page.screenshot({ path: `${shots}/failed.png` });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.reload();
+  await page.locator(".update-notice").getByText("Updating QA remote's own Ovis failed.", { exact: true }).waitFor({ timeout: 10_000 });
+  await page.getByRole("button", { name: "Open workspace list", exact: true }).click();
+  await card.getByText(failure, { exact: true }).waitFor();
+  await page.waitForFunction(() => document.getAnimations().every((animation) => !(animation instanceof CSSTransition) || animation.playState !== "running"));
+  assert.equal(await card.evaluate((element) => { const box = element.getBoundingClientRect(); return box.left >= 0 && box.right <= innerWidth; }), true, "the failed card lies inside the phone's width");
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await page.screenshot({ path: `${shots}/failed-mobile.png` });
+  await page.setViewportSize({ width: 1280, height: 900 });
 
   // it cannot: why, and its address to copy, with no link that may not open from here
   roster = [local, refused(null)];
@@ -98,6 +124,17 @@ try {
   await page.locator(".update-notice").getByRole("button", { name: "Set up web access", exact: true }).waitFor();
   assert.equal(await page.getByRole("button", { name: /Update this PC's Ovis/ }).count(), 0);
   assert.equal(await card.getByText("Setup needed", { exact: true }).count(), 1);
+
+  // as the server tells it now: an update that ended on another version keeps where it answers, with why
+  await page.setViewportSize({ width: 1280, height: 900 });
+  roster = [local, { ...offered, action_required: "setup", error: differs, remote_ovis: { ...updatable, version: null, latest_version: null, updatable: false, reason: differs } }];
+  await page.reload();
+  await card.getByText("Update this PC's Ovis on that PC", { exact: true }).waitFor({ timeout: 10_000 });
+  await card.getByText(differs, { exact: true }).waitFor();
+  assert.equal(await card.locator(".machine-own-address code").textContent(), "qa.invalid:7317");
+  await page.locator(".update-notice").getByText("QA remote's own Ovis needs an update on that PC.", { exact: true }).waitFor();
+  assert.equal(await page.getByRole("button", { name: /Update this PC's Ovis/ }).count(), 0);
+  await page.screenshot({ path: `${shots}/differs.png` });
 
   // the https address it says Tailscale serves it at is the link
   await page.setViewportSize({ width: 1280, height: 900 });

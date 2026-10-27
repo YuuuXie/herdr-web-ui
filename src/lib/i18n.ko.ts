@@ -123,6 +123,7 @@ const BASE: Record<string, string> = {
   "Rename failed: {reason}": "이름 바꾸기 실패: {reason}",
 
   // ---- PCs sidebar ----
+  "Filter workspaces and agents": "워크스페이스와 에이전트 필터",
   "Connecting…": "연결 중…",
   "Connected": "연결됨",
   "Reconnecting…": "재연결 중…",
