@@ -1475,13 +1475,17 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
     if (resolved.source !== "copilot-transcript" || prefix === null || !(error instanceof ConversationUnavailable) || error.message !== "transcript_missing") throw error;
     // A read failure is not an empty conversation. Only a fresh, matching binding
     // and file generation permit retaining the view; never reuse peer claims here.
-    const fresh = await sessionSnapshot();
-    const pane = fresh.panes.find((candidate) => candidate.pane_id === paneId);
-    if (pane === undefined) throw new ConversationUnavailable("no_session_id");
-    const current = await copilotTranscriptPath(pane, fresh.panes);
-    if (current.path !== resolved.path || current.binding !== resolved.binding || copilotHistoryIdentity(resolved.path) !== history) {
-      if (page.before !== undefined || page.since !== undefined || page.from !== undefined) throw new HistoryChanged();
-      throw new ConversationUnavailable("no_session_path");
+    try {
+      const fresh = await sessionSnapshot();
+      const pane = fresh.panes.find((candidate) => candidate.pane_id === paneId);
+      if (pane === undefined) throw new ConversationUnavailable("no_session_id");
+      const current = await copilotTranscriptPath(pane, fresh.panes);
+      if (current.path !== resolved.path || current.binding !== resolved.binding || copilotHistoryIdentity(resolved.path) !== history) {
+        throw new ConversationUnavailable("no_session_path");
+      }
+    } catch (cause) {
+      if (cause instanceof ConversationUnavailable && (page.before !== undefined || page.since !== undefined || page.from !== undefined)) throw new HistoryChanged();
+      throw cause;
     }
     // Unpaged refreshes otherwise carry no proof of which history is on screen.
     // Older clients without it keep their fail-closed fallback behavior.

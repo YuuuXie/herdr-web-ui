@@ -400,12 +400,16 @@ it.skipIf(process.platform !== "linux")("retries failed Copilot page reads only 
     expect((await (await fetch(url)).json()).source).toBe("scrollback");
     writeFileSync(file(session), fixture(session, "recovered history")
       + Array.from({ length: 55 }, (_, i) => event("user.message", { content: `recovered prompt ${i}` })).join(""));
-    await fetch(url);
-    append(); fail = true; onFailure = () => lifecycle(session, "Unregistering");
-    const revoked = await fetch(url);
-    expect(fail).toBe(false);
-    expect(revoked.status).toBe(200);
-    expect(await revoked.json()).toEqual({ source: "scrollback", turns: [] });
+    for (const selector of ["", "from", "before"]) {
+      lifecycle(session);
+      const before = await (await fetch(url)).json() as { cursor: string };
+      expect(before.cursor).toBeString();
+      append(); fail = true; onFailure = () => lifecycle(session, "Unregistering");
+      const revoked = await fetch(url + (selector ? `&${selector}=${encodeURIComponent(before.cursor)}` : ""));
+      expect(fail).toBe(false);
+      expect(revoked.status).toBe(selector ? 409 : 200);
+      if (!selector) expect(await revoked.json()).toEqual({ source: "scrollback", turns: [] });
+    }
     for (const paged of [false, true]) {
       lifecycle(session);
       const before = await (await fetch(url)).json() as { cursor: string };
@@ -436,6 +440,18 @@ it.skipIf(process.platform !== "linux")("retries failed Copilot page reads only 
     expect(fail).toBe(false);
     expect(replacedBeforeRead.status).toBe(409);
     expect((await (await fetch(url)).json()).history_id).not.toBe(displayed.history_id);
+    for (const selector of ["from", "before"]) {
+      writeFileSync(file(session), fixture(session, "file removed during the read")
+        + Array.from({ length: 55 }, (_, i) => event("user.message", { content: `prompt ${i}` })).join(""));
+      lifecycle(session);
+      const before = await (await fetch(url)).json() as { cursor: string };
+      expect(before.cursor).toBeString();
+      append(); fail = true; onFailure = () => rmSync(file(session));
+      const missing = await fetch(`${url}&${selector}=${encodeURIComponent(before.cursor)}`);
+      expect(fail).toBe(false);
+      expect(missing.status).toBe(409);
+      expect((await missing.json()).error.code).toBe("history_changed");
+    }
   } finally { reads?.mockRestore(); await workspaceClose(created.workspace.workspace_id); }
 }, 20_000);
 
