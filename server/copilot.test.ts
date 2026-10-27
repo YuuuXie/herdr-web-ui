@@ -661,21 +661,57 @@ for (const scenario of ["one append", "two appends", "rewrite"] as const) {
 }
 
 for (const seen of ["an unregister", "another session's register"] as const) {
-it.skipIf(process.platform !== "linux")(`keeps ${seen} seen during a raced first read when the log is rewritten to its first prefix`, async () => {
+  it.skipIf(process.platform !== "linux")(`keeps ${seen} seen during a raced first read when the log is rewritten to its first prefix`, async () => {
+    const fixture = await logFixture([session]);
+    const { log, environment, pid } = fixture;
+    const realRead = fs.readSync;
+    // the unregister lands during the first read, so the second read's own bytes include it and
+    // only the ordinary append during that second read makes it conflict
+    const appends = [seen === "an unregister" ? register(session, "Unregistering") : register(crypto.randomUUID()), "concurrent ordinary append\n"];
+    function concurrentRead(fd: number, buffer: NodeJS.ArrayBufferView, offset: number, length: number, position: fs.ReadPosition | null): number;
+    function concurrentRead(fd: number, buffer: NodeJS.ArrayBufferView, options?: fs.ReadSyncOptions): number;
+    function concurrentRead(fd: number, buffer: NodeJS.ArrayBufferView, offset?: number | fs.ReadSyncOptions, length?: number, position?: fs.ReadPosition | null): number {
+      const count = typeof offset === "number" ? realRead(fd, buffer, offset, length!, position ?? null) : realRead(fd, buffer, offset);
+      const next = appends[0];
+      if (next !== undefined && fs.readlinkSync(`/proc/self/fd/${fd}`) === log) {
+        appends.shift();
+        appendFileSync(log, next);
+      }
+      return count;
+    }
+    let reads: ReturnType<typeof spyOn<typeof fs, "readSync">> | undefined;
+    try {
+      appendFileSync(log, "CLI started\n");
+      reads = spyOn(fs, "readSync").mockImplementation(concurrentRead);
+      expect(copilotProcessSession(environment, ["copilot"], pid)).toBeNull();
+      expect(appends).toHaveLength(0);
+      reads.mockRestore();
+      // the second raced read saw the unregister; a rewrite that keeps only the first read's bytes
+      // must not bring the marker fallback back
+      writeFileSync(log, "CLI started\nrewritten line\n");
+      expect(copilotProcessSession(environment, ["copilot"], pid)).toBeNull();
+    } finally { reads?.mockRestore(); await fixture.close(); }
+  });
+}
+
+it.skipIf(process.platform !== "linux")("does not take a log rewritten during a raced bootstrap's next read as its continuation", async () => {
   const fixture = await logFixture([session]);
   const { log, environment, pid } = fixture;
   const realRead = fs.readSync;
-  // the unregister lands during the first read, so the second read's own bytes include it and
-  // only the ordinary append during that second read makes it conflict
-  const appends = [seen === "an unregister" ? register(session, "Unregistering") : register(crypto.randomUUID()), "concurrent ordinary append\n"];
+  const appends = [register(session, "Unregistering"), "concurrent ordinary append\n"];
+  let rewrite = false;
   function concurrentRead(fd: number, buffer: NodeJS.ArrayBufferView, offset: number, length: number, position: fs.ReadPosition | null): number;
   function concurrentRead(fd: number, buffer: NodeJS.ArrayBufferView, options?: fs.ReadSyncOptions): number;
   function concurrentRead(fd: number, buffer: NodeJS.ArrayBufferView, offset?: number | fs.ReadSyncOptions, length?: number, position?: fs.ReadPosition | null): number {
     const count = typeof offset === "number" ? realRead(fd, buffer, offset, length!, position ?? null) : realRead(fd, buffer, offset);
-    const next = appends[0];
-    if (next !== undefined && fs.readlinkSync(`/proc/self/fd/${fd}`) === log) {
-      appends.shift();
-      appendFileSync(log, next);
+    if (fs.readlinkSync(`/proc/self/fd/${fd}`) === log) {
+      const next = appends.shift();
+      if (next !== undefined) appendFileSync(log, next);
+      else if (rewrite) {
+        rewrite = false;
+        // in place, after this call's first read of the log: the bytes it got are no longer the file
+        writeFileSync(log, "rewritten\n" + "o".repeat(200) + "\n");
+      }
     }
     return count;
   }
@@ -685,14 +721,13 @@ it.skipIf(process.platform !== "linux")(`keeps ${seen} seen during a raced first
     reads = spyOn(fs, "readSync").mockImplementation(concurrentRead);
     expect(copilotProcessSession(environment, ["copilot"], pid)).toBeNull();
     expect(appends).toHaveLength(0);
+    rewrite = true;
+    expect(copilotProcessSession(environment, ["copilot"], pid)).toBeNull();
+    expect(rewrite).toBe(false);
     reads.mockRestore();
-    // the second raced read saw the unregister; a rewrite that keeps only the first read's bytes
-    // must not bring the marker fallback back
-    writeFileSync(log, "CLI started\nrewritten line\n");
     expect(copilotProcessSession(environment, ["copilot"], pid)).toBeNull();
   } finally { reads?.mockRestore(); await fixture.close(); }
 });
-}
 
 for (const registered of [false, true]) {
   it.skipIf(process.platform !== "linux")(`revalidates ${registered ? "registered" : "marker"} evidence after temporary stat failure`, async () => {

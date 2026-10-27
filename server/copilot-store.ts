@@ -127,15 +127,17 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[]): Fore
             && size >= cached.size && size - cached.size <= LOG_WINDOW_BYTES
             && (size !== cached.size || (stat.mtimeNs === cached.mtimeNs && stat.ctimeNs === cached.ctimeNs))
             && prefix?.copy().digest("hex") === cached.hash.copy().digest("hex");
-          const initial = owner.initialRead;
-          // A raced bootstrap is still initial only while all bytes already seen
-          // remain in the same process-owned file. A lost/replaced log revokes it.
-          const initialContinues = initial?.dev === stat.dev && initial.ino === stat.ino && initial.path === target
-            && size >= initial.size && logPrefix(fd, initial.size)?.digest("hex") === initial.hash;
           const epoch = same ? cached.epoch : randomUUID();
           const start = same ? cached.size : Math.max(0, size - LOG_WINDOW_BYTES);
           const bytes = Buffer.alloc(size - start);
           const read = readSync(fd, bytes, 0, bytes.length, start);
+          const initial = owner.initialRead;
+          // A raced bootstrap is still initial only while the bytes this read returned begin with
+          // every byte already seen, in the same process-owned file. Judged from those bytes, not
+          // a separate read, so a rewrite between two reads cannot pass. A lost/replaced log revokes it.
+          const initialContinues = initial !== undefined && start === 0 && initial.dev === stat.dev && initial.ino === stat.ino
+            && initial.path === target && read >= initial.size
+            && createHash("sha256").update(bytes.subarray(0, initial.size)).digest("hex") === initial.hash;
           const hash = same ? prefix : logPrefix(fd, start);
           const after = fstatSync(fd, { bigint: true });
           if (read !== bytes.length || hash === null || after.size !== stat.size
