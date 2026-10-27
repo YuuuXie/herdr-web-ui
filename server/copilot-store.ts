@@ -21,7 +21,8 @@ interface ForegroundCheckpoint {
   hash: Hash; epoch: string; binding: ForegroundBinding | null | undefined; unregistered: ForegroundBinding | null; readConflict?: true;
 }
 const foregroundCheckpoints = new Map<number, ForegroundCheckpoint>();
-const foregroundLogProcesses = new Map<number, { started: number; observed: boolean }>();
+interface InitialLogRead { dev: bigint; ino: bigint; path: string; size: number; hash: string }
+const foregroundLogProcesses = new Map<number, { started: number; observed: boolean; initialRead?: InitialLogRead }>();
 
 /** Revalidate every consumed byte: unchanged boundary samples cannot prove an append. */
 function logPrefix(fd: number, size: number): Hash | null {
@@ -73,6 +74,7 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[]): Fore
     owner.observed = true;
   };
   const unavailable = (): undefined => {
+    delete owner.initialRead;
     const checkpoint = foregroundCheckpoints.get(pid);
     if (checkpoint) { checkpoint.binding = undefined; checkpoint.unregistered = null; }
     return undefined;
@@ -129,11 +131,24 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[]): Fore
           const start = same ? cached.size : Math.max(0, size - LOG_WINDOW_BYTES);
           const bytes = Buffer.alloc(size - start);
           const read = readSync(fd, bytes, 0, bytes.length, start);
+          const initial = owner.initialRead;
+          // A raced bootstrap is still initial only while the bytes this read returned begin with
+          // every byte already seen, in the same process-owned file. Judged from those bytes, not
+          // a separate read, so a rewrite between two reads cannot pass. A lost/replaced log revokes it.
+          const initialContinues = initial !== undefined && start === 0 && initial.dev === stat.dev && initial.ino === stat.ino
+            && initial.path === target && read >= initial.size
+            && createHash("sha256").update(bytes.subarray(0, initial.size)).digest("hex") === initial.hash;
           const hash = same ? prefix : logPrefix(fd, start);
           const after = fstatSync(fd, { bigint: true });
           if (read !== bytes.length || hash === null || after.size !== stat.size
             || after.mtimeNs !== stat.mtimeNs || after.ctimeNs !== stat.ctimeNs) {
             if (cached) cached.readConflict = true;
+            // A later raced read extends the protected prefix while it still starts with the first one,
+            // so a rewrite back to an earlier prefix cannot drop lifecycle lines read in between.
+            else if ((!observedBefore || initialContinues) && start === 0 && read === bytes.length && hash !== null) {
+              owner.initialRead = { dev: stat.dev, ino: stat.ino, path: target, size,
+                hash: hash.copy().update(bytes).digest("hex") };
+            } else delete owner.initialRead;
             return LOG_READ_CHANGED;
           }
           const text = bytes.subarray(0, read).toString("utf8");
@@ -141,7 +156,7 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[]): Fore
           const complete = text.slice(skip, text.lastIndexOf("\n") + 1);
           if (start > 0 && !complete && !same) return unavailable();
           // Only a complete initial log without lifecycle evidence permits marker/report fallback.
-          let selected = same ? cached.binding : start === 0 && !observedBefore ? null : undefined;
+          let selected = same ? cached.binding : start === 0 && (!observedBefore || initialContinues) ? null : undefined;
           let unregistered = same ? cached.unregistered : null;
           let position = start + Buffer.byteLength(text.slice(0, skip));
           for (const line of complete.split("\n")) {
@@ -170,9 +185,19 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[]): Fore
             dev: stat.dev, ino: stat.ino, path: target, size: start + completeBytes,
             observedSize: size, mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs, checkedAtNs, pendingSwitch, hash, epoch, binding: selected, unregistered,
           });
+          delete owner.initialRead;
           found = pendingSwitch ? undefined : selected === undefined && unregistered ? VERIFIED_UNREGISTER : selected;
         } finally { closeSync(fd); }
-      } catch { return unavailable(); }
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ENOENT" || code === "EINTR" || code === "EAGAIN" || code === "EBUSY" || code === "EIO" || code === "ESTALE") {
+          // Retain revalidation context, not permission to serve the old binding.
+          const cached = foregroundCheckpoints.get(pid);
+          if (cached) cached.readConflict = true;
+          return LOG_READ_CHANGED;
+        }
+        return unavailable();
+      }
     }
   } finally { directory.closeSync(); }
   return !logFound && owner.observed ? unavailable() : found;
