@@ -1,8 +1,8 @@
 import { ConnectionDiagnostics } from "./connection-diagnostics.ts";
-import { COPILOT_UNAVAILABLE_REASONS, ConversationReadPending, ConversationUnavailable } from "./conversation-shared.ts";
+import { UNAVAILABLE_DIAGNOSTICS, ConversationReadPending, ConversationUnavailable } from "./conversation-shared.ts";
 
 const REASONS = [
-  ...COPILOT_UNAVAILABLE_REASONS, "branch_unreadable", "transcript_missing", "no_session_path",
+  ...UNAVAILABLE_DIAGNOSTICS, "branch_unreadable", "transcript_missing", "no_session_path",
   "no_session_id", "no_recognized_transcript", "pane_not_found", "session_not_written", "copilot_resume_unknown",
 ];
 /** A pane with no agent conversation (a plain shell): its scrollback is the expected view, not a failure. */

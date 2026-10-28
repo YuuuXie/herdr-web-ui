@@ -64,6 +64,16 @@ it("keeps episodes apart while the line budget is spent", () => {
   expect(records()[16].episode_id).not.toBe(records()[0].episode_id);
 });
 
+it("keeps an agent pane without a folder in its failure episode", () => {
+  const { diagnostics, records, advance } = fixture();
+  diagnostics.unavailable("copilot", new ConversationUnavailable("no_session_path", undefined, "copilot_process_lookup_failed"));
+  diagnostics.unavailable("copilot", new ConversationUnavailable("no_recognized_transcript", undefined, "agent_cwd_missing"));
+  advance(30_000);
+  diagnostics.unavailable("copilot", new ConversationUnavailable("no_recognized_transcript", undefined, "agent_cwd_missing"));
+  expect(records().map((record) => record.event)).toEqual(["conversation.failed", "conversation.failed"]);
+  expect(records()[1]).toMatchObject({ operation: "conversation.agent_cwd_missing", episode_id: records()[0].episode_id, failures: 3 });
+});
+
 it("does not count a pane without an agent conversation as a failure", () => {
   const { diagnostics, records } = fixture();
   for (let i = 0; i < 50; i++) diagnostics.unavailable(`shell-${i}`, new ConversationUnavailable("no_recognized_transcript"));

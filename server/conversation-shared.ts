@@ -15,10 +15,12 @@ export const COPILOT_UNAVAILABLE_REASONS = [
   "copilot_peer_process_replaced", "copilot_handoff_unproved", "copilot_peer_conflict",
   "copilot_foreground_unproved", "copilot_resume_unproved",
 ] as const;
+/** Fixed stages a diagnostic may name: Copilot's rejections, and an agent pane herdr gives no folder. */
+export const UNAVAILABLE_DIAGNOSTICS = [...COPILOT_UNAVAILABLE_REASONS, "agent_cwd_missing"] as const;
 
 export class ConversationUnavailable extends Error {
   /** `screen`: the model and effort the agent's own live status line states (start-screen.ts), for the scrollback standing in */
-  constructor(reason: string, readonly screen?: ConversationMetadata, readonly diagnostic?: typeof COPILOT_UNAVAILABLE_REASONS[number]) {
+  constructor(reason: string, readonly screen?: ConversationMetadata, readonly diagnostic?: typeof UNAVAILABLE_DIAGNOSTICS[number]) {
     super(reason);
     this.name = "ConversationUnavailable";
   }
