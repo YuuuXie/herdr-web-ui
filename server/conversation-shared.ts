@@ -10,9 +10,15 @@ import type { ConversationMetadata, ConversationTurn } from "../shared/protocol.
  */
 export const TRANSCRIPT_WINDOW_BYTES = 16 * 1024 * 1024;
 
+export const COPILOT_UNAVAILABLE_REASONS = [
+  "copilot_report_invalid", "copilot_process_lookup_failed", "copilot_process_set_unproved",
+  "copilot_peer_process_replaced", "copilot_handoff_unproved", "copilot_peer_conflict",
+  "copilot_foreground_unproved", "copilot_resume_unproved",
+] as const;
+
 export class ConversationUnavailable extends Error {
   /** `screen`: the model and effort the agent's own live status line states (start-screen.ts), for the scrollback standing in */
-  constructor(reason: string, readonly screen?: ConversationMetadata) {
+  constructor(reason: string, readonly screen?: ConversationMetadata, readonly diagnostic?: typeof COPILOT_UNAVAILABLE_REASONS[number]) {
     super(reason);
     this.name = "ConversationUnavailable";
   }

@@ -535,12 +535,12 @@ it.skipIf(process.platform !== "linux")("retries a failed Copilot process lookup
     expect(changed.turns[0]?.parts[0]).toEqual({ kind: "text", text: "changed history" });
     unavailable = true;
     ownCalls = 0;
-    await expect(paneConversation("own")).rejects.toBeInstanceOf(ConversationUnavailable);
+    await expect(paneConversation("own")).rejects.toMatchObject({ diagnostic: "copilot_process_lookup_failed", message: "no_session_path" });
     expect(ownCalls).toBe(2);
     unavailable = false;
     empty = true;
     ownCalls = 0;
-    await expect(paneConversation("own")).rejects.toBeInstanceOf(ConversationUnavailable);
+    await expect(paneConversation("own")).rejects.toMatchObject({ diagnostic: "copilot_process_set_unproved", message: "no_session_path" });
     expect(ownCalls).toBe(1);
   } finally {
     info.mockRestore(); environment.mockRestore(); rpc.mockRestore(); snapshots.mockRestore();
