@@ -110,6 +110,7 @@ export const SETTINGS_KO: Record<string, string> = {
   "hide PCs on this device": "이 기기에서 PC 숨기기",
   "Connect another PC over an SSH alias or user@host. Its workspaces join the sidebar.": "SSH 별칭이나 user@host로 다른 PC를 연결합니다. 연결한 PC의 워크스페이스는 사이드바에 함께 보입니다.",
   "Saved PC data was damaged and could not be read when the app started. It was set aside as {files}; add any missing PC again.": "저장된 PC 데이터가 손상되어 앱을 시작할 때 읽을 수 없었습니다. {files}(으)로 옮겨 두었으니, 빠진 PC는 다시 추가하세요.",
+  "The permission to connect to the PCs saved in herdr was damaged and could not be read when the app started. It was set aside as {files}; choose Connect on those PCs again.": "herdr에 저장된 PC의 연결 허용 정보가 손상되어 앱을 시작할 때 읽을 수 없었습니다. {files}(으)로 옮겨 두었으니, 그 PC에서 연결을 다시 선택하세요.",
   "Update PC bridges automatically": "PC 브리지 자동 업데이트",
   "When an app update needs a newer bridge, PCs that connect with their saved key are updated in the background. PCs that need a password ask first.": "앱 업데이트에 새 브리지가 필요하면, 저장된 키로 연결되는 PC는 뒤에서 업데이트됩니다. 비밀번호가 필요한 PC는 먼저 묻습니다.",
   "Sign out": "로그아웃",

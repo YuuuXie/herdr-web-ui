@@ -47,6 +47,33 @@ describe("read finishes shared by the browsers of a server", () => {
   });
 
 
+  it("leaves out and drops the finishes of a PC's herdr run that ended, and keeps a PC's whose epoch it does not know", async () => {
+    const dir = root();
+    const old = { ...finish("a", 4), epoch: "e0" };
+    const remote = { ...finish("a", 2), pc: "remote", epoch: "r0" };
+    new SeenStore(dir).record(old);
+    new SeenStore(dir).record(remote);
+    new SeenStore(dir).record(finish("b", 1));
+    const epochs = new Map([["local", "e1"]]);
+    const store = new SeenStore(dir, () => epochs);
+    const told: SeenFinish[] = [];
+    store.subscribe((changed) => told.push(changed));
+    // GET and the events stream's first `seen` frame both read list()
+    expect(store.list()).toEqual([remote, finish("b", 1)]);
+    expect(await (await handleSeenRequest(new Request("http://x/api/seen"), store)).json()).toEqual({ finishes: [remote, finish("b", 1)] });
+    // a finish of the run that ended is answered as sent and neither kept nor told
+    expect(await (await post(store, JSON.stringify({ ...old, id: 5 }))).json()).toEqual({ ...old, id: 5 });
+    expect(told).toEqual([]);
+    expect(JSON.parse(readFileSync(join(dir, "seen.json"), "utf8"))).toEqual([old, remote, finish("b", 1)]);
+    // the next change writes the file without it
+    store.record(finish("c", 1));
+    expect(JSON.parse(readFileSync(join(dir, "seen.json"), "utf8"))).toEqual([remote, finish("b", 1), finish("c", 1)]);
+    expect(told).toEqual([finish("c", 1)]);
+    // a PC's new run leaves its own older run behind as well
+    epochs.set("remote", "r1");
+    expect(store.list()).toEqual([finish("b", 1), finish("c", 1)]);
+  });
+
   it("answers GET and POST, and refuses what is not a read finish", async () => {
     const store = new SeenStore(root());
     const answered = await post(store, JSON.stringify(finish("a", 3)));

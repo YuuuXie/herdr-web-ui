@@ -110,6 +110,7 @@ export const SETTINGS_ZH: Record<string, string> = {
   "hide PCs on this device": "在此设备上隐藏 PC",
   "Connect another PC over an SSH alias or user@host. Its workspaces join the sidebar.": "通过 SSH 别名或 user@host 连接另一台 PC。连接后，它的工作区会显示在侧栏中。",
   "Saved PC data was damaged and could not be read when the app started. It was set aside as {files}; add any missing PC again.": "已保存的 PC 数据已损坏，应用启动时无法读取，已另存为 {files}。请重新添加缺少的 PC。",
+  "The permission to connect to the PCs saved in herdr was damaged and could not be read when the app started. It was set aside as {files}; choose Connect on those PCs again.": "herdr 中保存的 PC 的连接许可已损坏，应用启动时无法读取，已另存为 {files}。请在这些 PC 上再次选择“连接”。",
   "Update PC bridges automatically": "自动更新 PC 的 bridge",
   "When an app update needs a newer bridge, PCs that connect with their saved key are updated in the background. PCs that need a password ask first.": "当应用更新需要更新的 bridge 时，使用已保存密钥连接的 PC 会在后台更新。需要密码的 PC 会先询问。",
   "Sign out": "退出登录",

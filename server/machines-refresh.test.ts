@@ -289,6 +289,20 @@ describe("machine snapshot refresh races", () => {
     expect(runtime.machine.snapshot?.panes[0]?.finish_id).toBe(4);
   });
 
+  it("names a remote PC's finish epoch for read finishes only once the PC told it, never from a saved snapshot", async () => {
+    const { manager, drive } = await fixture();
+    const saved = { ...snapshot("done"), finish_epoch: "saved-run" };
+    drive.machines.set("saved", drive.runtime({ id: "saved", name: "Saved PC", kind: "ssh", enabled: true, state: "disconnected", error: null, snapshot: saved }));
+    expect(manager.list().find((machine) => machine.id === "saved")?.snapshot?.finish_epoch).toBe("saved-run");
+    expect(manager.finishEpochs().has("saved")).toBe(false);
+
+    const { manager: live, drive: liveDrive, remote, runtime } = await remoteFixture();
+    const current = { ...snapshot("done"), finish_epoch: "remote-server" };
+    remote.set(current);
+    await liveDrive.refresh(runtime);
+    expect(live.finishEpochs().get("remote")).toBe("remote-server");
+  });
+
   it("keeps a newer local status and retries the invalidated snapshot", async () => {
     const { manager, drive, local, rosters } = await fixture();
     local.hold();
@@ -1025,8 +1039,19 @@ describe("workspace order evidence through the manager", () => {
 
 describe("saving a remote PC's snapshot", () => {
   it("rewrites machines.json durably, and only when a refresh changed what it holds", async () => {
+    // a refresh asks for a save after a short wait (saveSoon): the callback of the timer it armed runs here at once.
+    // Timers are recorded from the start, since the fixture's own first read already arms one.
+    const callbacks = new Map<unknown, () => void>();
+    const realSetTimeout = globalThis.setTimeout;
+    const timers = spyOn(globalThis, "setTimeout");
+    cleanups.push(() => timers.mockRestore());
+    timers.mockImplementation(((callback: () => void, ms?: number, ...args: unknown[]) => {
+      const timer = realSetTimeout(callback, ms, ...args);
+      callbacks.set(timer, callback);
+      return timer;
+    }) as unknown as typeof setTimeout);
     const { manager, drive, remote, runtime } = await remoteFixture();
-    const internals = manager as unknown as { stateDir: string; saveTimer?: unknown };
+    const internals = manager as unknown as { stateDir: string; saveTimer?: ReturnType<typeof setTimeout> };
     // each durable write creates its temporary file exclusively ("wx") and fsyncs it
     const temporaries: string[] = [];
     const open = spyOn(privateStateFs, "openSync");
@@ -1036,10 +1061,13 @@ describe("saving a remote PC's snapshot", () => {
       if (flags === "wx" && path.includes("machines.json")) temporaries.push(path);
       return openSync(path, flags, mode);
     }) as typeof openSync);
-    // a refresh saves after a short wait (saveSoon): a save is done once its timer is gone
     const refreshed = async () => {
       await drive.refresh(runtime);
-      for (let attempt = 0; attempt < 200 && internals.saveTimer !== undefined; attempt++) await Bun.sleep(25);
+      const timer = internals.saveTimer;
+      const save = callbacks.get(timer);
+      expect(save).toBeDefined();
+      clearTimeout(timer);
+      save!();
       expect(internals.saveTimer).toBeUndefined();
     };
     const saved = () => JSON.parse(readFileSync(join(internals.stateDir, "machines.json"), "utf8")) as { snapshot: SessionSnapshot | null }[];

@@ -460,6 +460,9 @@ export type ConversationPart =
   /** a message the agent's runtime put in the user's seat (gjc's background-job result): it starts a turn, nobody typed it.
    * `source`: the runtime's name for it (pi's customType, e.g. "async-result", "irc:incoming", "omo-model-profile:unavailable") */
   | { kind: "notice"; text: string; source?: string }
+  /** a shell command the user ran without the model (Claude Code's `!` bash mode), and what it printed: no stdout or
+   * stderr until the agent records them */
+  | { kind: "shell"; command: string; stdout?: string; stderr?: string }
   /** OmO's background tasks that ended, as OmO reported them back to the agent, or a Claude Code subagent that ended (its task notification): it starts a turn, nobody typed it */
   | { kind: "task_result"; tasks: OmoTaskResult[] };
 
@@ -677,8 +680,15 @@ export interface InteractivePrompt {
   body: string | null;
   options: InteractivePromptOption[];
   multi_select: boolean;
+  /** `markdown`: the question and the options' labels and descriptions are the agent's own Markdown
+   * (omp's open ask call, once the screen's menu proves it is that call). Absent: plain text, as drawn */
+  text_format?: "markdown";
   /** Native OpenCode question explicitly marked required: false; an empty answer skips it. */
   optional?: true;
+  /** A multi-select whose typed answer goes with its checks in one answer (pi-ask's ask_user; OpenCode's native form says so by its agent). */
+  checks_with_text?: true;
+  /** Moving between steps saves the step's unsent edits on the server (pi-ask's ask_user): a step button never waits for them. */
+  drafts_saved?: true;
   /** index of the "type your own answer" option, when the menu has one */
   custom_option_index: number | null;
   /** a question in Codex's queue while Codex keeps working: only the card answers it. Collapsed,
@@ -704,6 +714,14 @@ export interface InteractivePrompt {
   fallback?: true;
   /** Claude's plan file behind a plan card, whose whole text is then the body: opened in the file viewer */
   plan_file?: string;
+  /**
+   * Claude's own words drawn over its question on the pane's screen, paragraphs parted by a blank line;
+   * lines the pane wrapped are joined back only between plain prose, every other break kept as drawn. Claude Code (2.1.311) writes them to its session file only
+   * with the answer, so until then the card shows them, as read off the screen. Absent when the
+   * screen shows no words of Claude's right over the question, or not where they start; not part
+   * of the card's id.
+   */
+  screen_words?: string;
   /**
    * The card's own words, which the bridge wrote rather than read off the agent's screen (an Esc
    * offered as Close, a fallback card's title): for each such field above, its English as a key with

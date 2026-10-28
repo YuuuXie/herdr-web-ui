@@ -64,6 +64,8 @@ const TAIL_BYTES = 64 * 1024;
 const MAX_APPEND_BYTES = 32 * 1024 * 1024;
 /** Permanent for this anchor: retrying cannot shrink its append or retained history. */
 class PiDeliveryBudgetExceeded extends Error {}
+/** A writer may pause between chunks without changing stat during this capture attempt. */
+class PiDeliveryIncomplete extends Error {}
 const identity = (stat: NonNullable<ReturnType<typeof statSync>>): string => `${stat.dev}:${stat.ino}`;
 const fileId = (path: string): string | null => {
   try { const stat = statSync(path); return stat.isFile() ? identity(stat) : null; }
@@ -114,7 +116,7 @@ function parseEntry(bytes: Buffer, start: number, end: number): BranchEntry {
 
 /** Read just the final complete record, not the old branch or the shared tree index. */
 function lastEntry(fd: number, size: number): BranchEntry {
-  if (size === 0 || bytesAt(fd, size - 1, 1)[0] !== 0x0a) throw new Error("Partial Pi entry");
+  if (size === 0 || bytesAt(fd, size - 1, 1)[0] !== 0x0a) throw new PiDeliveryIncomplete("Partial Pi entry");
   let start = size - 1;
   const parts: Buffer[] = [];
   while (start > 0) {
@@ -168,9 +170,9 @@ export function capturePiDeliveryAnchorAttempt(path: string, allowMissing = fals
     const prefix = tailAt(fd, before.size), file = identity(before);
     if (!stable(fd, path, file, before.size, prefix)) return { anchor: null, retry: true };
     return { anchor: { path, file, session, leaf: leaf.start === 0 ? null : leaf.id, size: before.size, prefix }, retry: false };
-  } catch {
+  } catch (error) {
     const current = (() => { try { return statSync(path); } catch { return null; } })();
-    const retry = before !== undefined && current !== null && (identity(current) !== identity(before) || current.size !== before.size || current.mtimeMs !== before.mtimeMs || current.ctimeMs !== before.ctimeMs);
+    const retry = error instanceof PiDeliveryIncomplete || before !== undefined && current !== null && (identity(current) !== identity(before) || current.size !== before.size || current.mtimeMs !== before.mtimeMs || current.ctimeMs !== before.ctimeMs);
     return { anchor: allowMissing && expectedSession && before === undefined && fileId(path) === null
       ? { path, file: null, session: expectedSession, leaf: null, size: 0, prefix: "" } : null, retry };
   } finally { if (fd !== undefined) closeSync(fd); }
@@ -181,7 +183,7 @@ export function capturePiDeliveryAnchor(path: string, allowMissing = false, expe
   return capturePiDeliveryAnchorAttempt(path, allowMissing, expectedSession).anchor;
 }
 
-/** Retry only snapshots invalidated by a concurrent write. An unreadable transcript fails at once. */
+/** Retry incomplete records and snapshots invalidated by a concurrent write. Unreadable transcripts fail at once. */
 export async function capturePiDeliveryAnchorRetrying(path: string, allowMissing = false, expectedSession?: string,
   capture: typeof capturePiDeliveryAnchorAttempt = capturePiDeliveryAnchorAttempt,
   // fixed wait: bounded backoff lets an in-flight Pi append settle before retrying its snapshot

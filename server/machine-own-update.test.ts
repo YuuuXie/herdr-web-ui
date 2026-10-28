@@ -103,6 +103,8 @@ function pc(remote: Remote, options: { registered?: boolean; autoUpdate?: boolea
   };
   /** the next roster read at an SSH destination waits for its release, which answers it, fails it with a status, or gives another roster */
   const heldSessions = new Map<string, { reached: ReturnType<typeof Promise.withResolvers<void>>; gate: ReturnType<typeof Promise.withResolvers<number | object>> }>();
+  /** the next health call at an SSH destination waits for its release, which answers the boot id of the server there */
+  const heldHealth = new Map<string, { reached: ReturnType<typeof Promise.withResolvers<void>>; gate: ReturnType<typeof Promise.withResolvers<string>> }>();
   SshConnection.prototype.forward = async function (this: SshConnection, local: number, port: number) {
     expect(port).toBe(REGISTERED_PORT);
     // what answers there tells which address it is: the PC's own, or another its dialog was given
@@ -135,6 +137,10 @@ function pc(remote: Remote, options: { registered?: boolean; autoUpdate?: boolea
       }
       if (path === "/api/bridge" && heldBridge) { const held = heldBridge; heldBridge = null; held.reached.resolve(); await held.gate.promise; }
       if (path === "/api/bridge") return Response.json({ ...descriptor, ...(restarted && remote.replacementLiveBundle ? { bundle_version: remote.replacementLiveBundle } : {}), socket_id: "fixture:1", herdr: { version: at === "fixture@pc.invalid" ? "0.9.3" : "0.9.4", protocol: 22 } });
+      if (path === "/api/health" && heldHealth.has(at)) {
+        const held = heldHealth.get(at)!; heldHealth.delete(at); held.reached.resolve();
+        return Response.json({ web_ui: { boot_id: await held.gate.promise } });
+      }
       if (path === "/api/session" && heldSessions.has(at)) {
         const held = heldSessions.get(at)!; heldSessions.delete(at); held.reached.resolve();
         const answer = await held.gate.promise;
@@ -167,6 +173,15 @@ function pc(remote: Remote, options: { registered?: boolean; autoUpdate?: boolea
       heldSessions.set(at, held);
       cleanups.push(() => held.gate.resolve(200));
       return { reached: held.reached.promise, release: (answer: number | object = 200) => held.gate.resolve(answer) };
+    },
+  };
+  const health = {
+    /** hold the next health call at `at` until `release`, which answers that the server there booted as `boot` */
+    hold(at: string) {
+      const held = { reached: Promise.withResolvers<void>(), gate: Promise.withResolvers<string>() };
+      heldHealth.set(at, held);
+      cleanups.push(() => held.gate.resolve(""));
+      return { reached: held.reached.promise, release: (boot: string) => held.gate.resolve(boot) };
     },
   };
   mkdirSync(dir, { recursive: true });
@@ -226,7 +241,7 @@ function pc(remote: Remote, options: { registered?: boolean; autoUpdate?: boolea
   };
   /** the PC as the roster shows it now */
   const now = () => manager.list().find((machine) => machine.id === MACHINE_ID)!;
-  return { manager, requests, installs, operations, probes, destinations, saved, stored, unsavable, reopen, settled, now, listedAfterRestart: listedAfterRestart.promise, until, ovis, bridge, session, shown };
+  return { manager, requests, installs, operations, probes, destinations, saved, stored, unsavable, reopen, settled, now, listedAfterRestart: listedAfterRestart.promise, until, ovis, bridge, session, health, shown };
 }
 
 describe("a PC whose own Ovis is away (#2047)", () => {
@@ -386,15 +401,17 @@ describe("a PC whose own Ovis is away (#2047)", () => {
       else { writable = unsavable(fault === "a move it cannot save" ? "registrations" : "profiles"); held.release(); }
       expect((await settled(job)).phase).toBe("failed");
       expect(now()).toMatchObject({ target: { destination: "fixture@pc.invalid" }, herdr: { version: "0.9.3" }, snapshot: { fixture_at: "fixture@pc.invalid" } });
+      // nor is it there on disk, read before anything else saves the PC: a save of its next try would write over a
+      // wrong address left there
+      writable();
+      expect(stored()).toMatchObject({ target: { destination: "fixture@pc.invalid" } });
       // its next try is at its own address, which connects as before
       destinations.length = 0;
       clock += 10_000; manager.retryNow(MACHINE_ID);
       await until((machine) => machine.state === "connected");
       expect(new Set(destinations)).toEqual(new Set(["fixture@pc.invalid"]));
-      // nor is it there on disk: the other address's Ovis is gone now, leaving this app's runtime and a bridge's
-      // descriptor whose process is gone, so a restart that read it there would start this app's bridge unasked
-      writable();
-      expect(stored()).toMatchObject({ target: { destination: "fixture@pc.invalid" } });
+      // the other address's Ovis is gone now, leaving this app's runtime and a bridge's descriptor whose process is
+      // gone, so a restart that read it there would start this app's bridge unasked
       remote.elsewhere = "stale-bridge";
       destinations.length = 0;
       const after = reopen();
@@ -426,6 +443,31 @@ describe("a PC whose own Ovis is away (#2047)", () => {
     await until((machine) => machine.state === "reconnecting" && /own Ovis is not running/.test(machine.error ?? ""));
     expect(new Set(destinations)).toEqual(new Set(["other@second.invalid"]));
     expect(operations).toEqual([]);
+  });
+
+  it("takes none of its own address's roster to another while the roster there waits for that server's health", async () => {
+    const { manager, session, health, stored, settled, now, until } = pc({ status: managedOffer(), bundle: REMOTE_BUNDLE_VERSION });
+    await until((machine) => machine.state === "connected");
+    expect(now().snapshot).toMatchObject({ fixture_at: "fixture@pc.invalid" });
+    // the other address runs its own Ovis of this app's version; its roster names its order epoch, so it is held
+    // until that server's health says it is the one answering there
+    const roster = session.hold("other@second.invalid");
+    const proof = health.hold("other@second.invalid");
+    const job = manager.setup({ machine_id: MACHINE_ID, destination: "other@second.invalid" });
+    await roster.reached;
+    roster.release({ panes: [], workspaces: [], order_epoch: "boot-b", read_seq: 1, fixture_at: "other@second.invalid" });
+    expect((await settled(job)).phase).toBe("connected");
+    await proof.reached;
+    // moved, with no roster yet: the one of the address it left is not this one's, on its card or on disk
+    expect(now()).toMatchObject({ state: "connected", target: { destination: "other@second.invalid" }, snapshot: null });
+    expect(stored()).toMatchObject({ target: { destination: "other@second.invalid" } });
+    expect(stored()?.snapshot ?? null).toBeNull();
+    // once that server's health proves it, its held roster is the PC's
+    proof.release("boot-b");
+    const adopted = await until((machine) => machine.snapshot?.order_epoch === "boot-b");
+    expect(adopted.snapshot).toMatchObject({ fixture_at: "other@second.invalid" });
+    manager.patch(MACHINE_ID, { name: "Home server" });
+    expect(stored()).toMatchObject({ target: { destination: "other@second.invalid" }, snapshot: { fixture_at: "other@second.invalid" } });
   });
 
   it("is not unlearnt by an update cancelled before it answered: once that Ovis is away, the PC waits for it", async () => {

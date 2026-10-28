@@ -14,7 +14,7 @@
     "build": "bun --bun vite build",
     "server": "bun run server/index.ts",
     "start": "bun run build && bun run server/managed.ts",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.tools.json",
+    "typecheck": "bun --bun tsc --noEmit && bun --bun tsc --noEmit -p tsconfig.tools.json",
     "check": "bun scripts/check.ts",
     "test": "bun test",
     "test:unit": "bun scripts/ci-tests.ts unit",
@@ -22,6 +22,7 @@
     "test:ui": "bun run build && bun scripts/ui-regression.ts && bun scripts/ui-contexts-regression.ts && bun scripts/sticky-modifiers-regression.ts",
     "generate:types": "bun run scripts/generate-protocol-types.ts",
     "generate:themes": "bun run scripts/generate-themes.ts",
+    "generate:case-folding": "bun run scripts/generate-case-folding.ts",
     "build:remote": "bun run scripts/build-remote-bundle.ts",
     "build:site": "bun scripts/build-site.ts",
     "test:ssh": "bun run scripts/ssh-integration.ts"

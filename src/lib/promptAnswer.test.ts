@@ -2,11 +2,31 @@ import { describe, expect, it } from "bun:test";
 
 import type { InteractivePrompt } from "../../shared/protocol.ts";
 import { setCurrentLanguage, translate } from "./i18n.ts";
-import { answerFromText, answerHint, answerRefusal, focusFollowsAnswer, needsConfirmation, pressOrigin, type PressOrigin } from "./promptAnswer.ts";
+import { CASE_FOLDING_DATA } from "./caseFolding.generated.ts";
+import { answerFromText, answerHint, answerRefusal, blocksStepNavigation, focusFollowsAnswer, needsConfirmation, pressOrigin, sendsChecksWithText, skeleton, type PressOrigin, type TypedAnswer } from "./promptAnswer.ts";
 
 const prompt = (options: string[], custom: number | null, multi = false): InteractivePrompt => ({
   id: "p", agent: "claude", kind: "question", title: "Question", question: "?", body: null,
   options: options.map((label) => ({ label, description: null })), multi_select: multi, custom_option_index: custom,
+});
+
+describe("a multi-select's checks and typed answer", () => {
+  it("go together where the server says so, and on OpenCode's native form from any server", () => {
+    const multi = prompt(["Unit tests", "Browser QA", "Type your own answer"], 2, true);
+    expect(sendsChecksWithText({ ...multi, agent: "pi", checks_with_text: true })).toBe(true);
+    expect(sendsChecksWithText({ ...multi, agent: "opencode" })).toBe(true);
+    // pi's own screen-read forms keep one answer per press
+    expect(sendsChecksWithText({ ...multi, agent: "pi" })).toBe(false);
+    expect(sendsChecksWithText({ ...multi, agent: "opencode", fallback: true })).toBe(false);
+    expect(sendsChecksWithText({ ...prompt(["A", "B"], 1), agent: "pi", checks_with_text: true })).toBe(false);
+  });
+
+  it("never hold a step button back on a card that saves its edits as it moves", () => {
+    const card = { ...prompt(["A", "B"], 1), agent: "pi", steps: [{ label: "One", answered: false, current: true }, { label: "Two", answered: true, current: false, can_navigate: true }] };
+    // pi's own tabs drop edits that were not sent, so the button waits for them
+    expect(blocksStepNavigation(card, new Set(), "typed")).toBe(true);
+    expect(blocksStepNavigation({ ...card, drafts_saved: true }, new Set(), "typed")).toBe(false);
+  });
 });
 
 describe("answering a prompt from the chat", () => {
@@ -46,6 +66,142 @@ describe("answering a prompt from the chat", () => {
     }
   });
 
+  it("takes an omp option in Markdown by the words its card shows (#1644)", () => {
+    const question = { ...prompt(["Use `local` socket", "Go through **[the relay](https://example.com)**"], 2), agent: "omp", text_format: "markdown" as const };
+    expect(answerFromText(question, "use local socket")).toEqual({ option_index: 0 });
+    expect(answerFromText(question, "Go through the relay")).toEqual({ option_index: 1 });
+    expect(answerFromText(question, "use a local socket")).toEqual({ custom_text: "use a local socket" });
+    // the raw Markdown of one option can be the words another one shows
+    const twins = { ...prompt(["*main*", "`*main*`"], 2), agent: "omp", text_format: "markdown" as const };
+    // and since both read as "main" by their letters, a typed name picks neither (#2220 skeleton); a click still does
+    expect(answerFromText(twins, "*main*")).toEqual({ custom_text: "*main*" });
+    expect(answerFromText(twins, "main")).toEqual({ custom_text: "main" });
+  });
+  it("picks no option for words that name two of them, on any card (#2220 review)", () => {
+    // the chat's scanner reads the first label's stars as emphasis: both rows read alike
+    const globs = { ...prompt(["Keep *.log and *.tmp", "Keep .log and .tmp"], 2), agent: "omp", text_format: "markdown" as const };
+    expect(answerFromText(globs, "Keep .log and .tmp")).toEqual({ custom_text: "Keep .log and .tmp" });
+    expect(answerFromText(globs, "2")).toEqual({ custom_text: "2" });  // the pair shares a skeleton: its row number refuses too (a click still picks it)
+    // rows the card draws alike once spacing collapses, as a page does
+    const spaced = { ...prompt(["Keep **production**", "Keep  **production**"], 2), agent: "omp", text_format: "markdown" as const };
+    expect(answerFromText(spaced, "Keep production")).toEqual({ custom_text: "Keep production" });
+    // a link to `recommended` is the option's words, not its Recommended tag (#2220 review)
+    const linked = { ...prompt(["Keep [production](recommended)", "Keep [production]"], 2), agent: "omp", text_format: "markdown" as const };
+    // both read as "keep production" by their letters: a typed name picks neither (#2220 skeleton)
+    expect(answerFromText(linked, "Keep production")).toEqual({ custom_text: "Keep production" });
+    expect(answerFromText(linked, "Keep [production]")).toEqual({ custom_text: "Keep [production]" });
+    // words that are a row's shown name pick that row, before any number (#2220 review)
+    const numeral = { ...prompt(["`2`", "Keep production"], 2), agent: "omp", text_format: "markdown" as const };
+    expect(answerFromText(numeral, "2")).toEqual({ option_index: 0 });
+    expect(answerFromText(numeral, "1")).toEqual({ option_index: 0 });
+    const numerals = { ...prompt(["`2`", "**2**"], 2), agent: "omp", text_format: "markdown" as const };
+    expect(answerFromText(numerals, "2")).toEqual({ custom_text: "2" });
+    // and so with no typed answer, never the second row
+    expect(answerFromText({ ...numeral, custom_option_index: null, options: numeral.options.slice(0, 2) }, "2")).toEqual({ option_index: 0 });
+    // the row whose name is its own number is that pick
+    expect(answerFromText(prompt(["1", "2"], null), "2")).toEqual({ option_index: 1 });
+    // and the same on a multiple choice, for each number: one that names another row, or several, refuses the answer
+    const multiNumeral = { ...prompt(["`2`", "Keep production"], null, true), agent: "omp", text_format: "markdown" as const };
+    expect(answerFromText(multiNumeral, "2")).toEqual({ option_indices: [0] });
+    expect(answerFromText(multiNumeral, "1 2")).toBeNull();
+    const multiNumerals = { ...prompt(["`2`", "**2**"], null, true), agent: "omp", text_format: "markdown" as const };
+    expect(answerFromText(multiNumerals, "2")).toBeNull();
+    expect(answerFromText({ ...multiNumeral, custom_option_index: 2, options: [...multiNumeral.options, { label: "Other", description: null }] }, "1 2")).toEqual({ custom_text: "1 2" });
+    // plain numbers still choose, and a row named after its own number is that row
+    expect(answerFromText(prompt(["Desktop", "Phone", "Tablet"], null, true), "1 3")).toEqual({ option_indices: [0, 2] });
+    expect(answerFromText(prompt(["1", "2"], null, true), "2")).toEqual({ option_indices: [1] });
+    const alike = prompt(["Retry", "retry"], null);
+    expect(answerFromText(alike, "retry")).toBeNull();
+    // the pair shares a skeleton: its row number refuses too (a click still picks it)
+    expect(answerFromText(alike, "1")).toBeNull();
+  });
+  it("matches the whole typed text to the shown names first, and reads numbers only from text that names no row (#2220 review)", () => {
+    type Case = [name: string, labels: string[], multi: boolean, other: boolean, typed: string, expected: TypedAnswer | null];
+    const custom = (text: string): TypedAnswer => ({ custom_text: text });
+    const cases: Case[] = [
+      // the whole text is a row's shown name: that row alone
+      ["multi: `1 2` named whole", ["Keep production", "`1 2`"], true, false, "1 2", { option_indices: [1] }],
+      ["multi: `1,2` named whole", ["Keep production", "`1,2`"], true, false, "1,2", { option_indices: [1] }],
+      ["single: `2` named whole", ["`2`", "Keep production"], false, true, "2", { option_index: 0 }],
+      ["single: a row's own number", ["1", "2"], false, false, "2", { option_index: 1 }],
+      ["multi: a row's own number", ["1", "2"], true, false, "2", { option_indices: [1] }],
+      // the whole text names several rows: none
+      ["multi: `1 2` beside **1 2**", ["`1 2`", "**1 2**"], true, false, "1 2", null],
+      ["single: `2` beside **2**", ["`2`", "**2**"], false, true, "2", custom("2")],
+      ["multi: `2` beside **2**", ["`2`", "**2**"], true, false, "2", null],
+      ["single: spacing twins", ["Keep **production**", "Keep  **production**"], false, true, "Keep production", custom("Keep production")],
+      ["single: case twins", ["Retry", "retry"], false, false, "retry", null],
+      // one word in its two Unicode spellings, drawn alike: both typed spellings name both rows
+      ["single: decomposed typed", ["Keep **cafe\u0301**", "Keep **caf\u00e9**"], false, true, "Keep cafe\u0301", custom("Keep cafe\u0301")],
+      ["single: composed typed", ["Keep **cafe\u0301**", "Keep **caf\u00e9**"], false, true, "Keep caf\u00e9", custom("Keep caf\u00e9")],
+      ["multi: decomposed typed", ["Keep **cafe\u0301**", "Keep **caf\u00e9**"], true, false, "Keep cafe\u0301", null],
+      ["multi: composed typed", ["Keep **cafe\u0301**", "Keep **caf\u00e9**"], true, false, "Keep caf\u00e9", null],
+      // marks a page does not draw (U+200B, U+2060, U+00AD) and a ligature (U+FB01) that reads as its letters
+      ...([["zero-width space", "pro\u200Bduction"], ["word joiner", "pro\u2060duction"], ["soft hyphen", "pro\u00ADduction"],
+        ["combining grapheme joiner", "pro\u034Fduction"], ["variation selector-16", "pro\uFE0Fduction"]] as const).flatMap(([kind, word]): Case[] => [
+        [`single: ${kind}`, [`Keep **${word}**`, "Keep **production**"], false, true, "Keep production", custom("Keep production")],
+        [`multi: ${kind}`, [`Keep **${word}**`, "Keep **production**"], true, false, "Keep production", null],
+      ]),
+      ["single: a ligature", ["Keep **\uFB01le**", "Keep **file**"], false, true, "Keep file", custom("Keep file")],
+      ["multi: a ligature", ["Keep **\uFB01le**", "Keep **file**"], true, false, "Keep \uFB01le", null],
+      ["single: the other spelling of one row's name", ["Keep **caf\u00e9**", "Remote relay"], false, true, "keep cafe\u0301", { option_index: 0 }],
+      // no row is named so: numbers, each naming no other row
+      ["multi: plain numbers", ["Desktop", "Phone", "Tablet"], true, false, "1 3", { option_indices: [0, 2] }],
+      ["multi: numbers with a comma", ["Desktop", "Phone", "Tablet"], true, false, "1,3", { option_indices: [0, 2] }],
+      ["multi: a number that is another row's name", ["`2`", "Keep production"], true, false, "1 2", null],
+      ["single: a plain number", ["Desktop", "Phone"], false, true, "2", { option_index: 1 }],
+      ["single: a number past the rows", ["Desktop", "Phone"], false, true, "5", custom("5")],
+      // Markdown twins and shown words from the earlier rounds
+      ["single: a glob pair", ["Keep *.log and *.tmp", "Keep .log and .tmp"], false, true, "Keep .log and .tmp", custom("Keep .log and .tmp")],
+      ["single: a link to `recommended`", ["Keep [production](recommended)", "Keep [production]"], false, true, "Keep [production]", custom("Keep [production]")],
+      ["single: emphasis beside code", ["*main*", "`*main*`"], false, true, "*main*", custom("*main*")],
+      // rows whose letters, marks and digits are the same (a skeleton): a typed name picks neither
+      ...([["a braille blank", "Keep **production**\u2800"], ["a DEL", "Keep **pro\u007Fduction**"], ["a full stop", "Keep **production**."]] as const).flatMap(([kind, label]): Case[] => [
+        [`single: ${kind}`, [label, "Keep **production**"], false, true, "Keep production", custom("Keep production")],
+        [`multi: ${kind}`, [label, "Keep **production**"], true, false, "Keep production", null],
+      ]),
+      ["single: a braille blank typed", ["Keep **production**\u2800", "Keep **production**"], false, true, "Keep production\u2800", custom("Keep production\u2800")],
+      // a row number picks no row whose name may look like another row's (a click still does)
+      ["single: the number of a skeleton twin", ["Keep **production**\u2800", "Keep **production**", "Remote relay"], false, true, "1", custom("1")],
+      ["single: the number of a distinct row beside twins", ["Keep **production**\u2800", "Keep **production**", "Remote relay"], false, true, "3", { option_index: 2 }],
+      ["multi: numbers that take a skeleton twin", ["Keep **production**\u2800", "Keep **production**", "Remote relay"], true, false, "1 3", null],
+      ["multi: numbers of distinct rows only", ["Keep **production**\u2800", "Keep **production**", "Remote relay"], true, false, "3", { option_indices: [2] }],
+      // names that differ only by Unicode case folding (ß and ss, ẞ and SS, final ς and σ) are twins too
+      ...([["ß and SS", "Keep **Straße**", "Keep **STRASSE**"], ["ẞ and ss", "Keep **STRAẞE**", "Keep **strasse**"], ["ς and σ", "Keep **οδος**", "Keep **οδοσ**"],
+        ["ẞ and SS under an acute", "Keep **STRA\u1E9E\u0301E**", "Keep **STRASS\u0301E**"],
+        ["ᾀ under an acute and ἄι", "Keep **\u1F80\u0301**", "Keep **\u1F04\u03B9**"], ["Ŀ and L under an acute", "Keep **\u013F\u0301**", "Keep **L\u0301**"]] as const).flatMap(([kind, a, b]): Case[] => {
+        const rows = [a, b, "Remote relay"];
+        const [typedA, typedB] = [a, b].map((label) => label.replaceAll("**", ""));
+        return [
+          [`single: ${kind}, the first name`, rows, false, true, typedA!, custom(typedA!)],
+          [`single: ${kind}, the second name`, rows, false, true, typedB!, custom(typedB!)],
+          [`single: ${kind}, by number`, rows, false, true, "2", custom("2")],
+          [`multi: ${kind}, the first name`, rows, true, false, typedA!, null],
+          [`multi: ${kind}, by number`, rows, true, false, "1", null],
+          [`multi: ${kind}, in a mixed list`, rows, true, false, "1 2", null],
+          [`multi: ${kind}, a distinct row beside them`, rows, true, false, "3", { option_indices: [2] }],
+        ];
+      }),
+      // not twins under D146: the acute sits on the alpha in one and on the iota in the other, as drawn
+      ["single: ᾀ under an acute beside ἀι under an acute", ["Keep **\u1F80\u0301**", "Keep **\u1F00\u03B9\u0301**"], false, true, "Keep \u1F80\u0301", { option_index: 0 }],
+      ["multi: words that read as two rows", ["Keep production.", "Keep production!"], true, false, "keep production", null],
+      ["single: shown words, not raw Markdown", ["Use `local` socket", "Remote relay"], false, true, "use local socket", { option_index: 0 }],
+    ];
+    for (const [name, labels, multi, other, typed, expected] of cases) {
+      const card: InteractivePrompt = {
+        ...prompt(other ? [...labels, "Other"] : labels, other ? labels.length : null, multi), agent: "omp", text_format: "markdown",
+      };
+      expect(answerFromText(card, typed), name).toEqual(expected);
+    }
+  });
+  it("gives every case-folded letter, alone or under marks, a skeleton that is its own skeleton (#2220 review)", () => {
+    const letters = CASE_FOLDING_DATA.split(";").flatMap((entry) => entry.split("=")[0]!.split(" ").concat(entry.split("=")[1]!.split(" ")))
+      .map((hex) => String.fromCodePoint(parseInt(hex, 16)));
+    expect(letters.length).toBeGreaterThan(2000);
+    const unstable = letters.flatMap((letter) => ["", "\u0301", "\u0345\u0301", "\u0301\u0345", "\u00B7\u0301", "\u0323\u0301"].map((marks) => letter + marks))
+      .filter((text) => skeleton(skeleton(text)) !== skeleton(text));
+    expect(unstable).toEqual([]);
+  });
   it("answers a free-form question (Codex's queue) with the text itself, numbers included", () => {
     const freeForm = prompt([], 0);
     expect(answerFromText(freeForm, "1")).toEqual({ custom_text: "1" });

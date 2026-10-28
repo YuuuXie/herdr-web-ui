@@ -137,9 +137,11 @@ beforeAll(() => {
   writeFileSync(join(root, "record.cjs"), `const fs=require("node:fs");const out=process.argv[2];process.stdin.setRawMode(true);process.stdin.resume();process.stdout.write("\\x1b[?2004h"+(process.argv[3]||"").replace(/\\\\x1b/g,"\\x1b"),()=>fs.writeFileSync(out,""));process.stdin.on("data",c=>fs.appendFileSync(out,JSON.stringify(c.toString("utf8"))+"\\n"));let shown="";setInterval(()=>{const next=fs.readFileSync(process.argv[4],"utf8");if(next!==shown){shown=next;process.stdout.write("\\x1b[2J\\x1b[H"+next);}},20);`);
   for (const name of ["claude", "codex", "omp", "pi", "plain", "node"]) { copyFileSync(process.execPath, join(root, name)); chmodSync(join(root, name), 0o755); }
   // an npm-style launcher (`node .../bin/claude`) that does not exec its agent: it stays in front, listed before the
-  // native agent it starts, and starts SESSION2 once SESSION1 exits
+  // native agent it starts, and starts SESSION2 once SESSION1 exits. On SIGUSR1 it starts SESSION2 first and ends
+  // SESSION1 only once SESSION2 runs: a replacement with an agent in front throughout, which no read can take for
+  // the launched agent having left (the launcher alone in front between the two)
   mkdirSync(join(root, "launcher"));
-  writeFileSync(join(root, "launcher", "claude"), `const{spawn}=require("node:child_process");const[agent,recorder,log,screen,screenFile,replacementLog]=process.argv.slice(2);const run=(args,then)=>spawn(agent,[recorder,...args],{stdio:"inherit"}).on("exit",then);run([log,screen,screenFile],()=>run([replacementLog,"SESSION2",screenFile],()=>process.exit(0)));`);
+  writeFileSync(join(root, "launcher", "claude"), `const{spawn}=require("node:child_process");const[agent,recorder,log,screen,screenFile,replacementLog]=process.argv.slice(2);const run=(args,then)=>spawn(agent,[recorder,...args],{stdio:"inherit"}).on("exit",then);const second=()=>run([replacementLog,"SESSION2",screenFile],()=>process.exit(0));let replaced=false;const first=run([log,screen,screenFile],()=>{if(!replaced)second();});process.on("SIGUSR1",()=>{if(replaced)return;replaced=true;second().once("spawn",()=>first.kill("SIGKILL"));});`);
 });
 afterEach(async () => {
   for (const item of active.splice(0)) { for (const socket of item.sockets) socket.close(); item.stop(); await herdrRpc("workspace.close", { workspace_id: item.workspace }).catch(() => undefined); }
@@ -1529,9 +1531,13 @@ describe("a create request's first message", () => {
   }, 30_000);
 
   it("is bound to the agent process it was queued under: a replacement of the same kind in its terminal gets it held with pending_target_changed", async () => {
-    const f = await setup("first-replaced", "claude", "SESSION1", {}, true);
-    const first = (await herdrClient.paneProcessInfo(f.pane))?.foreground_processes?.find((entry) => entry.name === "claude");
-    if (!first) throw new Error("SESSION1 has no foreground claude process");
+    // SESSION2 starts before SESSION1 ends (the launcher's SIGUSR1): with a shell or launcher alone in front between
+    // them, a read in that gap rightly finds the launched agent gone (first_message_launch_ended)
+    const f = await setup("first-replaced", "claude", "SESSION1", {}, "launcher");
+    const foreground = (await herdrClient.paneProcessInfo(f.pane))?.foreground_processes ?? [];
+    const launcher = foreground.find((entry) => entry.argv?.[1] === join(root, "launcher", "claude"));
+    const first = foreground.find((entry) => entry.argv?.[0] === join(root, "claude"));
+    if (!launcher || !first) throw new Error(`SESSION1 has no launcher and agent in front: ${JSON.stringify(foreground)}`);
     const message = await f.server.queueFirstMessage(f.pane, "FIRST-FOR-SESSION-1", "claude", await f.socket.connection());
     const started = new Promise<void>((resolve, reject) => {
       const watcher = watch(root, () => {
@@ -1540,9 +1546,15 @@ describe("a create request's first message", () => {
       });
       const timeout = setTimeout(() => { watcher.close(); reject(new Error("SESSION2 did not start")); }, 10_000);
     });
-    globalThis.process.kill(first.pid, "SIGKILL");
+    globalThis.process.kill(launcher.pid, "SIGUSR1");
     await started;
-    const replacement = (await herdrClient.paneProcessInfo(f.pane))?.foreground_processes?.find((entry) => entry.name === "claude");
+    // the launcher ends SESSION1 once SESSION2 runs: the replacement is complete once herdr no longer lists SESSION1
+    for (const deadline = Date.now() + 10_000; (await herdrClient.paneProcessInfo(f.pane))?.foreground_processes?.some((entry) => entry.pid === first.pid);) {
+      if (Date.now() > deadline) throw new Error("SESSION1 did not end");
+      await Bun.sleep(25);
+    }
+    const replacement = (await herdrClient.paneProcessInfo(f.pane))?.foreground_processes?.find((entry) => entry.argv?.[0] === join(root, "claude"));
+    expect(replacement).toBeDefined(); // control: SESSION2 is a live foreground agent
     expect(replacement?.pid).not.toBe(first.pid); // control: the process really changed, in the same terminal
     const held = listed(f.socket, f.pane, message.id, "held");
     await f.state("idle");

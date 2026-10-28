@@ -4,7 +4,8 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HerdrPane, PanePromptResponse, SlashCommand } from "../shared/protocol.ts";
-import { commandInvocations, commandOutcome, CommandReservations, type CommandSend } from "./outcome.ts";
+import { commandInvocations, commandOutcome, CommandReservations, ownsCommandDialog, type CommandSend } from "./outcome.ts";
+import { parsePrompt } from "./dialogs/live.ts";
 import { finishPrompt, type DialogReader } from "./dialogs/shared.ts";
 import { bindCommandProcess, commandSendFrom, handlePromptRequest, noteCommandEvidence, noteSubmitted } from "./prompt.ts";
 import { socketAddress } from "./herdr/client.ts";
@@ -853,6 +854,62 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
       pane.screen = "fixture-anchor\n> /review\n● Working on it…";
       expect((await served(paneId)).outcomes?.at(-1)).toMatchObject({ state: "accepted", evidence: [] });
     });
+  });
+
+  it("links a skill's question beside Claude's fullscreen diff panel to its send", async () => {
+    // every row of the 2.1.303 capture ends in the panel's edge in column 99 and the panel's text, the echo's row too
+    const lines = fixture("claude-diff-panel-2.1.303-english-180.txt").split("\n");
+    const screen = lines.slice(0, 33).join("\n");
+    lines[33] = `${"❯ /review".padEnd(99)}│`;
+    const pane = { agent: "claude", status: "blocked", screen: lines.join("\n") };
+    await withFakeHerdr(pane, async (paneId) => {
+      const current = { ...send("/review", "claude", [{ ...row("review"), source: "skill" }]),
+        at: Date.now() - 10, screen, identity: JSON.stringify([undefined, undefined]), store: null };
+      noteSubmitted(paneId, current.text, current);
+      const shown = await served(paneId);
+      expect(shown.prompt).toMatchObject({ kind: "question", question: "Which color?" });
+      expect(shown.outcomes?.at(-1)?.state).toBe("interaction-required");
+      expect(current.dialogId).toBe(shown.prompt!.id);
+    });
+  });
+
+  it("keeps a skill's question linked when only its send's screen looks like a side panel", async () => {
+    // a table's divider through every row of the send's screen passes there for the panel's edge, not on the next screen
+    const table = Array.from({ length: 8 }, (_, index) => `${`Task ${index}`.padEnd(40)}\u2502 preserve requirement ${index}`);
+    const pane = { agent: "claude", status: "blocked", screen: [...table, "\u276f /review", "\u2610 Dataset", "",
+      "Which evaluation dataset should we use?", "", "\u276f 1. LM-O", "     Occlusion benchmark.", "  2. YCB-V", "     Household objects.",
+      "  3. Type something.", "\u2500".repeat(28), "  4. Chat about this", "", "Enter to select \u00b7 \u2191/\u2193 to navigate \u00b7 Esc to cancel"].join("\n") };
+    await withFakeHerdr(pane, async (paneId) => {
+      const current = { ...send("/review", "claude", [{ ...row("review"), source: "skill" }]),
+        at: Date.now() - 10, screen: table.join("\n"), identity: JSON.stringify([undefined, undefined]), store: null };
+      noteSubmitted(paneId, current.text, current);
+      const shown = await served(paneId);
+      expect(shown.prompt).toMatchObject({ kind: "question", question: "Which evaluation dataset should we use?" });
+      expect(shown.outcomes?.at(-1)?.state).toBe("interaction-required");
+      expect(current.dialogId).toBe(shown.prompt!.id);
+    });
+  });
+
+  it("gives no send a terminal command's question when its echoes were counted without the panel's cut", () => {
+    // the first send's screen shows too few of the panel's rows to be cut, the second's enough: the second's echoes
+    // were counted as drawn, its own echo with the panel's text missed; the later screen is cut
+    const edge = (text: string, panel = "") => `${text.padEnd(99)}\u2502${panel}`;
+    const top = Array.from({ length: 7 }, (_, index) => edge(`fixture-row-${index}`, index === 0 ? "1 file changed +2" : ""));
+    const skill = [{ ...row("review"), source: "skill" as const }];
+    const first = { ...send("/review", "claude", skill), id: "first", screen: top.join("\n") };
+    const second = { ...send("/review", "claude", skill), id: "second", at: at + 1,
+      screen: [...top, edge("\u276f /review", " 3 +three"), edge("\u25cf Reviewed."), edge("fixture-tail")].join("\n") };
+    const question = ["\u2610 Dataset", "", "Which evaluation dataset should we use?", "", "\u276f 1. LM-O", "  2. YCB-V",
+      "  3. Type something.", "\u2500".repeat(28), "  4. Chat about this", "", "Enter to select \u00b7 \u2191/\u2193 to navigate \u00b7 Esc to cancel"];
+    const later = [...second.screen.split("\n"), edge("\u276f /review"), edge("\u25cf Reviewed again."), edge("\u276f /review"),
+      ...question.map((line) => edge(line))].join("\n");
+    const reservations = new CommandReservations();
+    const readers = registry.readersFor("claude");
+    reservations.add(first, readers);
+    reservations.add(second, readers);
+    const prompt = parsePrompt("claude", later);
+    expect(prompt).toMatchObject({ kind: "question" });
+    expect(ownsCommandDialog(second, prompt!, later, registry.readerFor(prompt!.responder)!, readers)).toBe(false);
   });
 
   it("completes a named Claude model card through the real answer handler", async () => {

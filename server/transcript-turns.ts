@@ -108,7 +108,7 @@ const TURN_MARK: Record<StreamSource, Buffer> = {
  * and the same for pi, whose prompts are `message` records with a user role.
  */
 function opensTurn(source: StreamSource, line: string, blobs: string | null): boolean {
-  let entry: { type?: unknown; uuid?: unknown; data?: { content?: unknown }; isMeta?: unknown; isCompactSummary?: unknown; payload?: { type?: unknown }; message?: { role?: unknown; content?: unknown } };
+  let entry: { type?: unknown; uuid?: unknown; origin?: unknown; permissionMode?: unknown; data?: { content?: unknown }; isMeta?: unknown; isCompactSummary?: unknown; payload?: { type?: unknown }; message?: { role?: unknown; content?: unknown } };
   try { entry = JSON.parse(line); } catch { return false; }
   if (entry === null || typeof entry !== "object") return false;
   if (source === "copilot-transcript") return entry.type === "user.message" && copilotRootRecord(entry)
@@ -128,11 +128,11 @@ function opensTurn(source: StreamSource, line: string, blobs: string | null): bo
   if (claudePeerNotice(entry) !== null) return true;
   if (entry.type !== "user" || entry.isMeta || entry.isCompactSummary) return false;
   const content = entry.message?.content;
-  if (typeof content === "string") return !isCommandEntry(content);
+  if (typeof content === "string") return !isCommandEntry(content, entry);
   // a prompt that is only a picture is one too, as the parser draws it; a picture beside a tool's
   // result opens nothing: the result must stay on the page of the call it answers
   return Array.isArray(content) && (content.some((block: { type?: unknown; text?: unknown } | null) =>
-    block?.type === "text" && typeof block.text === "string" && !isCommandEntry(block.text.trim()))
+    block?.type === "text" && typeof block.text === "string" && !isCommandEntry(block.text.trim(), entry))
     || (!content.some((block: { type?: unknown } | null) => block?.type === "tool_result") && claudeImages(entry.uuid, content).length > 0));
 }
 

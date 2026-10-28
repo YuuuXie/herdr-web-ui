@@ -73,10 +73,11 @@ function indexAtColumn(line: string, column: number): number {
 
 /**
  * Claude Code's fullscreen layout (`"tui": "fullscreen"`) can draw a side panel to the right of the
- * session, its diff panel (`/diff`, `1 file changed +2 … source: Current ▾`) on a pane of 110 columns
- * or more: every row from the screen's top carries the panel's left edge `│` in one column, the
- * panel's own text after it, down through the prompt and its footer. Those rows are cut at that edge
- * so the session's menus read as without the panel (measured on 2.1.303). A screen whose edge stops
+ * session, its diff panel (`/diff`, `1 file changed +2 … source: Current ▾`) on a wide pane (from about
+ * 110 columns on 2.1.303; only the edge is checked here, not the pane's width): every row from the
+ * screen's top carries the panel's left edge `│` in one column, the panel's own text after it,
+ * down through the prompt and its footer. Those rows are cut at that edge so the session's menus read
+ * as without the panel (measured on 2.1.303). A screen whose edge stops
  * before its last non-blank row (a markdown table scrolled above a plan, say) is left as it is.
  */
 const CLAUDE_SIDE_PANEL_MIN_COLUMN = 40;
@@ -92,15 +93,18 @@ export function withoutClaudeSidePanel(screen: string): string {
     }
     return columns;
   };
+  const top = edges(lines[0] ?? "").filter((at) => at >= CLAUDE_SIDE_PANEL_MIN_COLUMN);
+  if (top.length === 0) return screen;
+  // each row's edges once, past the top row's check that turns away most screens
+  const rowEdges = lines.map((line, index) => index === 0 ? top : edges(line));
   const rowsAt = (column: number): number => {
     let rows = 0;
-    while (rows < lines.length && edges(lines[rows]!).includes(column)) rows += 1;
+    while (rows < lines.length && rowEdges[rows]!.includes(column)) rows += 1;
     return rows;
   };
   // the panel's edge runs through the footer; a table's column divider stops where the table ends
   const throughFooter = (rows: number): boolean => rows >= CLAUDE_SIDE_PANEL_MIN_ROWS && lines.slice(rows).every((line) => line.trim() === "");
-  const column = edges(lines[0] ?? "").filter((at) => at >= CLAUDE_SIDE_PANEL_MIN_COLUMN)
-    .find((at) => throughFooter(rowsAt(at)));
+  const column = top.find((at) => throughFooter(rowsAt(at)));
   if (column === undefined) return screen;
   const rows = rowsAt(column);
   return lines.map((line, index) => index < rows ? line.slice(0, indexAtColumn(line, column)).trimEnd() : line).join("\n");
@@ -166,7 +170,9 @@ function parseClaudeQuestion(screen: string): ParsedPrompt | null {
   const title = tabs && current >= 0
     ? tabs.whole && tabs.tabs.length > 1 ? own("{label} · {n} of {total}", { label: tabs.tabs[current]!.label, n: current + 1, total: tabs.tabs.length }) : tabs.tabs[current]!.label
     : chip ?? own(multiSelect ? "Multiple choice" : "Question");
-  return finishPrompt("claude", {
+  // read off the screen, not part of the question: left out of the card's id
+  const words = claudeWordsAbove(raw, rows[0]!.lineIndex);
+  const parsed = finishPrompt("claude", {
     kind: "question", title, question, body: null,
     options: optionRows.map((row) => ({ label: row.label, description: row.description ?? null })),
     // a multiple choice takes its typed answer where its Submit row shows: Enter there sends it
@@ -186,6 +192,129 @@ function parseClaudeQuestion(screen: string): ParsedPrompt | null {
       ],
     } : {}),
   });
+  return words === null ? parsed : { ...parsed, screen_words: words };
+}
+
+/**
+ * Claude's tool call line, `● Write(a.ts)` or an MCP call `● plugin/server - tool (MCP)(…)`: an ASCII name
+ * right before its `(`; Claude's own text opens with ● too (`● 패치(Patch)는 …` is text)
+ */
+const CLAUDE_CALL_RE = /^[●⏺]\s+(?:[\w.:/-]+|\S.* \(MCP\))\(/;
+
+/** a collapsed group of tool calls, `Read 2 files (ctrl+o to expand)` (2.1.311), its bullet drawn or not */
+const CLAUDE_COLLAPSED_RE = /\(ctrl\+o\s+to\s+expand\)/i;
+
+/** a list item, or a line of a table or a rule, opens a line of its own: never the rest of the line above it */
+const OWN_LINE_RE = /^\s*(?:(?:[-*•]|\d+[.)])\s|[│├└┌┬┼─╭╰])/;
+
+/** words and sentence punctuation only: a line with a path, a URL, code or a command's signs keeps its breaks */
+const PROSE_RE = /^[\p{L}\p{N}\s.,:;!?'"’‘“”()\-–—…%&。、，！？：；「」『』（）]+$/u;
+
+/** a command's option (`--oneline`, `-rf`): its line is a command, never prose to join */
+const OPTION_RE = /(?:^|\s)--?\w/;
+
+/**
+ * A line that is a command or a path, read on its own: it opens with a common command (`git push`,
+ * `bun test`, a `$ ` prompt), or it is one token with a `/` or a file's extension. Such a line keeps
+ * its breaks on both sides, whatever the rest of its paragraph says. A command this list does not
+ * name is caught only by its options or its signs (OPTION_RE, PROSE_RE).
+ */
+const COMMAND_LINE_RE = /^\s*(?:\$\s+\S|(?:git|gh|npm|npx|bun|bunx|yarn|pnpm|node|deno|python3?|pip3?|uv|cargo|rustc|go|make|cd|ls|rm|cp|mv|mkdir|cat|echo|curl|wget|ssh|scp|rsync|sudo|docker|kubectl|helm|terraform|export|source|chmod|chown|tar|grep|rg|sed|awk|find|touch|kill|systemctl|brew|apt|apt-get|dnf|herdr|claude|codex|tmux)(?:\s|$)|\S*(?:\/|\w\.[a-z][a-z0-9]{0,5}\b)\S*[.,;:]?\s*$)/;
+
+/** how a sentence ends, a closing quote or bracket after it allowed */
+const SENTENCE_END_RE = /[.!?\u2026\u3002\uff01\uff1f]["'\u201d\u2019)\]\u300d\u300f\uff09]*$/u;
+
+/** a script written without spaces between words: a line of it the pane broke goes on without a space */
+const UNSPACED_RE = /[\p{scx=Han}\p{scx=Hiragana}\p{scx=Katakana}]/u;
+
+/**
+ * Claude's own words over its question (#2088). Claude Code 2.1.311 writes a turn's text to the
+ * session file only with the answer, so while the question waits the screen is the only place they
+ * are. They are the text block right over the question panel's top rule, as recorded at 120 and 40
+ * columns: a `●` line that is no tool call, the lines under it at its two-column indent, paragraphs
+ * parted by blank lines.
+ *
+ *   ● The file a.txt has a made-up bug: its
+ *     last line is missing a trailing
+ *     …
+ *   ────────────────────────────────────────
+ *    ☐ Fix
+ *
+ * The rule is the panel's own only with nothing but the panel's header and question under it.
+ * Anything else right over the panel (the user's prompt, a tool's output or its collapsed group, a
+ * status line) is not Claude's words, and no words are read then. Neither are a block whose `●`
+ * start is above the screen's top: its lines read the same as the user's own prompt wrapped under
+ * its `❯`.
+ *
+ * Lines the pane wrapped are joined back only where that cannot change what they say: two lines of
+ * plain prose, the first one too full for the next one's first word, and not ending in a colon (what
+ * follows may be a command), in a paragraph that ends as a sentence does. A paragraph of commands
+ * (`git merge experimental-feature-branch` over `git push` reads as prose and can fill the line)
+ * ends in none of a sentence's marks: every break in it stays as drawn, as do all other breaks.
+ */
+function claudeWordsAbove(lines: string[], firstRow: number): string | null {
+  let rule = -1;
+  for (let index = firstRow - 1; index >= Math.max(0, firstRow - 60) && rule < 0; index -= 1) {
+    const line = cleanLine(lines[index]!);
+    if (SOLID_RULE_RE.test(line)) rule = index;
+    // the user's prompt, Claude's text or a tool between: the rule above them is not this panel's
+    else if (/^[❯●⏺⎿✻]/.test(line)) return null;
+  }
+  if (rule < 0) return null;
+  const width = Bun.stringWidth(cleanLine(lines[rule]!));
+  // each line as drawn (its width says where the pane wrapped it) and its text, the block's indent off
+  const block: { drawn: string; text: string }[] = [];
+  let start = -1;
+  for (let index = rule - 1; index >= 0 && start < 0; index -= 1) {
+    const drawn = lines[index]!.replace(ANSI_RE, "").trimEnd();
+    if (CLAUDE_COLLAPSED_RE.test(drawn) || /^\s*⎿/.test(drawn)) return null;
+    if (drawn === "") block.unshift({ drawn, text: "" });
+    else if (drawn.startsWith("  ")) block.unshift({ drawn, text: drawn.slice(2) });
+    else if (/^[●⏺]\s/.test(drawn) && !CLAUDE_CALL_RE.test(drawn)) {
+      block.unshift({ drawn, text: drawn.replace(/^[●⏺]\s+/, "") });
+      start = index;
+    } else return null;
+  }
+  if (start < 0) return null;
+  // a hint a narrow pane wrapped: "(ctrl+o" over "to expand)"
+  if (CLAUDE_COLLAPSED_RE.test(block.map(({ text }) => text.trim()).join(" "))) return null;
+  // the block's paragraphs, each its lines as drawn
+  const groups: { drawn: string; text: string }[][] = [[]];
+  for (const line of block) {
+    if (line.text !== "") groups.at(-1)!.push(line);
+    else if (groups.at(-1)!.length > 0) groups.push([]);
+  }
+  const paragraphs: string[] = [];
+  for (const group of groups.filter((lines) => lines.length > 0)) {
+    const sentence = SENTENCE_END_RE.test(group.at(-1)!.text.trimEnd());
+    let paragraph = "";
+    let previous = { drawn: "", text: "" };
+    for (const line of group) {
+      const { text } = line;
+      if (paragraph === "") paragraph = text;
+      else if (!sentence) paragraph += `\n${text}`;
+      else {
+        const next = text.trimStart();
+        const first = /^\S+/.exec(next)![0];
+        const before = [...previous.text.trimEnd()].at(-1) ?? "";
+        const unspaced = UNSPACED_RE.test(before) || UNSPACED_RE.test([...next][0]!);
+        const prose = PROSE_RE.test(previous.text) && PROSE_RE.test(text) && !OPTION_RE.test(previous.text) && !OPTION_RE.test(text)
+          && !COMMAND_LINE_RE.test(previous.text) && !COMMAND_LINE_RE.test(text) && !OWN_LINE_RE.test(text) && before !== ":";
+        // Claude Code can break a line where the word would have just reached the edge (2.1.311 at 40
+        // columns: "  properly. It's a contrived example," over "so"); a script without spaces breaks
+        // anywhere, so only a line filled to the edge goes on
+        const full = unspaced
+          ? Bun.stringWidth(previous.drawn) >= width - 1
+          : Bun.stringWidth(previous.drawn) + 1 + Bun.stringWidth(first) >= width;
+        paragraph += prose && full ? `${unspaced ? "" : " "}${next}` : `\n${text}`;
+      }
+      previous = line;
+    }
+    paragraphs.push(paragraph);
+  }
+  // capped as a card's body is, never inside a character
+  const words = [...paragraphs.join("\n\n")].slice(0, 12_000).join("");
+  return words.trim() === "" ? null : words;
 }
 
 /** A single question's header chip (`☐ Dataset`), the question's own short name; null when there is none. */

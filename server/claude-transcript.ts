@@ -7,9 +7,11 @@ import { trimOutput } from "./tool-output.ts";
 import { base64Size, inlineImageType, MAX_IMAGE_BYTES } from "./codex-images.ts";
 
 /** Slash-command and bookkeeping entries Claude logs as user turns — not conversations. */
-export function isCommandEntry(text: string): boolean {
+export function isCommandEntry(text: string, entry: { origin?: unknown; permissionMode?: unknown }): boolean {
   if (claudeCommandEcho(text)) return false;
-  return text.startsWith("<command-") || text.startsWith("<local-command") || text.startsWith("<task-");
+  return text.startsWith("<command-") || text.startsWith("<local-command") || text.startsWith("<task-")
+    // bash-mode output, only as the whole entry: the parser joins it to its command
+    || (!("origin" in entry) && !("permissionMode" in entry) && text.trimStart().startsWith("<bash-std") && taggedStreams(text, "bash") !== null);
 }
 
 /**
@@ -20,35 +22,71 @@ export function isCommandEntry(text: string): boolean {
 const LOCAL_COMMAND_MAX_CHARS = 4000;
 
 function localCommandOutput(content: unknown): string {
-  if (typeof content !== "string") return "";
+  return capNotice((taggedStreams(content, "local-command") ?? []).map(({ text }) => text.trim()).filter((text) => text.length > 0).join("\n"));
+}
+
+/** Bash payloads are opaque: only an unambiguous boundary identifies stderr. */
+function bashStreams(content: string): { stream: "stdout" | "stderr"; text: string }[] | null {
+  const envelope = content.trim();
+  if (envelope.startsWith("<bash-stdout>") && envelope.endsWith("</bash-stderr>")) {
+    const inner = envelope.slice("<bash-stdout>".length, -"</bash-stderr>".length);
+    const candidates = [...inner.matchAll(/<\/bash-stdout>\s*<bash-stderr>/g)];
+    const first = candidates[0];
+    if (first === undefined) return null;
+    if (candidates.length === 1) {
+      return [
+        { stream: "stdout", text: stripTerminalControls(inner.slice(0, first.index)).trimEnd() },
+        { stream: "stderr", text: stripTerminalControls(inner.slice(first.index + first[0].length)).trimEnd() },
+      ];
+    }
+    // Multiple boundaries never establish stderr: retain every inner character verbatim.
+    return [{ stream: "stdout", text: stripTerminalControls(inner) }];
+  }
+  // Older records can carry a single stream, but not reordered or partial envelopes.
+  const single = /^<bash-(stdout|stderr)>([\s\S]*)<\/bash-\1>$/.exec(envelope);
+  const stream = single?.[1], text = single?.[2];
+  return (stream === "stdout" || stream === "stderr") && text !== undefined
+    ? [{ stream, text: stripTerminalControls(text).trimEnd() }] : null;
+}
+
+/**
+ * The streams a whole entry holds, `<{tag}-stdout>…</{tag}-stdout>` and `<{tag}-stderr>…`, in order and with
+ * terminal controls stripped; ambiguous bash output stays verbatim in stdout. Null when the entry
+ * holds anything else.
+ */
+function taggedStreams(content: unknown, tag: "local-command" | "bash"): { stream: "stdout" | "stderr"; text: string }[] | null {
+  if (typeof content !== "string") return null;
+  if (tag === "bash") return bashStreams(content);
   // the whole entry is the output, one stream after another: a tag quoted inside an echo's
   // arguments is not an answer
-  const streams: string[] = [];
+  const streams: { stream: "stdout" | "stderr"; text: string }[] = [];
   let at = 0;
   for (;;) {
     while (at < content.length && /\s/.test(content[at]!)) at++;
     if (at === content.length) break;
-    const stream = content.startsWith("<local-command-stdout>", at) ? "stdout" : content.startsWith("<local-command-stderr>", at) ? "stderr" : null;
-    if (stream === null) return "";
-    const start = at + `<local-command-${stream}>`.length;
+    const stream = content.startsWith(`<${tag}-stdout>`, at) ? "stdout" : content.startsWith(`<${tag}-stderr>`, at) ? "stderr" : null;
+    if (stream === null) return null;
+    const start = at + `<${tag}-${stream}>`.length;
     // a closing tag the output prints itself ends nothing: the stream's own one is at the end of
     // the entry or before the next stream. Each candidate looks only at the whitespace after it.
-    const close = `</local-command-${stream}>`;
+    const close = `</${tag}-${stream}>`;
     let end = content.indexOf(close, start);
     let next = 0;
     while (end !== -1) {
       next = end + close.length;
       while (next < content.length && /\s/.test(content[next]!)) next++;
-      if (next === content.length || content.startsWith("<local-command-stdout>", next) || content.startsWith("<local-command-stderr>", next)) break;
+      if (next === content.length || content.startsWith(`<${tag}-stdout>`, next) || content.startsWith(`<${tag}-stderr>`, next)) break;
       end = content.indexOf(close, end + close.length);
     }
-    if (end === -1) return "";
-    const text = stripTerminalControls(content.slice(start, end)).trim();
-    if (text.length > 0) streams.push(text);
+    if (end === -1) return null;
+    streams.push({ stream, text: stripTerminalControls(content.slice(start, end)) });
     at = next;
   }
-  return capNotice(streams.join("\n"));
+  return streams;
 }
+
+/** The command of a bash-mode entry (`!` in Claude Code): the whole entry is `<bash-input>…</bash-input>`. */
+const BASH_INPUT = /^\s*<bash-input>([\s\S]*)<\/bash-input>\s*$/;
 
 /** Lines of one notice Claude Code writes as separate entries, a moment apart. */
 const NOTICE_JOIN_MS = 1000;
@@ -146,6 +184,8 @@ export interface TranscriptEntry {
   parentUuid?: string | null;
   isMeta?: boolean;
   isCompactSummary?: boolean;
+  origin?: unknown;
+  permissionMode?: unknown;
   /** "updates": Claude Code shows the entry's thinking text as a progress message, not as reasoning */
   thinkingDisplay?: unknown;
   message?: { role?: string; content?: unknown; stop_reason?: unknown };
@@ -308,7 +348,7 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
     const queued = entry.type === "attachment" ? entry.attachment : undefined;
     if (queued?.commandMode === "task-notification" && typeof queued.prompt === "string" && notified(queued.prompt, entry.timestamp ?? null)) return;
     if (queued?.type === "queued_command" && queued.commandMode === "prompt" && queued.origin?.kind === "human") {
-      if (typeof queued.prompt === "string" && queued.prompt.trim() && !isCommandEntry(queued.prompt.trim())) {
+      if (typeof queued.prompt === "string" && queued.prompt.trim() && !isCommandEntry(queued.prompt.trim(), queued)) {
         turns.push({ role: "user", ts: entry.timestamp ?? null, parts: [{ kind: "text", text: unwrapPastes(queued.prompt) }] });
       }
       return;
@@ -351,7 +391,22 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
         pushPrompt({ role: "user", ts: entry.timestamp ?? null, parts: [{ kind: "text", text: invocation.text }, { kind: "skill", skill: invocation.skill }] }, entry);
         return;
       }
-      if (isCommandEntry(content)) return;
+      // bash mode: the command opens a turn like a prompt, and the entry after it holds what it printed
+      const own = !("origin" in entry) && !("permissionMode" in entry);
+      const command = own ? BASH_INPUT.exec(content)?.[1] : undefined;
+      if (command !== undefined) {
+        pushPrompt({ role: "user", ts: entry.timestamp ?? null, parts: [{ kind: "shell", command }] }, entry);
+        return;
+      }
+      const printed = own ? taggedStreams(content, "bash") : null;
+      const shell = state.lastPrompt?.turn.parts[0];
+      if (printed !== null && shell?.kind === "shell" && shell.stdout === undefined) {
+        const of = (stream: "stdout" | "stderr") => capNotice(printed.filter((part) => part.stream === stream).map(({ text }) => text).join("\n"));
+        shell.stdout = of("stdout");
+        shell.stderr = of("stderr");
+      }
+      if (printed !== null) return;
+      if (isCommandEntry(content, entry)) return;
       pushPrompt({ role: "user", ts: entry.timestamp ?? null, parts: [{ kind: "text", text: unwrapPastes(content) }] }, entry);
       return;
     }
@@ -368,7 +423,7 @@ function claudeTranscriptParser(options: ClaudeTranscriptOptions, state: ClaudeP
           invocations.push({ kind: "skill", skill: invocation.skill });
           return [invocation.text];
         }
-        return part.type === "text" && typeof part.text === "string" && !isCommandEntry(part.text.trim()) ? [part.text] : [];
+        return part.type === "text" && typeof part.text === "string" && !isCommandEntry(part.text.trim(), entry) ? [part.text] : [];
       }).join("\n");
       for (const [index, block] of content.entries()) {
         if (typeof block !== "object" || block === null) continue;

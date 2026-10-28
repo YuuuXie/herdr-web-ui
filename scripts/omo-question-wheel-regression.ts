@@ -14,7 +14,7 @@ import { chromePath } from "./chrome-path.ts";
 import type { ServerMessage, SessionSnapshot } from "../shared/protocol.ts";
 
 const state = mkdtempSync(join(tmpdir(), "omo-question-wheel-"));
-const evidence = process.env["CHECK_BROWSER_EVIDENCE_DIR"] ?? state;
+const evidence = process.env["CHECK_BROWSER_EVIDENCE_DIR"] || state;
 mkdirSync(evidence, { recursive: true });
 const baseline = process.env["EXPECT_CAPTURED_WHEEL"] === "1";
 const workspaces: string[] = [];

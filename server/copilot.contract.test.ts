@@ -521,13 +521,15 @@ it.skipIf(process.platform !== "linux")("reads a resumed CLI without marker or r
     expect((await fetch(outputUrl(newRef!))).status).toBe(200);
     expect((await fetch(`${url}&before=${encodeURIComponent(returned.cursor!)}`)).status).toBe(200);
     await herdrRpc("pane.send_text", { pane_id: current, text: `:switch ${forked}\n:switch ${resumed}\n` });
+    // each switch logs the old session's unregistering before the new one's registering: a read between the two
+    // fails closed (scrollback, no history), which is not the switch-back this waits for
     let unobserved = await read();
-    for (const deadline = Date.now() + 5000; unobserved.history_id === returned.history_id;) {
-      if (Date.now() > deadline) throw new Error("unobserved switch-back did not advance binding");
+    for (const deadline = Date.now() + 5000;;) {
+      if (unobserved.source === "copilot-transcript" && unobserved.history_id !== returned.history_id && unobserved.turns[0]?.parts[0]?.text === resumed) break;
+      if (Date.now() > deadline) throw new Error(`unobserved switch-back did not advance binding: ${unobserved.source} ${unobserved.turns[0]?.parts[0]?.text}`);
       await Bun.sleep(50);
       unobserved = await read();
     }
-    expect(unobserved.turns[0]?.parts[0]?.text).toBe(resumed);
     expect((await fetch(`${url}&before=${encodeURIComponent(returned.cursor!)}`)).status).toBe(409);
     expect((await fetch(outputUrl(newRef!))).status).toBe(404);
     await herdrRpc("pane.send_text", { pane_id: current, text: ":unregister\n" });

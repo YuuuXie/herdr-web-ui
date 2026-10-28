@@ -12,6 +12,18 @@ bun run dev      # Vite on :5173, proxies /api and /ws
 
 `bun run server` and `bun run dev` never update themselves; only `bun run start` and the plugin run the update supervisor.
 
+The plugin's `start` and `stop` (`scripts/plugin.ts`) take turns through `lifecycle.lock` in the
+plugin's state directory (the owner lock of `server/owner-guard.ts`, taken over once its owner is
+proved gone): a start holds it until its server answers or the start fails, a stop until the server
+is gone, and one that waits says so and gives up after 60 s, never blocking on the lock's file guard.
+A start also keeps its server's birth in `server.owner` beside `server.pid` (or that it could not be
+read), opens no second server while that process may still run, even when it does not answer and its
+port looks free, and stops a server it could not record. `stop` on Linux and macOS leaves alone a
+pid the record proves another process holds now. A start keeps the run before it as
+`server.log.1` unless the recorded server still runs, and a failed start shows the last 15 lines of
+what its own server wrote, reading at most the log's last 64 KiB. That bounds what a failed start
+reads, not the size of a running server's log.
+
 ## Connection diagnostics
 
 Transport failures write one JSON line to the server's standard error, with an ISO timestamp,
@@ -103,6 +115,9 @@ Theme colors are edited only in the theme blocks of `src/styles.css`. Never edit
 copies (`src/lib/themes.generated.ts`, the DESIGN.md region between the `GENERATED THEMES`
 markers, the `theme-color` tag in `index.html`, the colors in `public/manifest.webmanifest`); run
 `bun run generate:themes` after a color change.
+The case folding a typed answer compares option names with (`src/lib/caseFolding.generated.ts`) is
+generated from Unicode's CaseFolding.txt for the version pinned in `scripts/generate-case-folding.ts`;
+never edit it, run `bun run generate:case-folding` after raising that version.
 Admission is serialized briefly on port 41745. After taking a candidate slot, the run checks all
 eight slots again for its checkout and counts every active holder against its requested limit,
 including holders above its candidate range. A busy admission port refuses rather than waits.
@@ -849,7 +864,7 @@ downloads on self-hosted jobs, but dependency installation, checkout and artifac
 do; measure setup, test execution and retries separately when comparing speed. Setup, routing and the security model are in
 [scripts/self-hosted-runner/README.md](../scripts/self-hosted-runner/README.md).
 
-`scripts/ci-tests.ts` discovers all `.test.ts` files under
+`scripts/ci-tests.ts` discovers all `.test.ts` and `.test.tsx` files under
 src/shared/server/scripts/telemetry/push-relay/integrations.
 Files named `*.contract.test.ts`, tests under `server/herdr/` and `server/pty/`, and
 `server/updater.test.ts` (which includes real bridge restart/rollback cases) belong

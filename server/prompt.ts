@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { HerdrPane, InteractivePrompt, PanePromptResponse, PromptAnswer, SessionSnapshot, SlashCommand } from "../shared/protocol.ts";
 import { builtinCommands, cachedPaneCommands } from "./commands.ts";
-import { agentProcesses, readCommandTranscript } from "./conversation.ts";
+import { agentProcesses, ompTranscriptPath, paneRunsOmo, readCommandTranscript } from "./conversation.ts";
 import { agentProcessInFront } from "./agent-process.ts";
 import { resolveAgent } from "./pane-context.ts";
 import { processAlive, processStartedAt, processStartUpperBoundAsync } from "./process-start.ts";
@@ -9,7 +9,10 @@ import { commandInvocations, commandOutcome, CommandReservations, dialogSettling
 import { codexTranscriptPath, paneCodexHome, unansweredCodexQuestions } from "./codex.ts";
 import { HerdrError, paneProcessInfo, paneRead, paneScrollInfo, paneSendKeys, paneSendText, type ProcessInfo } from "./herdr/client.ts";
 import { piTranscriptPath } from "./pi.ts";
-import { OmoAskReader } from "./omo-ask.ts";
+import { heldOmoProcess } from "./omo.ts";
+import { OmoAskReader, ompAsksAfter } from "./omo-ask.ts";
+import { ompMarkdownPrompt } from "./omp-ask.ts";
+import { answerPiAskUser, bindPiAsk, piAskActivity, piAskUserPrompt } from "./pi-ask-bridge.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
 import { claudePlanFile } from "./claude-plan.ts";
 import { listPendingQuestionForms, openCodeService, replyOpenCodeForm } from "./opencode-service.ts";
@@ -53,7 +56,7 @@ type PaneCommandSend = CommandSend & {
     discovering: boolean;
     identity: string;
     /** The agent process the send went to (bindCommandProcess); null when it could not be told, none when not bound. */
-    process?: { readonly pid: number; readonly started: number | null } | null;
+    process?: { readonly pid: number; readonly started: number | null; readonly held?: true } | null;
     /**
      * No foreground process matched the agent when binding (native Windows lists only the shell; an executable
      * named otherwise than its kind), or the read failed: nothing can show a replacement, so the session the same
@@ -88,14 +91,26 @@ const outcomeIdentity = (pane: HerdrPane): string => JSON.stringify([pane.termin
 
 /**
  * The agent process in front (agentProcessInFront, as a pending send is bound), keyed by its pid and, on Linux, its
- * start time; never the process-group id. With `bound`, that process only, while herdr still lists it as one of the
- * agent's: Windows hands a finished agent's pid to the next process at once, and that one is no agent.
+ * start time; never the process-group id. `held`: the OmO process holding a session (heldOmoProcess), which an
+ * argv-silent custom OmO is known by alone, so a send is not bound to its bundled SDK child; a process bound so is
+ * marked `held` and keyed by its start on macOS too (the kernel's record, no `ps`). With `bound`, that process only,
+ * while herdr still lists it as one of the agent's, or it is the OmO it was bound as: a holder counts only while its
+ * start is readable (never on Windows, which hands a finished agent's pid to the next process at once), and a later
+ * start under that pid is another process (checkBoundProcess).
  */
-function outcomeProcess(info: ProcessInfo | undefined, agent: string, bound?: number): { pid: number; started: number | null } | null {
-  const running = agentProcessInFront(info, agent, bound);
-  return running && (bound === undefined || running.pid === bound && agentProcesses([running], agent).length > 0)
-    ? { pid: running.pid, started: process.platform === "linux" ? processStartedAt(running.pid) : null } : null;
+function outcomeProcess(info: ProcessInfo | undefined, agent: string, bound?: number, held?: number | null):
+  { pid: number; started: number | null; held?: true } | null {
+  const running = agentProcessInFront(info, agent, bound, held);
+  if (!running) return null;
+  const heldStart = running.pid === held ? processStartedAt(running.pid) : null;
+  if (bound !== undefined && (running.pid !== bound || heldStart === null && agentProcesses([running], agent).length === 0)) return null;
+  return heldStart !== null ? { pid: running.pid, started: heldStart, held: true }
+    : { pid: running.pid, started: process.platform === "linux" ? processStartedAt(running.pid) : null };
 }
+
+/** The OmO process holding a session among `info`'s, for an OmO send only; read without holding the event loop. */
+const heldOmoOf = async (pane: HerdrPane | null | undefined, agent: string, info: ProcessInfo | undefined): Promise<number | null> =>
+  pane && agent === "omo" ? await heldOmoProcess(pane, info?.foreground_processes ?? []).catch(() => null) : null;
 
 /** How long a poll waits for a send's process binding before it judges that send without one, this time. */
 const BINDING_WAIT_MS = 250;
@@ -121,9 +136,10 @@ const sameProcess = (a: { pid: number; started: number | null }, b: { pid: numbe
  * `seen`: herdr's foreground answer read before this send, which is the process it went to. Without one, the read
  * starts alongside delivery and can answer after a replacement: a process that started at or after the send never
  * received it, so the send is left unidentified rather than bound to it. Outside Linux and macOS no start time is
- * known and the answer is taken as the send-time one.
+ * known and the answer is taken as the send-time one. `pane`: the pane the send went to, which places an OmO's
+ * session holder (heldOmoProcess).
  */
-export function bindCommandProcess(paneId: string, command: PaneCommandSend | undefined, seen?: ProcessInfo): void {
+export function bindCommandProcess(paneId: string, command: PaneCommandSend | undefined, seen?: ProcessInfo, pane?: HerdrPane | null): void {
   const visibility = command?.visibility;
   if (!command || !visibility || visibility.process !== undefined || visibility.binding) return;
   const sentAt = Date.now();
@@ -131,11 +147,12 @@ export function bindCommandProcess(paneId: string, command: PaneCommandSend | un
     if (seen) {
       // the /proc start-time read waits until delivery has its turn
       await Promise.resolve();
-      visibility.process = outcomeProcess(seen, command.agent);
+      visibility.process = outcomeProcess(seen, command.agent, undefined, await heldOmoOf(pane, command.agent, seen));
       if (!visibility.process) visibility.unmatched = true;
       return;
     }
-    const found = outcomeProcess(await paneProcessInfo(paneId).catch(() => undefined), command.agent);
+    const info = await paneProcessInfo(paneId).catch(() => undefined);
+    const found = outcomeProcess(info, command.agent, undefined, await heldOmoOf(pane, command.agent, info));
     const startedBy = found ? await processStartUpperBoundAsync(found.pid) : null;
     visibility.process = found && (startedBy === null || startedBy < sentAt) ? found : null;
     if (!found) visibility.unmatched = true;
@@ -146,7 +163,8 @@ export function bindCommandProcess(paneId: string, command: PaneCommandSend | un
 function checkBoundProcess(visibility: NonNullable<PaneCommandSend["visibility"]>, agent: string, processes: ProcessInfo):
   { pid: number; started: number | null } | null {
   const original = visibility.process!;
-  const current = outcomeProcess(processes, agent, original.pid);
+  // bound as the OmO holding the session, it is still that one: no holder is read again on a poll
+  const current = outcomeProcess(processes, agent, original.pid, original.held ? original.pid : null);
   if (current) {
     visibility.misses = 0;
     if (original.started !== null && current.started !== null && original.started !== current.started) visibility.replaced = true;
@@ -190,8 +208,24 @@ export function commandSendFrom(pane: HerdrPane, agent: string, commands: SlashC
     ...(sessionChange ? { sessionChange: { terminalId: pane.terminal_id } } : {}) };
 }
 
-/** A message the chat just sent to a pane: one with invisible characters may be held by Claude Code. */
-export function noteSubmitted(paneId: string, text: string, command?: PaneCommandSend): void {
+type SubmittedListener = (paneId: string, prompt: boolean, sentAt: number | undefined) => void;
+const submittedListeners = new Set<SubmittedListener>();
+
+/**
+ * Each successful chat send, as it returns. `prompt`: it is a prompt, which begins a turn; a
+ * slash command may run with none, and Claude Code may hold a message with invisible characters.
+ * `sentAt`: when the send's Enter was sent, where its sender knows.
+ */
+export function onChatSubmitted(listener: SubmittedListener): () => void {
+  submittedListeners.add(listener);
+  return () => { submittedListeners.delete(listener); };
+}
+
+/**
+ * A message the chat just sent to a pane: one with invisible characters may be held by Claude Code.
+ * `sentAt`: taken right before the key (or herdr's prompt call) that submitted it.
+ */
+export function noteSubmitted(paneId: string, text: string, command?: PaneCommandSend, sentAt?: number): void {
   const previous = chatSent.get(paneId)?.commands ?? [];
   const reservations = chatSent.get(paneId)?.reservations ?? new CommandReservations();
   reservations.close(command?.text ?? text, command?.at ?? Date.now());
@@ -202,6 +236,11 @@ export function noteSubmitted(paneId: string, text: string, command?: PaneComman
   if (chatSent.size > 128) chatSent.delete(chatSent.keys().next().value!);
   if (INVISIBLE_CHAR_RE.test(text)) heldCandidates.set(paneId, { text, at: Date.now() });
   else heldCandidates.delete(paneId);
+  const prompt = !INVISIBLE_CHAR_RE.test(text) && !text.trimStart().startsWith("/");
+  // the message is sent: what a listener makes of it must not turn the send into a failure
+  for (const listener of submittedListeners) {
+    try { listener(paneId, prompt, sentAt); } catch (error) { console.error(`chat send on ${paneId}: a listener failed: ${error instanceof Error ? error.message : String(error)}`); }
+  }
 }
 
 /** The text of the pane's last successful chat send (noteSubmitted), or none. */
@@ -592,12 +631,13 @@ async function readPrompt(paneId: string, codexHome?: string, openCodeStateDir?:
   // counted right before the screen is read, after the snapshot: what matters is whether an
   // answer ran while the screen was being read
   const turns = answerTurns.get(paneId) ?? 0;
-  const known = await readKnownPrompt(paneId, pane, agent, codexHome, panes, openCodeStateDir, openCodeState, signal);
+  const known = await readKnownPrompt(paneId, pane, agent, codexHome, panes, openCodeStateDir, openCodeState, signal, true);
   if (known.stale) return { agent, status, prompt: null, pane, panes, snapshot, stale: true };
   // A custom form just answered can close before Herdr stops reporting blocked. Its hint may
   // outlive the widget, but that is no input to offer as fallback keys. Known next steps still
   // show immediately; only an unrecognized screen waits for this bounded settling window.
   const settling = Date.now() - (formsAnswered.get(paneId) ?? 0) < FORM_SETTLE_MS;
+  // a pi pane gets no generic card (readKnownPrompt says so through suppressFallback)
   if (known.prompt !== null || known.suppressFallback || status !== "blocked" || !agent || settling) {
     fallbackLogged.delete(paneId);
     return { agent, status, prompt: asked(paneId, known.prompt, turns), pane, panes, snapshot, screen: known.screen, inputUnverified: known.inputUnverified };
@@ -620,6 +660,32 @@ async function readPrompt(paneId: string, codexHome?: string, openCodeStateDir?:
 }
 
 const piAskReader = new OmoAskReader(); // Pi and OmO share the message/toolCall JSONL envelope.
+
+/**
+ * Whether no key may go into the pi pane: the web UI's pi-ask extension serves the pane's pi (its
+ * socket answers, or cannot be read), so a pi-ask form can open there at any moment, between any
+ * check and the key that follows it. pi-ask takes no typed keys (its docs/remote-events.md): such a
+ * pane gets no key-driven card at all, pi's own dialogs included, and the terminal answers them.
+ * The pi-ask card answers through the extension instead. A pi without the extension is as on main.
+ */
+async function piAskRefusesKeys(paneId: string, signal?: AbortSignal): Promise<boolean> {
+  return await piAskActivity(paneId, signal) !== "absent";
+}
+
+/** A pi-ask form opened under a key-driven answer: nothing more is sent. */
+class PiAskFormOpen extends Error {}
+const ompAskReader = new OmoAskReader(ompAsksAfter);
+
+/** An omp Ask card in the agent's own Markdown when its session's open ask call is the menu on screen (omp-ask.ts); else the card as drawn. */
+async function withOmpMarkdown(paneId: string, cwd: string, prompt: InteractivePrompt): Promise<InteractivePrompt> {
+  if (parsedByPublicPrompt.get(prompt)?.responder !== "omp-question") return prompt;
+  try {
+    return ompMarkdownPrompt(prompt, ompAskReader.read((await ompTranscriptPath(paneId, cwd)).path));
+  } catch {
+    return prompt; // no session proved for the pane, or not written yet: the card as drawn
+  }
+}
+
 async function readKnownPrompt(
   paneId: string,
   pane: { cwd?: string | null; agent_status?: string; agent_session?: HerdrPane["agent_session"] },
@@ -629,6 +695,8 @@ async function readKnownPrompt(
   openCodeStateDir?: string,
   openCodeState = defaultOpenCodeState,
   signal?: AbortSignal,
+  /** the card as the chat shows it (omp's own Markdown, withOmpMarkdown); an answer's reads compare only ids and keys, which are the screen's either way */
+  markdown = false,
 ): Promise<{ prompt: InteractivePrompt | null; screen?: string; stale?: boolean; inputUnverified?: true; suppressFallback?: true }> {
   // no native card (no session herdr reports, no verified v2 service, no pending form): OpenCode
   // v1's own question prompt is read off the screen below (dialogs/opencode.ts, #1386)
@@ -775,6 +843,12 @@ async function readKnownPrompt(
   }
 
   if (!["claude", "omp", "codex", "omo", "pi", "gjc", "hermes", "cmd", "opencode", ""].includes(agent)) return { prompt: null };
+  const piTranscript = agent === "pi" ? await piTranscriptPath(paneId).catch(() => null) : null;
+  // pi-ask's ask_user form, as the web UI's pi extension reports it: answered through pi-ask, never keys
+  if (piTranscript && "path" in piTranscript) {
+    const card = await bindPiAsk(paneId, piTranscript, signal);
+    if (card) return { prompt: publicPrompt(piAskUserPrompt(paneId, piTranscript.path, card)) };
+  }
   let screen = await liveScreen(paneId);
   const questionnaire = agent === "pi" && isPiQuestionnaireScreen(screen);
   const piTabs = agent === "pi" && (questionnaire && /[□■]/.test(screen)
@@ -803,7 +877,7 @@ async function readKnownPrompt(
   const omoTrusted = (agent !== "claude" && agent !== "") || pane.agent_status === "blocked";
   let piNative: ParsedPrompt | null = null;
   if (agent === "pi") {
-    const transcript = await piTranscriptPath(paneId).catch(() => null);
+    const transcript = piTranscript;
     if (transcript && "path" in transcript) {
       try {
         const calls = pendingPiQuestionnaires(transcript.path);
@@ -821,7 +895,7 @@ async function readKnownPrompt(
   if (piTabs && !questionnaire && !piNative) {
     // A saved custom answer replaces the Other label. Only the pane's verified pending call
     // can prove that last row is still input, not a clipped third/fourth ordinary option.
-    const transcript = await piTranscriptPath(paneId).catch(() => null);
+    const transcript = piTranscript;
     if (transcript && "path" in transcript) {
       try {
         const matches = piAskReader.read(transcript.path).flatMap(call => {
@@ -834,9 +908,21 @@ async function readKnownPrompt(
       } catch { screen = screen.replace(ANSI_RE, ""); }
     }
   }
-  const prompt = piNative ? publicPrompt(piNative)
+  let prompt = piNative ? publicPrompt(piNative)
     : parseInteractivePrompt(agent, screen, omoAsks[0] ?? null, omoTrusted, omoAsks, agent === "claude" ? heldCandidate(paneId) : null, pane.agent_status === "working");
+  if (markdown && prompt && agent === "omp" && pane.cwd) prompt = await withOmpMarkdown(paneId, pane.cwd, prompt);
   if (prompt && await claudeHeldIsGrey(paneId, prompt)) return { prompt: null, screen };
+  // pi-ask's form with no card: pi-ask takes no typed keys (its docs/remote-events.md), so no card
+  // that answers by keys is offered, pi's own dialogs included (the answer would refuse them too):
+  // the terminal answers it. The pane's pi says so through the extension (any open form, a card or
+  // not, with or without a session written yet); without it, an open ask_user call in the session
+  // does. Asked after the screen read, so a form that opened during it counts
+  // A pi pane gets no generic card: its Enter/Esc would be keys guessed into pi, which may be showing
+  // pi-ask's form (it takes no typed keys); the terminal answers what no reader knows. herdr labels an
+  // OmO pane `pi` while OmO waits: told apart by its process tree, it keeps the card other agents get
+  if (agent === "pi" && (prompt === null || parsedByPublicPrompt.get(prompt)?.responder.startsWith("fallback"))
+    && !(await paneRunsOmo(paneId).catch(() => false))) return { prompt: null, screen, suppressFallback: true };
+  if (agent === "pi" && await piAskRefusesKeys(paneId, signal)) return { prompt: null, screen, suppressFallback: true };
   if (!prompt && agent === "gjc") {
     const fallback = parseFallbackPrompt(agent, screen);
     if (parsedByPublicPrompt.get(fallback)?.responder === "fallback-gjc-menu") return { prompt: fallback, screen };
@@ -1192,6 +1278,19 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         return jsonResponse({ error: { code: "reply_failed", message: `Failed to reply to OpenCode form (HTTP ${replyResult.status}).` } }, 502);
       }
 
+      if (parsedPrompt?.responder === "pi-ask-user" && parsedPrompt.piAskUser) {
+        const { response, answered } = await answerPiAskUser(body.pane_id, parsedPrompt, body, deadline);
+        if (response.ok) askingEnded(body.pane_id);
+        if (answered) {
+          const sent = chatSent.get(body.pane_id)?.commands.at(-1);
+          // pi-ask itself took the answer to the form the sent command opened
+          if (sent?.dialogId === prompt.id) noteCommandEvidence(body.pane_id, sent.id, { kind: "native", at: Date.now() });
+          formsAnswered.set(body.pane_id, Date.now());
+          if (formsAnswered.size > 64) formsAnswered.delete(formsAnswered.keys().next().value!);
+        }
+        return response;
+      }
+
       if (body.step_back === true || body.step_index !== undefined) {
         const native = parsedPrompt?.piAskForm;
         if (!native || body.step_back === true && body.step_index !== undefined
@@ -1221,7 +1320,10 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         try {
           const moved = await navigatePiAsk(parsedPrompt, target, {
             deadline: deadlineAt, active,
-            send: key => paneSendKeys(body.pane_id, [key]),
+            send: async key => {
+              if (await piAskRefusesKeys(body.pane_id, deadline)) throw new PiAskFormOpen();
+              await paneSendKeys(body.pane_id, [key]);
+            },
             read: async () => {
               if (!active()) return null;
               const live = await readPrompt(body.pane_id, options.codexHome, options.openCodeStateDir, openCodeState, deadline);
@@ -1231,6 +1333,9 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           if (!moved) return promptChanged();
           askingEnded(body.pane_id);
           return jsonResponse({ ok: true });
+        } catch (error) {
+          if (error instanceof PiAskFormOpen) return promptChanged();
+          throw error;
         } finally { answersUnderWay.delete(body.pane_id); }
       }
 
@@ -1351,6 +1456,8 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           }
         };
         const sendStep = async (step: AnswerStep, move: boolean, more: boolean): Promise<void> => {
+          // right before each key: a pi-ask form that opened since the read takes none of them
+          if (agent === "pi" && await piAskRefusesKeys(body.pane_id, deadline)) throw new PiAskFormOpen();
           const first = !move && !committed;
           if (!move) committed = true;
           try {
@@ -1448,6 +1555,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           && body.option_index !== parsed.rejectWithEscapeIndex) noteCommandEvidence(body.pane_id, sent.id, { kind: "dialog", at: Date.now() });
       } catch (error) {
         if (error instanceof InvalidAnswer) return badRequest("invalid_answer", error.message);
+        if (error instanceof PiAskFormOpen) return promptChanged();
         throw error;
       } finally {
         answersUnderWay.delete(body.pane_id);

@@ -4,7 +4,7 @@ import { appendFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-import { capturePiDeliveryAnchor, capturePiDeliveryAnchorRetrying, matchPiDeliveries, PiReceiptCapacity, type PiDeliveryAnchor, type PiDeliveryCandidate } from "./pi-delivery.ts";
+import { capturePiDeliveryAnchor, capturePiDeliveryAnchorAttempt, capturePiDeliveryAnchorRetrying, matchPiDeliveries, PiReceiptCapacity, type PiDeliveryAnchor, type PiDeliveryCandidate } from "./pi-delivery.ts";
 
 const roots: string[] = [];
 const dir = () => { const root = mkdtempSync(join(tmpdir(), "ovis-pi-delivery-")); roots.push(root); return root; };
@@ -180,6 +180,41 @@ describe("Pi delivery transcript matching", () => {
       async () => { waits++; });
     expect(result).toEqual(anchor);
     expect({ captures, waits }).toEqual({ captures: 3, waits: 2 });
+  });
+
+  it.each(["empty file", "partial header", "partial entry"])("retries capture with %s already present until the writer completes it", async (kind) => {
+    const path = join(dir(), "in-flight.jsonl");
+    const start = header(), message = entry("base", null, "assistant", "working");
+    const complete = start + message;
+    const prefix = kind === "empty file" ? "" : kind === "partial header" ? start.slice(0, -1) : complete.slice(0, -1);
+    writeFileSync(path, prefix);
+    // No write occurs during the attempt: equal before/after stats do not prove the writer is done.
+    expect(capturePiDeliveryAnchorAttempt(path)).toEqual({ anchor: null, retry: true });
+    let waits = 0;
+    const anchor = await capturePiDeliveryAnchorRetrying(path, false, undefined, capturePiDeliveryAnchorAttempt,
+      async () => { waits++; appendFileSync(path, complete.slice(prefix.length)); });
+    expect(waits).toBe(1);
+    expect(anchor?.leaf).toBe("base");
+    appendFileSync(path, entry("ours", "base", "user", "after the write"));
+    expect(matchPiDeliveries(path, [candidate("one", "after the write", anchor!)])).toEqual({ consumed: ["one"], changed: [], retry: false });
+  });
+
+  it("bounds retries for a partial record that never completes", async () => {
+    const path = join(dir(), "stalled.jsonl");
+    writeFileSync(path, header() + entry("base", null, "assistant", "working").slice(0, -1));
+    let captures = 0, waits = 0;
+    const anchor = await capturePiDeliveryAnchorRetrying(path, false, undefined,
+      (...args) => { captures++; return capturePiDeliveryAnchorAttempt(...args); }, async () => { waits++; });
+    expect(anchor).toBeNull();
+    expect({ captures, waits }).toEqual({ captures: 3, waits: 2 });
+  });
+
+  it("does not retry a complete malformed record or a mismatching session", () => {
+    const path = join(dir(), "invalid.jsonl"), session = crypto.randomUUID();
+    writeFileSync(path, header(session) + "not JSON\n");
+    expect(capturePiDeliveryAnchorAttempt(path)).toEqual({ anchor: null, retry: false });
+    writeFileSync(path, header(session) + entry("base", null, "assistant", "working"));
+    expect(capturePiDeliveryAnchorAttempt(path, false, "other-session")).toEqual({ anchor: null, retry: false });
   });
 
   it("does not retry a genuinely unreadable transcript capture", async () => {

@@ -6,12 +6,13 @@ import { join } from "node:path";
 
 import { createServer } from "./index.ts";
 import { forgetTranscriptState } from "./conversation.ts";
-import { herdrRpc, sessionSnapshot, workspaceClose, workspaceCreate } from "./herdr/client.ts";
+import { herdrRpc, paneRead, sessionSnapshot, workspaceClose, workspaceCreate } from "./herdr/client.ts";
 import type { CommandOutcome, ConversationPart, ConversationResponse, SlashCommand } from "../shared/protocol.ts";
 import { CATALOG_SOURCE_BUDGET_MS, mergeCatalogSources } from "./catalog-sources.ts";
 import { paneContext } from "./pane-context.ts";
 import { closeOpenCodeNative, openCodeNativeState } from "./opencode-native.ts";
 import { forgetOpenCodeService, openCodeServiceOptions, OPENCODE_HTTP_TIMEOUT_MS } from "./opencode-service.ts";
+import { skillRowSelected } from "./opencode-skill-attach.ts";
 
 // Real herdr metadata + HTTP + an OpenCode store of the test's own, handed to the server (opencodeDb).
 const root = mkdtempSync(join(tmpdir(), "ovis-opencode-contract-"));
@@ -305,8 +306,8 @@ describe("OpenCode v2 native service", () => {
   let connected = Promise.withResolvers<void>();
   /** runs once, inside the next session lookup, before the fake answers it */
   let duringLookup: (() => Promise<void>) | undefined;
-  /** every chunk the stand-in reads from its terminal, reported by the stand-in itself */
-  let onTyped: ((chunk: string, start: number) => void) | undefined;
+  /** every chunk the stand-in reads from its terminal, reported by the stand-in itself with when it read it (ms since the epoch) */
+  let onTyped: ((chunk: string, start: number, at: number) => void) | undefined;
   const typedWaiters = new Set<() => void>();
   /** while set, session lookups get no answer (the bridge's own request timeout ends them) */
   let withholdLookups = false;
@@ -318,8 +319,8 @@ describe("OpenCode v2 native service", () => {
   const withheld = new Set<() => void>();
   /** how /api/event answers: normally, never (held), 404 or 503 */
   let eventMode: "ok" | "slow" | "absent" | "error" = "ok";
-  /** when the fake last answered any request of the bridge's (not the stand-in's reports) */
-  let lastRequestAt = 0;
+  /** when the fake received each request of the bridge's (not the stand-in's reports), in ms since the epoch */
+  const requestsAt: number[] = [];
   const typed = (): string => existsSync(typedLog) ? readFileSync(typedLog, "latin1") : "";
   /** each event 10 ms after the last, so the evidence names exactly which event settled a send */
   let clock = 0;
@@ -352,18 +353,22 @@ describe("OpenCode v2 native service", () => {
     const recorded = (name: string) => readFileSync(join(import.meta.dir, "fixtures", `opencode-autocomplete-2.0.32-ansi-narrow-${name}.ansi`), "utf8").replace(/\n/g, "\r\n");
     writeFileSync(join(nativeRoot, "screen.txt"), recorded("first-selected"));
     writeFileSync(join(nativeRoot, "accepted.txt"), recorded("accepted"));
+    writeFileSync(join(nativeRoot, "closed.txt"), recorded("closed"));
     writeFileSync(standIn, `#!${process.execPath}
 const { appendFileSync, readFileSync, statSync } = require("node:fs");
 let typed = "";
 process.stdin.setRawMode(true);
 process.stdin.on("data", (chunk) => {
+  const at = performance.timeOrigin + performance.now();
   appendFileSync(${JSON.stringify(typedLog)}, chunk);
   const start = statSync(${JSON.stringify(typedLog)}).size - chunk.length;
-  fetch(readFileSync(${JSON.stringify(join(nativeRoot, "fake.url"))}, "utf8") + "/test/typed", { method: "POST", headers: { "x-typed-start": String(start) }, body: chunk }).catch(() => {});
+  fetch(readFileSync(${JSON.stringify(join(nativeRoot, "fake.url"))}, "utf8") + "/test/typed", { method: "POST", headers: { "x-typed-start": String(start), "x-typed-at": String(at) }, body: chunk }).catch(() => {});
   const before = typed;
   typed += chunk.toString("latin1");
   if (!before.endsWith("@effect") && typed.endsWith("@effect")) process.stdout.write("\\u001b[2J\\u001b[H" + readFileSync(${JSON.stringify(join(nativeRoot, "screen.txt"))}, "utf8"));
   if (before.endsWith("@effect") && typed.endsWith("@effect\\t")) process.stdout.write("\\u001b[2J\\u001b[H" + readFileSync(${JSON.stringify(join(nativeRoot, "accepted.txt"))}, "utf8"));
+  // Ctrl-L: the prompt with its autocomplete closed (closedPrompt)
+  if (chunk.toString("latin1") === "\\u000c") process.stdout.write("\\u001b[2J\\u001b[H" + readFileSync(${JSON.stringify(join(nativeRoot, "closed.txt"))}, "utf8"));
 });
 `);
     chmodSync(standIn, 0o755);
@@ -373,11 +378,11 @@ process.stdin.on("data", (chunk) => {
         const url = new URL(request.url);
         if (url.pathname === "/api/info") return Response.json(info);
         if (url.pathname === "/test/typed") return request.text().then((chunk) => {
-          onTyped?.(chunk, Number(request.headers.get("x-typed-start")));
+          onTyped?.(chunk, Number(request.headers.get("x-typed-start")), Number(request.headers.get("x-typed-at")));
           for (const wake of typedWaiters) wake();
           return new Response(null, { status: 204 });
         });
-        lastRequestAt = performance.now();
+        requestsAt.push(performance.timeOrigin + performance.now());
         if (url.pathname === "/api/event" && eventMode === "slow") return new Promise<Response>((resolve) => withheld.add(() => resolve(new Response(null, { status: 503 }))));
         if (url.pathname === "/api/event" && eventMode !== "ok") return new Response(null, { status: eventMode === "absent" ? 404 : 503 });
         if (hangAll && url.pathname !== "/api/info") {
@@ -675,6 +680,22 @@ process.stdin.on("data", (chunk) => {
     check();
   });
 
+  /**
+   * The stand-in redraws only as it is typed to, so a test that left @effect's row selected (as Tab leaving the skill
+   * unconfirmed does) leaves it on screen for the next. A send reads its autocomplete and the agent named beside it
+   * from the first screen showing that row, which could then be the old one, not the one its own @effect draws.
+   * This draws the prompt with the autocomplete closed: once the stand-in has read its Ctrl-L (typed.log ends with it,
+   * written before the redraw) and herdr shows no selected row, every screen after it is the next send's own.
+   */
+  const closedPrompt = async (): Promise<void> => {
+    await herdrRpc("pane.send_text", { pane_id: nativePane, text: "\u000c" });
+    for (const deadline = Date.now() + 5_000;;) {
+      if (typed().endsWith("\u000c") && !skillRowSelected((await paneRead({ paneId: nativePane, source: "visible", format: "ansi" })).text, "effect")) break;
+      if (Date.now() > deadline) throw new Error("the stand-in's closed prompt was not drawn");
+      await Bun.sleep(25);
+    }
+  };
+
   it("delivers a queued message completely when Tab leaves the skill unconfirmed", async () => {
     const acceptedPath = join(nativeRoot, "accepted.txt");
     const accepted = readFileSync(acceptedPath, "utf8");
@@ -713,6 +734,7 @@ process.stdin.on("data", (chunk) => {
     const selected = readFileSync(selectedPath, "utf8");
     const accepted = readFileSync(acceptedPath, "utf8");
     const { ws, frame } = await socket();
+    await closedPrompt();
     const before = typed().length;
     let uncertainId: string | undefined;
     try {
@@ -1015,13 +1037,23 @@ process.stdin.on("data", (chunk) => {
             await untilStatus("working");
           }
           const before = typed().length;
+          // Measured from the last thing this send itself waited on before its first byte: its submit, the
+          // queued send's idle report, or a request of the bridge's. A send that types before asking the
+          // service anything (a /command) was measured from the previous send's requests (#2143).
           // Reports can arrive out of order; identify this send's first byte, regardless of chunking.
-          onTyped = (_chunk, start) => { if (start === before) typedFirst.resolve(performance.now() - lastRequestAt); };
+          let since = performance.timeOrigin + performance.now();
+          requestsAt.length = 0;
+          onTyped = (_chunk, start, at) => {
+            if (start === before) typedFirst.resolve(at - Math.max(since, ...requestsAt.filter((requestAt) => requestAt <= at)));
+          };
           const completed = typedSince(before);
           ws.send(JSON.stringify({ type: "submit", id: request, pane_id: nativePane, text, payload: text, ...(path === "queued" ? { delivery: "queue" } : {}) }));
           const answer = await frame((message) => message.type === "submit-result" && message.id === request);
           expect(answer).toMatchObject({ ok: true });
-          if (path === "queued") await reportState("idle");
+          if (path === "queued") {
+            since = performance.timeOrigin + performance.now();
+            await reportState("idle");
+          }
           gaps[`${path}/${mode}`] = Math.round(await typedFirst.promise);
           // Keep this delivery's observer and service alive until its whole send has reached the TUI.
           await completed;
@@ -1117,15 +1149,17 @@ process.stdin.on("data", (chunk) => {
       await within(closed.promise, "the stream closing after the last verified pane stopped being OpenCode");
       expect(openCodeNativeState()).toEqual({ stream: false, panes: [] });
 
-      // a replacement server: its collector learns the pane verified before it started, and ends it
+      // a replacement server, started before the old one stops (the last server's stop releases every pane):
+      // its collector learns the pane verified before it started, and ends it
       opened = Promise.withResolvers<void>();
       closed = Promise.withResolvers<void>();
       ending = await startPane("ses_lifecycleHandover");
       await verify(ending.paneId);
       await within(opened.promise, "the stream opening for the handed-over pane");
-      server.stop();
+      const replaced = server;
       server = createServer({ port: 0, hostname: "127.0.0.1", token: "", stateDir: join(root, "state"), opencodeDb: database });
       await server.statusReady;
+      replaced.stop();
       expect(openCodeNativeState()).toEqual({ stream: true, panes: [ending.paneId] });
       await workspaceClose(ending.workspaceId);
       ending = undefined;

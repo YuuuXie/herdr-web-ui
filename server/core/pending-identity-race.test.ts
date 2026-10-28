@@ -1,8 +1,13 @@
 import { afterEach, expect, it, mock, spyOn } from "bun:test";
+import { appendFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import type { HerdrPane, ServerMessage, SessionSnapshot } from "../../shared/protocol.ts";
 import * as client from "../herdr/client.ts";
 import * as opencode from "../opencode-native.ts";
+import * as pi from "../pi.ts";
+import * as piDelivery from "../pi-delivery.ts";
 import * as processStart from "../process-start.ts";
 import { connectionData, type Client } from "./connections.ts";
 import { createPendingDelivery } from "./pending.ts";
@@ -81,3 +86,74 @@ it.each([
   expect(frame.removed ?? []).toEqual([]);
   expect(frame.messages.map((message) => message.state)).toEqual([state]);
 });
+
+it.each(["blocked", "working", "queue held", "foreground changed", "foreground disappeared", "lease lost", "unchanged"] as const)(
+  "rechecks queued Pi delivery when capture retries and the pane becomes %s", async (change) => {
+    const root = mkdtempSync(join(tmpdir(), "ovis-pi-capture-race-"));
+    try {
+      const path = join(root, "session.jsonl");
+      writeFileSync(path, JSON.stringify({ type: "session", version: 3, id: "session" }) + "\n"
+        + JSON.stringify({ type: "message", id: "base", parentId: null, message: { role: "assistant", content: [] } }));
+      const pane: Pick<HerdrPane, "pane_id" | "terminal_id" | "agent" | "agent_status"> = { pane_id: "p", terminal_id: "p", agent: "pi", agent_status: "working" };
+      const frames: ServerMessage[] = [], writes: string[] = [];
+      const settled = Promise.withResolvers<void>();
+      const owner = {
+        data: connectionData({ deviceId: undefined, readOnly: false }),
+        getBufferedAmount: () => 0,
+        send: (value: string) => {
+          const frame = JSON.parse(value) as ServerMessage;
+          frames.push(frame);
+          if (frame.type === "pending-messages" && (frame.removed?.length || frame.messages.some((message) => message.state === "uncertain"))) settled.resolve();
+          return 1;
+        },
+      } as Client;
+      owner.data.attached.set("p", { keepSize: false });
+      let foreground = [{ pid: 41001, name: "pi" }], held = false;
+      const facts = { attached: true, origin: true, sameAttachment: true, samePty: true, sameClaim: true, claimed: true, member: true, ready: true, held: false, currentHeld: false, mirror: false, cols: 120 };
+      spyOn(processStart, "processStartedAtAsync").mockResolvedValue(1_000);
+      spyOn(client, "paneProcessInfo").mockImplementation(async () => ({ pane_id: "p", shell_pid: 41000, foreground_processes: foreground }));
+      spyOn(client, "paneRead").mockResolvedValue({ text: "" } as Awaited<ReturnType<typeof client.paneRead>>);
+      spyOn(client, "paneSendText").mockImplementation(async () => { writes.push("paste"); });
+      spyOn(client, "paneSendKeys").mockImplementation(async (_pane, keys, _options, allowed) => {
+        if (allowed && !allowed()) throw new client.HerdrError("cancelled", "Input guard refused the key");
+        writes.push(...keys);
+      });
+      spyOn(pi, "piTranscriptPath").mockResolvedValue({ path, agentDir: null });
+      const capture = piDelivery.capturePiDeliveryAnchorRetrying;
+      let waits = 0;
+      spyOn(piDelivery, "capturePiDeliveryAnchorRetrying").mockImplementation((file, allowMissing, expected) =>
+        capture(file, allowMissing, expected, piDelivery.capturePiDeliveryAnchorAttempt, async () => {
+          waits++;
+          appendFileSync(path, "\n");
+          if (change === "blocked" || change === "working") pane.agent_status = change;
+          if (change === "queue held") held = true;
+          if (change === "foreground changed") foreground = [{ pid: 41002, name: "pi" }];
+          if (change === "foreground disappeared") foreground = [];
+          if (change === "lease lost") facts.samePty = false;
+        }));
+      let tail: Promise<unknown> = Promise.resolve();
+      const serialize = <T>(_pane: string, task: () => T | Promise<T>): Promise<T> => { const run = tail.catch(() => {}).then(task); tail = run; return run; };
+      const delivery = createPendingDelivery({
+        options: { submitDelayMs: 0 }, clients: new Set([owner]), attachments: new Map(),
+        sight: () => ({ origin: null, pty: null, claim: null, facts: () => facts, write: () => {} }),
+        serialize, lastTyped: new Map(), submitText: async () => {}, authorizeSocket: () => {},
+        clientSnapshot: async () => ({ panes: [{ ...pane }] }) as SessionSnapshot,
+        queueHeld: () => held, omo: { sessionOf: () => null },
+        SUBMIT_DEADLINE_MS: 45_000, SUBMIT_DELAY_MS: 0, TYPED_SETTLE_MS: 0,
+      });
+
+      await delivery.pendingFrames.submit(owner, { type: "submit", id: 1, pane_id: "p", text: "FOLLOWUP", payload: "FOLLOWUP", delivery: "queue" });
+      pane.agent_status = "idle";
+      delivery.pending.status("p", "idle");
+      delivery.drainPending("p");
+      await settled.promise;
+      await serialize("p", () => {});
+
+      expect(waits).toBe(1);
+      expect(writes).toEqual(change === "unchanged" ? ["paste", "Enter"] : ["paste"]);
+      if (change !== "unchanged") {
+        expect(delivery.pending.list(owner, "p")).toMatchObject([{ state: "uncertain", error: { code: "submit_changed" } }]);
+        expect(frames.flatMap((frame) => frame.type === "pending-messages" ? frame.removed ?? [] : [])).toEqual([]);
+      }
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
