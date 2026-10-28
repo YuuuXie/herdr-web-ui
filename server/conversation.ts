@@ -1202,7 +1202,8 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
       report.value, info?.foreground_process_group_id, info?.tty, processEnviron)
       ?? copilotHandoffSession(evidence(child), evidence(parent),
         report.value, info?.foreground_process_group_id, info?.tty, processEnviron);
-    if (selected?.logged && !(await claimedByPeer(selected.sessionId))) {
+    if (selected?.logged) {
+      if (await claimedByPeer(selected.sessionId)) throw new ConversationUnavailable("no_session_path", undefined, "copilot_peer_conflict");
       const path = copilotTranscriptFile(report.value, selected);
       if (path !== null && nodePath.basename(nodePath.dirname(path)) === report.value)
         return { path, binding: selected.generation, peerClaims: await peerClaims! };

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "./index.ts";
 import { herdrRpc, paneProcessInfo, sessionSnapshot, workspaceClose, workspaceCreate } from "./herdr/client.ts";
-import { forgetTranscriptState } from "./conversation.ts";
+import { forgetTranscriptState, paneConversation } from "./conversation.ts";
 import { copilotHandoffSession, copilotProcessSession } from "./copilot-store.ts";
 import { processEnviron } from "./omo.ts";
 import * as processStart from "./process-start.ts";
@@ -195,6 +195,9 @@ const handoffTest = async () => {
       await startFixture(duplicate.root_pane.pane_id, handoffId);
       await herdrRpc("pane.report_agent_session", { pane_id: duplicate.root_pane.pane_id, agent: "copilot",
         source: "herdr:copilot", seq: Date.now() * 1000 + 1, agent_session_id: handoffId });
+      await expect(paneConversation(current)).rejects.toMatchObject({
+        message: "no_session_path", diagnostic: "copilot_peer_conflict",
+      });
       expect((await read()).source).toBe("scrollback");
     } finally { await workspaceClose(duplicate.workspace.workspace_id); }
     expect((await read()).turns[0]?.parts[0]?.text).toBe("handoff history");
