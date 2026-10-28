@@ -39,7 +39,8 @@ export class ConnectionDiagnostics {
 
   constructor(
     private component: "herdr.rpc" | "machine.local" | "machine.remote" | "websocket" | "conversation",
-    private write: (line: string) => void = (line) => console.warn(line),
+    /** a budgeted sink returns false to decline a line: the failure then stays unseen */
+    private write: (line: string) => unknown = (line) => console.warn(line),
     private now: () => number = Date.now,
   ) {}
 
@@ -66,9 +67,13 @@ export class ConnectionDiagnostics {
       failure.suppressed++;
       return;
     }
+    // A declined line shows nothing, so no recovery may follow it; the next failure tries again.
+    if (!this.emit("failed", failure, fields, now)) {
+      failure.suppressed++;
+      return;
+    }
     failure.loggedAt = now;
     failure.visible = true;
-    this.emit("failed", failure, fields, now);
     failure.suppressed = 0;
   }
 
@@ -85,7 +90,7 @@ export class ConnectionDiagnostics {
     failure.suppressed = 0;
   }
 
-  private emit(event: "failed" | "recovered", failure: Failure, fields: Fields, now: number): void {
+  private emit(event: "failed" | "recovered", failure: Failure, fields: Fields, now: number): boolean {
     // Pick fields explicitly. Never spread an exception, request, response, or caller's object.
     const record: Record<string, string | number> = {
       time: new Date(now).toISOString(), event: `${this.component}.${event}`, episode_id: failure.id,
@@ -100,6 +105,6 @@ export class ConnectionDiagnostics {
       const value = fields[field];
       if (typeof value === "number" && Number.isFinite(value) && value >= 0) record[field] = Math.round(value);
     }
-    try { this.write(JSON.stringify(record)); } catch { /* diagnostics must not change delivery or cleanup */ }
+    try { return this.write(JSON.stringify(record)) !== false; } catch { /* diagnostics must not change delivery or cleanup */ return true; }
   }
 }

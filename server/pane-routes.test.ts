@@ -99,10 +99,24 @@ it("diagnoses pending reads while preserving the retry response", async () => {
     expect(response.status).toBe(503);
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(await response.json()).toEqual({ error: {
-      code: "conversation_read_pending", message: "The conversation could not be read; try again shortly.",
+      code: "conversation_read_pending", message: new conversation.ConversationReadPending().message,
     } });
     expect(JSON.parse(lines[0]!)).toMatchObject({ event: "conversation.failed", operation: "conversation.read_pending" });
   } finally { read.mockRestore(); warn.mockRestore(); }
+});
+
+it("does not report a plain shell's scrollback view as a conversation failure", async () => {
+  panes["w:shell"] = { process: [{ pid: 2147483645, argv: ["/bin/bash"], cwd: root }] };
+  const url = new URL("http://x/api/pane/conversation?pane_id=w:shell");
+  const lines: string[] = [];
+  const warn = spyOn(console, "warn").mockImplementation((line: unknown) => { lines.push(String(line)); });
+  try {
+    for (let i = 0; i < 3; i++) {
+      const response = (await handlePaneRequest(new Request(url), url, "/api/pane/conversation", {}))!;
+      expect(await response.json()).toMatchObject({ source: "scrollback", turns: [] });
+    }
+    expect(lines.filter((line) => line.includes("conversation."))).toEqual([]);
+  } finally { warn.mockRestore(); }
 });
 
 it("names an omo pane that herdr labels pi omo in the commands route, and types into it as omo only once omo holds a session", async () => {

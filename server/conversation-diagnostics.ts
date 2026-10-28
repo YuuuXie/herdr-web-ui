@@ -5,6 +5,8 @@ const REASONS = [
   ...COPILOT_UNAVAILABLE_REASONS, "branch_unreadable", "transcript_missing", "no_session_path",
   "no_session_id", "no_recognized_transcript", "pane_not_found", "session_not_written", "copilot_resume_unknown",
 ];
+/** A pane with no agent conversation (a plain shell): its scrollback is the expected view, not a failure. */
+const EXPECTED = new Set(["no_recognized_transcript"]);
 const INTERVAL_MS = 30_000;
 const MAX_LINES = 16;
 
@@ -15,9 +17,12 @@ export class ConversationDiagnostics {
   private lines = 0;
 
   constructor(write: (line: string) => void = (line) => console.warn(line), private now: () => number = () => performance.now()) {
+    // The budget bounds the output only: episodes still open and close while it is spent.
     this.episodes = new ConnectionDiagnostics("conversation", (line) => {
+      if (!this.available()) return false;
       this.lines++;
       write(line);
+      return true;
     }, () => performance.timeOrigin + now());
   }
 
@@ -28,7 +33,10 @@ export class ConversationDiagnostics {
   }
 
   unavailable(key: string, error: ConversationUnavailable | ConversationReadPending, requestId?: string): void {
-    if (!this.available()) return;
+    if (error instanceof ConversationUnavailable && error.diagnostic === undefined && EXPECTED.has(error.message)) {
+      this.recovered(key, requestId);
+      return;
+    }
     const pending = error instanceof ConversationReadPending;
     const reason = pending ? "read_pending" : REASONS.find((reason) => reason === (error.diagnostic ?? error.message)) ?? "unknown";
     this.episodes.failed(key, pending ? "conversation_read_pending" : "conversation_unavailable", {
@@ -37,7 +45,6 @@ export class ConversationDiagnostics {
   }
 
   recovered(key: string, requestId?: string): void {
-    if (!this.available()) return;
     this.episodes.recovered(key, { operation: "conversation", request_id: requestId });
   }
 }

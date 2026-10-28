@@ -46,12 +46,31 @@ it("bounds output even when pane keys rotate past the retained episode limit", (
   for (let i = 0; i < 300; i++) diagnostics.unavailable(`pane-${i}`, new ConversationUnavailable("no_session_id"));
   expect(records()).toHaveLength(16);
   advance(30_000);
-  diagnostics.recovered("pane-299");
+  diagnostics.recovered("pane-299"); // its failure was never shown: no orphan recovery
+  diagnostics.recovered("pane-0"); // retired with the oldest keys: nothing left to close
   expect(records()).toHaveLength(16);
-  diagnostics.recovered("pane-0");
-  expect(records()[16]).toMatchObject({ event: "conversation.recovered", episode_id: records()[0].episode_id });
   diagnostics.unavailable("new-pane", new ConversationUnavailable("no_session_id"));
-  expect(records()).toHaveLength(18);
+  expect(records()).toHaveLength(17);
+});
+
+it("keeps episodes apart while the line budget is spent", () => {
+  const { diagnostics, records, advance } = fixture();
+  for (let i = 0; i < 16; i++) diagnostics.unavailable(`pane-${i}`, new ConversationUnavailable("no_session_path"));
+  diagnostics.recovered("pane-0"); // no line left in this window, but the episode still ends
+  expect(records()).toHaveLength(16);
+  advance(30_000);
+  diagnostics.unavailable("pane-0", new ConversationUnavailable("no_session_path"));
+  expect(records()[16]).toMatchObject({ event: "conversation.failed", failures: 1 });
+  expect(records()[16].episode_id).not.toBe(records()[0].episode_id);
+});
+
+it("does not count a pane without an agent conversation as a failure", () => {
+  const { diagnostics, records } = fixture();
+  for (let i = 0; i < 50; i++) diagnostics.unavailable(`shell-${i}`, new ConversationUnavailable("no_recognized_transcript"));
+  expect(records()).toEqual([]);
+  diagnostics.unavailable("copilot", new ConversationUnavailable("no_session_path", undefined, "copilot_process_lookup_failed"));
+  diagnostics.unavailable("copilot", new ConversationUnavailable("no_recognized_transcript")); // its agent left: the episode ends
+  expect(records().map((record) => record.event)).toEqual(["conversation.failed", "conversation.recovered"]);
 });
 
 it("keeps the logging interval monotonic across wall-clock corrections", () => {
