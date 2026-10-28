@@ -17,10 +17,10 @@ import { requestIdContext } from "./http.ts";
 let root: string;
 let listener: ReturnType<typeof Bun.listen>;
 let socketBefore: string | undefined;
-let panes: Record<string, { agent?: string; session?: string; process: { pid: number; argv: string[]; cwd: string }[] }>;
+let panes: Record<string, { agent?: string; session?: string; cwd?: string; process: { pid: number; argv: string[]; cwd: string }[] }>;
 
 const paneInfo = (id: string) => ({
-  pane_id: id, workspace_id: "w", tab_id: "w:t1", terminal_id: id, cwd: root, focused: false, revision: 0,
+  pane_id: id, workspace_id: "w", tab_id: "w:t1", terminal_id: id, cwd: panes[id]?.cwd ?? root, focused: false, revision: 0,
   ...(panes[id]?.agent ? { agent: panes[id]!.agent } : {}),
   ...(panes[id]?.session ? { agent_session: { agent: "opencode", source: "herdr:opencode", kind: "id", value: panes[id]!.session } } : {}),
 });
@@ -116,6 +116,19 @@ it("does not report a plain shell's scrollback view as a conversation failure", 
       expect(await response.json()).toMatchObject({ source: "scrollback", turns: [] });
     }
     expect(lines.filter((line) => line.includes("conversation."))).toEqual([]);
+  } finally { warn.mockRestore(); }
+});
+
+it("still reports an agent pane herdr gives no folder, and does not count it as a recovery", async () => {
+  panes["w:nocwd"] = { agent: "copilot", cwd: "", process: [] };
+  const url = new URL("http://x/api/pane/conversation?pane_id=w:nocwd");
+  const lines: string[] = [];
+  const warn = spyOn(console, "warn").mockImplementation((line: unknown) => { lines.push(String(line)); });
+  try {
+    const response = (await handlePaneRequest(new Request(url), url, "/api/pane/conversation", {}))!;
+    expect(await response.json()).toMatchObject({ source: "scrollback", turns: [] });
+    const records = lines.filter((line) => line.includes("conversation.")).map((line) => JSON.parse(line));
+    expect(records).toEqual([expect.objectContaining({ event: "conversation.failed", operation: "conversation.agent_cwd_missing" })]);
   } finally { warn.mockRestore(); }
 });
 
