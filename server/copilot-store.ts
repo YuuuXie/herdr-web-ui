@@ -89,7 +89,14 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[]): Fore
       let target: string;
       try { target = readlinkSync(`/proc/${pid}/fd/${descriptor.name}`); }
       catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "ENOENT") continue;
+        if (code === "EINTR" || code === "EAGAIN" || code === "EBUSY" || code === "EIO" || code === "ESTALE") {
+          // Keep only the prefix to revalidate, never permission to serve a failed scan.
+          const cached = foregroundCheckpoints.get(pid);
+          if (cached) cached.readConflict = true;
+          return LOG_READ_CHANGED;
+        }
         return unavailable();
       }
       if (target.endsWith(" (deleted)") && LOG_NAME.test(basename(target.slice(0, -10)))) {

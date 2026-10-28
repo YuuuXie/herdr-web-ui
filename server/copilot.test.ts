@@ -475,6 +475,80 @@ it.skipIf(process.platform !== "linux")("reuses peer claims across conversation 
   }
 });
 
+it.skipIf(process.platform !== "linux")("retries a failed Copilot process lookup without retaining revoked or peer-conflicting history", async () => {
+  const own = await logFixture([]);
+  const peer = await logFixture([]);
+  const transcript = join(own.root, "session-state", session, "events.jsonl");
+  const snapshot = {
+    panes: ["own", "peer"].map((pane_id) => ({ pane_id, agent: "copilot", cwd: own.root })),
+    agents: [],
+  } as unknown as SessionSnapshot;
+  const snapshots = spyOn(herdr, "sessionSnapshot").mockResolvedValue(snapshot);
+  const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } });
+  const environment = spyOn(omo, "processEnviron").mockImplementation((pid) => pid === own.pid ? own.environment : peer.environment);
+  let failure: (() => void) | null = null;
+  let ownCalls = 0;
+  let empty = false;
+  let unavailable = false;
+  const info = spyOn(herdr, "paneProcessInfo").mockImplementation(async (paneId) => {
+    if (paneId === "own") {
+      ownCalls++;
+      if (unavailable) throw new Error("synthetic ongoing process lookup failure");
+      if (failure !== null) {
+        const change = failure;
+        failure = null;
+        change();
+        throw new Error("synthetic process lookup failure");
+      }
+      if (empty) return { pane_id: paneId, foreground_processes: [] };
+    }
+    return { pane_id: paneId, foreground_processes: [{ pid: paneId === "own" ? own.pid : peer.pid, name: "copilot", argv: ["copilot"] }] };
+  });
+  try {
+    appendFileSync(own.log, register(session));
+    appendFileSync(peer.log, register(other));
+    writeFileSync(transcript, start + prompt("current history"));
+    const shown = await paneConversation("own");
+    ownCalls = 0;
+    failure = () => {};
+    const recovered = await paneConversation("own", undefined, { history_id: shown.history_id });
+    expect(recovered.history_id).toBe(shown.history_id);
+    expect(recovered.turns).toEqual(shown.turns);
+    expect(ownCalls).toBe(3); // failed lookup, retry, and post-read ownership check
+    for (const change of [
+      () => { empty = true; },
+      () => { appendFileSync(own.log, register(session, "Unregistering")); },
+      () => { appendFileSync(peer.log, register(session)); },
+    ]) {
+      empty = false;
+      appendFileSync(own.log, register(session));
+      appendFileSync(peer.log, register(other));
+      failure = change;
+      await expect(paneConversation("own", undefined, { history_id: shown.history_id })).rejects.toBeInstanceOf(ConversationUnavailable);
+    }
+    empty = false;
+    appendFileSync(peer.log, register(session));
+    writeFileSync(join(own.root, "session-state", other, "events.jsonl"), line("session.start", { sessionId: other }) + prompt("changed history"));
+    failure = () => { appendFileSync(own.log, register(other)); };
+    const changed = await paneConversation("own", undefined, { history_id: shown.history_id });
+    expect(changed.history_id).not.toBe(shown.history_id);
+    expect(changed.turns[0]?.parts[0]).toEqual({ kind: "text", text: "changed history" });
+    unavailable = true;
+    ownCalls = 0;
+    await expect(paneConversation("own")).rejects.toBeInstanceOf(ConversationUnavailable);
+    expect(ownCalls).toBe(2);
+    unavailable = false;
+    empty = true;
+    ownCalls = 0;
+    await expect(paneConversation("own")).rejects.toBeInstanceOf(ConversationUnavailable);
+    expect(ownCalls).toBe(1);
+  } finally {
+    info.mockRestore(); environment.mockRestore(); rpc.mockRestore(); snapshots.mockRestore();
+    forgetTranscriptState();
+    await own.close(); await peer.close();
+  }
+});
+
 it.skipIf(process.platform !== "linux")("does not retain the old history when the session switches while a failed read rechecks its peers", async () => {
   const root = mkdtempSync(join(tmpdir(), "copilot-recheck-"));
   const transcript = (id: string) => join(root, "session-state", id, "events.jsonl");
@@ -852,6 +926,46 @@ it.skipIf(process.platform !== "linux")("does not take a log rewritten during a 
 });
 
 for (const registered of [false, true]) {
+  it.skipIf(process.platform !== "linux")(`revalidates ${registered ? "registered" : "marker"} evidence after temporary descriptor read failure`, async () => {
+    const fixture = await logFixture([session]);
+    const { log, environment, pid } = fixture;
+    const read = () => copilotProcessSession(environment, ["copilot"], pid);
+    const realLink = fs.readlinkSync;
+    let fail = false;
+    function currentLink(path: fs.PathLike, options?: fs.EncodingOption): string;
+    function currentLink(path: fs.PathLike, options: fs.BufferEncodingOption): Buffer<ArrayBuffer>;
+    function currentLink(path: fs.PathLike, options?: fs.EncodingOption | fs.BufferEncodingOption): string | Buffer<ArrayBuffer>;
+    function currentLink(path: fs.PathLike, options?: fs.EncodingOption | fs.BufferEncodingOption): string | Buffer<ArrayBuffer> {
+      const encoding = typeof options === "object" ? options?.encoding : options;
+      const target = encoding === "buffer" ? realLink(path, "buffer") : realLink(path, encoding);
+      if (fail && String(path).startsWith(`/proc/${pid}/fd/`) && target.toString() === log) {
+        throw Object.assign(new Error("fixture temporary descriptor read failure"), { code: "EIO" });
+      }
+      return target;
+    }
+    let links: ReturnType<typeof spyOn<typeof fs, "readlinkSync">> | undefined;
+    try {
+      appendFileSync(log, registered ? register(session) : "CLI started\n");
+      const original = read();
+      expect(original?.sessionId).toBe(session);
+      links = spyOn(fs, "readlinkSync").mockImplementation(currentLink);
+      fail = true;
+      expect(read()).toBeNull();
+      fail = false;
+      const recovered = read();
+      expect(recovered?.sessionId).toBe(session);
+      expect(recovered?.logged).toBe(registered);
+      if (original?.logged && recovered?.logged) expect(recovered.generation).toBe(original.generation);
+      fail = true;
+      appendFileSync(log, register(session, "Unregistering"));
+      expect(read()).toBeNull();
+      fail = false;
+      expect(read()).toBeNull();
+      writeFileSync(log, "rewritten ordinary log\n");
+      expect(read()).toBeNull();
+    } finally { links?.mockRestore(); await fixture.close(); }
+  });
+
   it.skipIf(process.platform !== "linux")(`revalidates ${registered ? "registered" : "marker"} evidence after temporary stat failure`, async () => {
     const fixture = await logFixture([session]);
     const { log, environment, pid } = fixture;

@@ -1158,7 +1158,9 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
     || report.source !== "herdr:copilot" || typeof report.value !== "string" || !SESSION_ID.test(report.value)))) {
     throw new ConversationUnavailable("no_session_id");
   }
-  const info = await paneProcessInfo(pane.pane_id).catch(() => null);
+  // A failed RPC does not prove an ownership change. Retry that read once; an answered
+  // empty/conflicting process set still fails closed, as does a failed retry.
+  const info = await paneProcessInfo(pane.pane_id).catch(() => paneProcessInfo(pane.pane_id)).catch(() => null);
   const processes = agentProcesses(info?.foreground_processes ?? [], "copilot");
   const foreground = processes[0];
   if (process.platform !== "linux" || ![1, 2].includes(processes.length) || typeof foreground?.pid !== "number") {
