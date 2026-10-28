@@ -523,6 +523,8 @@ it.skipIf(process.platform !== "linux")("does not retain the old history when th
     await expect(paneConversation("own")).rejects.toMatchObject({ name: "ConversationUnavailable", message: "transcript_missing" });
     expect(switched).toBe(false);
     snapshots.mockResolvedValue(answered);
+    // the switch must land in the next request's recheck, not in its first resolution
+    failed = false;
     await expect(paneConversation("own", undefined, { history_id: shown.history_id })).rejects.toMatchObject({ name: "ConversationUnavailable" });
     expect(switched).toBe(true);
   } finally {
