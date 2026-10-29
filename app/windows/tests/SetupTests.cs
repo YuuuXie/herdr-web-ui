@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace Ovis
 {
@@ -200,6 +201,54 @@ namespace Ovis
                     Equal("legacy", Setup.EnvToken(new[] { Setup.EnvironmentLayer(name => oldOnly.ContainsKey(name) ? oldOnly[name] : null), "PORT=1\n" }));
                     Equal("file", Setup.EnvToken(new[] { Setup.EnvironmentLayer(name => oldOnly.ContainsKey(name) ? oldOnly[name] : null), "OVIS_TOKEN=file\n" }));
                     Equal("", Setup.EnvironmentLayer(name => null));
+                }),
+                Case("the old id's plugin.ts is told the state dir herdr keeps for it, found as herdr finds it", () =>
+                {
+                    var windows = new Dictionary<string, string> { { "LOCALAPPDATA", @"C:\Users\u\AppData\Local" }, { "USERPROFILE", @"C:\Users\u" } };
+                    Equal(@"C:\Users\u\AppData\Local\herdr\plugins\devswha.herdr-web-ui", Setup.HerdrPluginStateDir(Links.LegacyPluginId, name => windows.ContainsKey(name) ? windows[name] : null));
+                    windows["XDG_STATE_HOME"] = @"D:\state";
+                    Equal(@"D:\state\herdr\plugins\devswha.herdr-web-ui", Setup.HerdrPluginStateDir(Links.LegacyPluginId, name => windows.ContainsKey(name) ? windows[name] : null));
+                    Equal(@"C:\Users\u\AppData\Local\herdr\plugins\devswha.herdr-web-ui", Setup.HerdrPluginStateDir(Links.LegacyPluginId, name => name == "USERPROFILE" ? @"C:\Users\u" : null));
+                }),
+                Case("the phone step: a server behind a token the app could not read is not told to install Tailscale", () =>
+                {
+                    Equal(PhoneStep.TokenNeeded, Setup.Phone(null, null, true));
+                    Equal(PhoneStep.Qr, Setup.Phone("https://pc.tail1.ts.net", "running", false));
+                    Equal(PhoneStep.MakeAddress, Setup.Phone(null, "running", false));
+                    Equal(PhoneStep.SignInTailscale, Setup.Phone(null, "stopped", false));
+                    Equal(PhoneStep.InstallTailscale, Setup.Phone(null, "missing", false));
+                    Equal(PhoneStep.InstallTailscale, Setup.Phone(null, null, false));
+                }),
+                Case("Windows PowerShell started as the app starts it writes its host, warning and error lines as text, not CLIXML", () =>
+                {
+                    // each word one argument, as cmd hands the app's words over
+                    var words = Setup.PowerShellArguments("Write-Host 'a host line'; Write-Warning 'a warning'; Write-Error 'it broke'; exit 3");
+                    var start = new System.Diagnostics.ProcessStartInfo("powershell.exe", string.Join(" ", words.Select(word => word.IndexOf(' ') >= 0 ? "\"" + word + "\"" : word)))
+                    {
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true,
+                        RedirectStandardInput = true,
+                        CreateNoWindow = true,
+                    };
+                    using (var shell = System.Diagnostics.Process.Start(start))
+                    {
+                        shell.StandardInput.Close();
+                        var stdout = shell.StandardOutput.ReadToEndAsync();
+                        var stderr = shell.StandardError.ReadToEndAsync();
+                        if (!shell.WaitForExit(60000))
+                        {
+                            shell.Kill();
+                            throw new Exception("powershell did not end within 60 s");
+                        }
+                        if (!System.Threading.Tasks.Task.WaitAll(new System.Threading.Tasks.Task[] { stdout, stderr }, 10000)) throw new Exception("powershell's output did not close within 10 s");
+                        var output = stdout.Result + stderr.Result;
+                        Equal(3, shell.ExitCode);
+                        Equal(false, output.Contains("CLIXML") || output.Contains("<Objs"));
+                        Contains(output, "a host line");
+                        Contains(output, "a warning");
+                        Contains(output, "it broke");
+                    }
                 }),
                 Case("versions: X.Y.Z from herdr's, a tag's or a preview's spelling, and nothing else", () =>
                 {

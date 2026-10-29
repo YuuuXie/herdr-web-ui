@@ -28,6 +28,18 @@ namespace Ovis
         VersionUnknown,
     }
 
+    /// <summary>What the Installed screen offers for the phone, from what GET /api/access told.</summary>
+    internal enum PhoneStep
+    {
+        /// <summary>Tailscale serves the app: the QR code of its address.</summary>
+        Qr,
+        MakeAddress,
+        SignInTailscale,
+        InstallTailscale,
+        /// <summary>The server asks for a token the app does not have: nothing is known of Tailscale here.</summary>
+        TokenNeeded,
+    }
+
     internal sealed class Plugin
     {
         public string Id;
@@ -47,6 +59,44 @@ namespace Ovis
     {
         /// <summary>The oldest herdr install.ps1 takes.</summary>
         public static readonly Version InstallerMinHerdr = new Version(0, 9, 0);
+
+        /// <summary>
+        /// The state dir herdr keeps for a plugin and hands it as HERDR_PLUGIN_STATE_DIR, found as herdr finds it
+        /// (scripts/plugin-state.ts): under XDG_STATE_HOME when that is set, else under %LOCALAPPDATA%.
+        /// </summary>
+        public static string HerdrPluginStateDir(string id, Func<string, string> variable)
+        {
+            var xdg = variable("XDG_STATE_HOME");
+            var root = xdg != null ? System.IO.Path.Combine(xdg, "herdr")
+                : System.IO.Path.Combine(variable("LOCALAPPDATA") ?? System.IO.Path.Combine(variable("USERPROFILE") ?? "", "AppData", "Local"), "herdr");
+            return System.IO.Path.Combine(root, "plugins", id);
+        }
+
+        /// <summary>
+        /// Windows PowerShell's arguments for a command whose output the app shows. Given as -Command, not -EncodedCommand:
+        /// started with -EncodedCommand and its output in a pipe, Windows PowerShell 5.1 writes its progress, warning and
+        /// error records to stderr as CLIXML, whatever -OutputFormat says, and the log showed that raw. Run hands the
+        /// script to cmd in an environment variable, so its | and quotes arrive as written (it refuses a double quote,
+        /// which the script never has). TLS 1.2 for Windows 10, and UTF-8 output.
+        /// </summary>
+        public static string[] PowerShellArguments(string command)
+        {
+            var script = "[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; " +
+                         "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $ProgressPreference = 'SilentlyContinue'; " + command;
+            return new[] { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script };
+        }
+
+        /// <summary>
+        /// The phone step: the QR code while Tailscale serves the app, else what Tailscale needs. A server behind a token the
+        /// app could not read answers nothing of Tailscale, which is then not taken as missing.
+        /// </summary>
+        public static PhoneStep Phone(string phoneUrl, string tailscale, bool accessLocked)
+        {
+            if (phoneUrl != null) return PhoneStep.Qr;
+            if (accessLocked) return PhoneStep.TokenNeeded;
+            if (tailscale == "running") return PhoneStep.MakeAddress;
+            return tailscale == "stopped" ? PhoneStep.SignInTailscale : PhoneStep.InstallTailscale;
+        }
 
         /// <summary>"0.4.19", "v0.4.19" or "herdr 0.9.3-preview" as X.Y.Z; null for anything else.</summary>
         public static Version ParseVersion(string text)

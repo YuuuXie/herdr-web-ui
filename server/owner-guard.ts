@@ -113,7 +113,8 @@ function lockGuard(path: string, wait = true): () => void {
   const loaded: PosixGuardCalls = { ...(library() as ReturnType<typeof posixLibrary>), close: closeSync };
   const calls = guardLibrary.posix ? guardLibrary.posix(loaded) : loaded;
   let fd: number;
-  try { fd = openSync(path, constants.O_RDWR | constants.O_CREAT, 0o600); }
+  // never through a link: a guard planted as one would make this create, and lock, a file elsewhere
+  try { fd = openSync(path, constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW, 0o600); }
   catch (error) { throw new OwnerGuardUnavailable(`${path} could not be opened: ${describeError(error)}`); }
   for (;;) {
     if (calls.flock(fd, wait ? LOCK_EX : LOCK_EX | LOCK_NB) === 0) break;

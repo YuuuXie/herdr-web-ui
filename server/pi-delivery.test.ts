@@ -9,9 +9,10 @@ import { capturePiDeliveryAnchor, capturePiDeliveryAnchorAttempt, capturePiDeliv
 const roots: string[] = [];
 const dir = () => { const root = mkdtempSync(join(tmpdir(), "ovis-pi-delivery-")); roots.push(root); return root; };
 afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
-const entry = (id: string, parentId: string | null, role: string, text: string) => JSON.stringify({
+/** `stamp` is the time Pi gave the message when it was submitted, before it was written. */
+const entry = (id: string, parentId: string | null, role: string, text: string, stamp = Date.now()) => JSON.stringify({
   type: "message", id, parentId, timestamp: "2026-10-24T00:00:00.000Z",
-  message: { role, content: [{ type: "text", text }], timestamp: Date.now() },
+  message: { role, content: [{ type: "text", text }], timestamp: stamp },
 }) + "\n";
 const header = (id = crypto.randomUUID()) => JSON.stringify({ type: "session", version: 3, id, timestamp: "2026-10-24T00:00:00.000Z", cwd: "/tmp" }) + "\n";
 const candidate = (id: string, text: string, anchor: NonNullable<ReturnType<typeof capturePiDeliveryAnchor>>): PiDeliveryCandidate => ({ id, text, anchor });
@@ -81,9 +82,10 @@ describe("Pi delivery transcript matching", () => {
   it("reads bounded tails on a 200 MiB history and parses only appended records", () => {
     const path = join(dir(), "large.jsonl");
     writeFileSync(path, header());
-    const payload = "x".repeat(8 * 1024 * 1024);
-    for (let index = 0; index < 25; index++) appendFileSync(path, entry(`old-${index}`, index ? `old-${index - 1}` : null, "assistant", payload));
-    appendFileSync(path, entry("baseline", "old-24", "assistant", "done"));
+    // A sparse hole stands in for 200 MiB of older history: a reader that scanned it would count
+    // every byte, while the disk stores none of them.
+    fs.truncateSync(path, 200 * 1024 * 1024);
+    appendFileSync(path, "\n" + entry("baseline", "old-24", "assistant", "done"));
     const original = fs.readSync;
     let read = 0;
     const spy = spyOn(fs, "readSync").mockImplementation(((...args: Parameters<typeof fs.readSync>) => {
@@ -173,7 +175,7 @@ describe("Pi delivery transcript matching", () => {
     expect(matchPiDeliveries(path, [candidate("one", "first", anchor)]).consumed).toEqual(["one"]);
   });
   it("retries a capture invalidated by a concurrent append, then uses the stable anchor", async () => {
-    const anchor: PiDeliveryAnchor = { path: "session.jsonl", file: "1:2", session: "s1", leaf: "a0", size: 12, prefix: "abc" };
+    const anchor: PiDeliveryAnchor = { path: "session.jsonl", file: "1:2", session: "s1", leaf: "a0", size: 12, prefix: "abc", at: 1 };
     let captures = 0, waits = 0;
     const result = await capturePiDeliveryAnchorRetrying(anchor.path, false, undefined,
       () => ++captures < 3 ? { anchor: null, retry: true } : { anchor, retry: false },
@@ -253,6 +255,79 @@ describe("Pi delivery transcript matching", () => {
     const anchor = capturePiDeliveryAnchor(path)!;
     appendFileSync(path, entry("external", "a0", "user", "from the terminal") + entry("ours", "external", "user", "from Ovis"));
     expect(matchPiDeliveries(path, [candidate("r1", "from Ovis", anchor)])).toEqual({ consumed: ["r1"], changed: [], retry: false });
+  });
+
+  it("does not let a same-text record Pi stamped before the capture confirm the receipt", () => {
+    const path = join(dir(), "stamped.jsonl");
+    writeFileSync(path, header() + entry("a0", null, "assistant", "working"));
+    // Typed into Pi's own terminal and queued while it worked, before Ovis pressed Enter.
+    const typedEarlier = Date.now() - 1000;
+    const anchor = capturePiDeliveryAnchor(path)!;
+    appendFileSync(path, entry("external", "a0", "user", "same", typedEarlier));
+    expect(matchPiDeliveries(path, [candidate("r1", "same", anchor)])).toEqual({ consumed: [], changed: [], ambiguous: ["r1"], retry: false });
+  });
+
+  it("prefers the record stamped after the capture when an earlier one has the same text", () => {
+    const path = join(dir(), "both.jsonl");
+    writeFileSync(path, header() + entry("a0", null, "assistant", "working"));
+    const typedEarlier = Date.now() - 1000;
+    const anchor = capturePiDeliveryAnchor(path)!;
+    const consumed = new Set<string>();
+    appendFileSync(path, entry("external", "a0", "user", "same", typedEarlier) + entry("ours", "external", "user", "same"));
+    const receipts = [candidate("r1", "same", anchor), candidate("r2", "same", anchor)];
+    // the earlier record lies before the first receipt's match, so it cannot settle the second
+    expect(matchPiDeliveries(path, receipts, consumed)).toEqual({ consumed: ["r1"], changed: [], retry: false });
+    // nor in a later reconciliation, which scans the branch from the anchor again
+    expect(matchPiDeliveries(path, [receipts[1]!], consumed)).toEqual({ consumed: [], changed: [], retry: false });
+    appendFileSync(path, entry("ours-2", "ours", "user", "same"));
+    expect(matchPiDeliveries(path, [receipts[1]!], consumed)).toEqual({ consumed: ["r2"], changed: [], retry: false });
+  });
+
+  it("keeps a later receipt's own record when a clock set back between captures put it before a match", () => {
+    const path = join(dir(), "captures.jsonl");
+    writeFileSync(path, header() + entry("a0", null, "assistant", "working"));
+    const first = capturePiDeliveryAnchor(path)!;
+    // the clock is set back a minute before Ovis's first record, then restored
+    appendFileSync(path, entry("own-1", "a0", "user", "same", first.at - 60_000));
+    const second = { ...capturePiDeliveryAnchor(path)!, at: first.at - 59_000 };
+    appendFileSync(path, entry("own-2", "own-1", "user", "same", first.at - 58_000)
+      + entry("external", "own-2", "user", "same", first.at + 1000));
+    const receipts = [candidate("r1", "same", first), candidate("r2", "same", second)];
+    const consumed = new Set<string>();
+    expect(matchPiDeliveries(path, receipts, consumed)).toEqual({ consumed: ["r1"], changed: [], retry: false });
+    expect(matchPiDeliveries(path, [receipts[1]!], consumed)).toEqual({ consumed: ["r2"], changed: [], retry: false });
+  });
+
+  it("does not keep a skipped record for a later receipt with other text", () => {
+    const path = join(dir(), "other-text.jsonl");
+    writeFileSync(path, header() + entry("a0", null, "assistant", "working"));
+    const first = capturePiDeliveryAnchor(path)!;
+    // the clock is set back a minute after the first capture
+    appendFileSync(path, entry("own-1", "a0", "user", "same", first.at - 60_000));
+    const second = { ...capturePiDeliveryAnchor(path)!, at: first.at - 59_000 };
+    appendFileSync(path, entry("own-2", "own-1", "user", "other", first.at - 58_500));
+    const third = { ...capturePiDeliveryAnchor(path)!, at: first.at - 57_000 };
+    appendFileSync(path, entry("external-early", "own-2", "user", "same", first.at - 58_000)
+      + entry("external-late", "external-early", "user", "same", first.at + 1000));
+    const receipts = [candidate("r1", "same", first), candidate("r2", "other", second), candidate("r3", "same", third)];
+    const consumed = new Set<string>();
+    expect(matchPiDeliveries(path, receipts, consumed)).toEqual({ consumed: ["r1"], changed: [], retry: false });
+    // the earlier external copy predates r3's capture and was passed over: it must not settle r3
+    expect(matchPiDeliveries(path, receipts.slice(1), consumed)).toEqual({ consumed: ["r2"], changed: [], retry: false });
+    appendFileSync(path, entry("own-3", "external-late", "user", "same", first.at - 56_000 + 60_000));
+    expect(matchPiDeliveries(path, [receipts[2]!], consumed)).toEqual({ consumed: ["r3"], changed: [], retry: false });
+  });
+
+  it("settles, rather than strands, Ovis's own record stamped while the wall clock was set back", () => {
+    const path = join(dir(), "clock.jsonl");
+    writeFileSync(path, header() + entry("a0", null, "assistant", "working"));
+    const first = capturePiDeliveryAnchor(path)!;
+    // a clock corrected a minute back between the capture and Pi's stamp, and forward again
+    appendFileSync(path, entry("u1", "a0", "user", "first", first.at - 60_000));
+    const second = capturePiDeliveryAnchor(path)!;
+    appendFileSync(path, entry("u2", "u1", "user", "second"));
+    expect(matchPiDeliveries(path, [candidate("r1", "first", first), candidate("r2", "second", second)]))
+      .toEqual({ consumed: ["r2"], changed: [], ambiguous: ["r1"], retry: false });
   });
 
   it("does not reuse a consumed transcript entry across reconciliation calls", () => {

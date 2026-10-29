@@ -8,6 +8,7 @@ import { WORKSPACE_ZH } from "./i18n/workspace.zh.ts";
 import { FILES_ZH } from "./i18n/files.zh.ts";
 import { DEVICES_ZH } from "./i18n/devices.zh.ts";
 import { USAGE_ZH } from "./i18n/usage.zh.ts";
+import { SETUP_ZH } from "./i18n/setup.zh.ts";
 import { UPDATES_ZH } from "./i18n/updates.zh.ts";
 import { PALETTE_ZH } from "./i18n/palette.zh.ts";
 
@@ -143,6 +144,8 @@ const BASE: Record<string, string> = {
   // ---- new workspace ----
   "Browse": "浏览",
   "Cancel": "取消",
+  "Install": "安装",
+  "Sign in": "登录",
   "Starting…": "正在启动…",
   "Start": "启动",
   // the launch's model, effort, first message and skills (lib/agentLaunchMode.ts, lib/newSession.ts)
@@ -310,6 +313,7 @@ export const ZH_PARTS: Record<string, Record<string, string>> = {
   files: FILES_ZH,
   devices: DEVICES_ZH,
   usage: USAGE_ZH,
+  setup: SETUP_ZH,
   updates: UPDATES_ZH,
   palette: PALETTE_ZH,
 };

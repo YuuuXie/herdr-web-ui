@@ -33,13 +33,16 @@ export function ompMarkdownPrompt(prompt: InteractivePrompt, open: OmoAsks): Int
     && shows(prompt.question, drawn(asked.question, true), parsed.ompQuestionCut === true));
   if (matches.length !== 1) return prompt;
   const asked = matches[0]!;
-  return publicPrompt({
-    ...parsed,
-    question: asked.question,
-    options: asked.options.map((option) => ({ label: label(option.label), description: option.description?.trim() ? option.description : null })),
-    text_format: "markdown",
-  });
+  const options = asked.options.map((option) => ({ label: label(option.label), description: option.description?.trim() ? option.description : null }));
+  // options the card would show alike (`Keep **production**` and `Keep  **production**`, one link's words to two addresses):
+  // the terminal's rows tell them apart by place alone, and so does the card as drawn (#2233)
+  const shown = options.map((option) => alike(cardDrawn(option.label, false) ?? option.label));
+  if (new Set(shown).size !== shown.length) return prompt;
+  return publicPrompt({ ...parsed, question: asked.question, options, text_format: "markdown" });
 }
+
+/** a name as a page shows it, for telling the card's options apart: one Unicode form by look, spacing collapsed, any case (src/lib/promptAnswer.ts `spaced`) */
+const alike = (text: string): string => flat(text.normalize("NFKC").replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, "")).toLowerCase();
 
 /** omp adds ` (Recommended)` to the recommended option's label; the card read off the screen drops it (dialogs/omp.ts), and so does this one */
 const label = (text: string): string => text.replace(/ \(Recommended\)$/i, "");
@@ -94,7 +97,8 @@ function cardBlock(block: MarkdownBlock): string {
   switch (block.type) {
     case "paragraph": return block.lines.map((line) => cardInline(line, true)).join("\n");
     case "heading": return `${block.level > 2 ? `${"#".repeat(block.level)} ` : ""}${cardInline(block.content, true)}`;
-    case "code": return block.value;
+    // the chat draws a ```mermaid fence as a diagram (src/components/Markdown.tsx), not the code omp shows (#2233)
+    case "code": return block.language === "mermaid" ? undrawn() : block.value;
     case "list": return block.items.map((item, index) => item.checked !== undefined ? undrawn()
       : `${block.ordered ? `${(block.start ?? 1) + index}. ` : "- "}${cardInline(item.content, true)}\n${(item.blocks ?? []).map(cardBlock).join("\n")}`).join("\n");
     default: return undrawn();

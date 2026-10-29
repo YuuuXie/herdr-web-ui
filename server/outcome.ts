@@ -332,8 +332,9 @@ const sendAnchor = (snapshot: readonly string[], lines: readonly string[], snaps
  * Fewer complete blocks below it, or this send's row missing, leaves the earlier sends' blocks ambiguous and this send
  * unreserved.
  */
-function printedPastEarlier(sent: CommandSend, same: readonly CommandSend[], reader: DialogReader, readers: readonly DialogReader[], read: (send: CommandSend) => string[]): boolean {
-  const known = [...same].reverse().find((candidate) => candidate.top !== undefined
+function printedPastEarlier(sent: CommandSend, same: readonly CommandSend[], reader: DialogReader, readers: readonly DialogReader[], read: (send: CommandSend) => string[],
+  counted: (send: CommandSend) => boolean): boolean {
+  const known = [...same].reverse().find((candidate) => candidate.top !== undefined && counted(candidate)
     && typeof candidate.resultEchoes?.[reader.id] === "number"
     && typeof candidate.resultEchoLimit?.[reader.id] === "number");
   const owed = known?.resultEchoLimit?.[reader.id];
@@ -365,6 +366,9 @@ export function reserveResultEchoes(sent: CommandSend, previous: readonly Comman
   const alike = readAlike(sent.agent, sent.screen, ...same.map((candidate) => candidate.screen));
   const read = (send: CommandSend): string[] => alike.lines[send === sent ? 0 : same.indexOf(send) + 1]!;
   if (prior) sent.countedCut = alike.cut;
+  // an earlier send's echoes counted on screens read the other way (cut at the panel, or drawn) number differently:
+  // its count says nothing about the echoes on these screens (#2207)
+  const counted = (send: CommandSend): boolean => send.countedCut === undefined || send.countedCut === alike.cut;
   const lines = withoutChrome(read(sent), sent.agent, readers);
   for (const reader of readers) {
     if (lines === null) { reservations[reader.id] = null; continue; }
@@ -372,7 +376,7 @@ export function reserveResultEchoes(sent: CommandSend, previous: readonly Comman
     const priorOrdinal = prior?.resultEchoes?.[reader.id];
     const priorLimit = prior?.resultEchoLimit?.[reader.id];
     if (!prior) { reservations[reader.id] = 1; continue; }
-    const past = (): number | null => printedPastEarlier(sent, same, reader, readers, read) ? 1 : null;
+    const past = (): number | null => printedPastEarlier(sent, same, reader, readers, read, counted) ? 1 : null;
     if (priorOrdinal === null || priorLimit === null) { reservations[reader.id] = past(); continue; }
     // the history rows outrank the prior screen's text: on a screen of identical blocks its tail also matches the
     // screen's own bottom and counts none of the echoes printed since, so the debt would never be paid (#1550)
@@ -384,6 +388,8 @@ export function reserveResultEchoes(sent: CommandSend, previous: readonly Comman
       reservations[reader.id] = prior.outcome?.state === "result-observed" ? 1 : past();
       continue;
     }
+    // its count numbers echoes on screens read the other way: nothing below its anchor can be counted against it (#2207)
+    if (!counted(prior)) { reservations[reader.id] = past(); continue; }
     const echoed = lines.slice(anchor + 1).filter((line) => echoOf(line, sent.text)).length;
     reservations[reader.id] = Math.max(0, (priorLimit ?? priorOrdinal ?? 1) - echoed) + 1;
   }

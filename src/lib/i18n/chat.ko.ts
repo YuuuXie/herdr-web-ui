@@ -205,4 +205,5 @@ export const CHAT_KO: Record<string, string> = {
   "Show full message": "전체 메시지 보기",
   "Open link": "링크 열기",
   "Share link": "링크 공유",
+  "Sent · waiting for the agent's next turn": "전송됨 · 에이전트의 다음 턴을 기다리는 중",
 };

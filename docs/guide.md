@@ -156,7 +156,7 @@ Every agent herdr runs shows up with its live status, terminal and alerts. The c
 
 | Agent | Chat | Answer prompts from chat |
 | --- | --- | --- |
-| **Claude Code** | Native transcript, resolved through herdr | ✓ approvals, questions, plan and menu picks, and the `/model` list (picked for the session) |
+| **Claude Code** | Native transcript, resolved through herdr | ✓ approvals, questions, plan and menu picks, the `/model` list, and the `/effort` levels with Ultracode's switch (each picked for the session) |
 | **Codex** | Native rollout, with tool results and commentary/final phases | ✓ approvals and questions, including queued ones, and the `/model` lists (picked for the session) |
 | **omp** | Native session file, in the store the pane's omp process writes to: `~/.omp/agent`, a profile's, or where its `--session-dir`, or the `PI_CODING_AGENT_SESSION_DIR`, `PI_CODING_AGENT_DIR`, `PI_CONFIG_DIR` or XDG data and state directories it was started with, put it (absolute paths only, not values from omp's `.env` files; on Windows only `~/.omp` and its profiles) | ✓ approvals, questions, and the model picker of `/model` and `/switch` (picked for the session: the chat sends `/model` as `/switch`, since omp's own `/model` opens its role hub) |
 | **omo** | Native session file, found through the pane's process tree | ✓ the `/model` list (picked for the session); other menus — use Terminal |
@@ -169,7 +169,7 @@ Every agent herdr runs shows up with its live status, terminal and alerts. The c
 | **Hermes** | Native SQLite session store | — use Terminal |
 | **Muse Code** | **Linux untested with real Muse.** Native session log, bound to the pane by the session lock Muse writes for its process; panes in one folder each show their own session. macOS and Linux; Windows uses Terminal. See [Muse chat](muse-chat.md). | — use Terminal |
 | **Antigravity (agy)** | **Experimental; macOS untested.** Native ledger, selected by the running process’s held conversation lock. Linux native-tested; Windows uses terminal text. See [Agy behavior and limits](agy-chat.md). | — use Terminal |
-| **Letta Code** | The terminal's text. Choose **Letta Code** in **New workspace**, **New tab with agent…** or **New worktree** where `letta` is installed, or run `letta` in a herdr pane's **Terminal**. | — use Terminal |
+| **Letta Code** | **Experimental; Linux and macOS.** Read-only native transcript from where the pane's own `letta` process keeps it (`~/.letta/transcripts`, or its `LETTA_CONFIG_DIR` / `LETTA_TRANSCRIPT_ROOT`), when herdr's Letta integration is installed (`herdr integration install letta`, experimental), it names a conversation for the pane, and Letta's own record in the project folder (`.letta/settings.local.json`) names the same one, is older than that `letta` process and is writable by it, and `letta` is still in the folder it started in (for a local-backend conversation, Letta's local store must also name that agent for it). That holds when `letta` resumes the conversation it last had in that folder (`letta`, or `letta --conversation <id>` on that one). After `/new` or `/resume`, a start on another conversation (`--new` included), once `letta` has moved to another folder (its SetWorkingDirectory or EnterWorktree tools), another `letta` writing that record, while another pane runs `letta` in the same folder, with two panes on one conversation, in the home folder, or before the conversation's first turn on this PC ends, Chat uses the terminal's text until `letta` starts again on that conversation. Letta writes a turn when it ends: a turn appears once it is done, and a cancelled one never does. Only turns Letta Code wrote on this PC show. Choose **Letta Code** in **New workspace**, **New tab with agent…** or **New worktree** where `letta` is installed, or run `letta` in a herdr pane's **Terminal**. Windows uses Terminal. | — use Terminal |
 | **GitHub Copilot CLI** | Linux native transcript when the foreground session is verified. See [Copilot setup and limits](copilot-chat.md). | — recorded choices are read-only; answer questions and approvals in Terminal |
 | **Anything else** | The terminal's text | — use Terminal |
 
@@ -411,6 +411,39 @@ Open Settings → Remote PCs and choose **Add PC** (the command palette has it t
 - **Bridge updates:** when an app update needs a newer bridge, PCs that connect with their saved key are updated in the background.
 
 More in [remote PCs](remote-pcs.md).
+
+### One always-on PC for all your PCs
+
+With several PCs, you don't need Ovis on each of them. Install it on one PC that stays on, such as a desktop or a home server, and add the others to it as remote PCs. That one app reaches them over SSH and sets up its own bridge on each, so the other PCs need only an SSH server (setup brings herdr where it is missing).
+
+1. **Install Ovis on the always-on PC** as in [Quick start](#quick-start), with its [phone address](#on-your-phone).
+2. **On each other PC, stop its own Ovis** if it has one, and keep herdr from starting it again:
+
+   ```sh
+   # an install from before the rename has the old id
+   herdr plugin action invoke devswha.ovis.stop || herdr plugin action invoke devswha.herdr-web-ui.stop
+   herdr plugin disable devswha.ovis || herdr plugin disable devswha.herdr-web-ui
+   ```
+
+   On Windows:
+
+   ```powershell
+   herdr plugin action invoke devswha.ovis.stop-windows
+   herdr plugin disable devswha.ovis
+   # an install from before the rename: devswha.herdr-web-ui.stop-windows, then disable devswha.herdr-web-ui
+   ```
+
+   From a checkout, stop `bun run start` instead, and whatever starts it again.
+
+   An Ovis left running there still works with the always-on app, but it stays a second app: it sends its own alerts and updates only through its own updater, which the always-on app can at most ask to run. Once it is stopped, the always-on app runs its own bridge there and keeps that bridge on its own version.
+3. **Add each PC in the always-on app:** Settings → Remote PCs → **Add PC**, then approve the install once. A PC already saved in herdr (`herdr machine`) is listed there already: choose **Connect**. The always-on PC must reach it over SSH as the account Ovis runs under, so try `ssh <pc>` there first. A PC the app already had, connected while that PC's own Ovis ran, keeps waiting for that Ovis to come back: open its **Manage PC** control in the sidebar, choose **Reconnect / setup** and approve the install.
+4. **Open the always-on PC's address everywhere**, in the other PCs' browsers and on your phone, install the app from there, and turn on **Alerts** in it on each device. Pairings and alerts set up with a PC's own Ovis stay with that Ovis, so pair a device again if the new address asks.
+
+Then there is one app to update: each release is downloaded and built once, the bridges on the other PCs follow it in the background (when SSH gets in with the saved key, without a password; otherwise the PC's card offers the update), push alerts come from one place, and no versions have to be kept in step.
+
+- **While the always-on PC is off or asleep**, the other PCs have no Ovis. herdr keeps running on each of them, and its own terminal app works as before.
+- **A laptop's sessions go through the always-on PC**, so a laptop that cannot reach it, offline for example, has no Ovis for them.
+- **With no PC that stays on**, install Ovis on each PC and keep them on the same version. An app that finds an older Ovis on a PC it adds offers to update it when that Ovis can update itself, and otherwise says why not ([Disconnects and updates](remote-pcs.md#disconnects-and-updates)).
 
 ## Access and safety
 

@@ -835,72 +835,154 @@ function parseClaudeModel(screen: string): ParsedPrompt | null {
 }
 
 /**
- * Claude Code's `/effort` slider, as 2.1.294 draws it:
+ * Claude Code's `/effort` slider, as 2.1.311 draws it in a pane of 70 columns or more, Ultracode's
+ * switch beside the slider:
  *
  *   Effort
  *
  *                Faster                             Smarter
- *                ────────────────────▲─────────────────────      Ultracode  off
+ *                ──────────────────────────────▲───────────      Ultracode  on
  *                low     medium     high     xhigh      max      Tab to toggle
- *
+ *                Ultracode: dynamic workflows on every task
  *
  *   ←/→ to adjust · Enter to confirm · s for this session only · Esc to cancel
  *
+ * and in a narrower one, the switch on two lines of its own under the slider:
+ *
+ *         ──────────────────────────────▲───────────
+ *         low     medium     high     xhigh      max
+ *
+ *
+ *                       Ultracode  off
+ *                       Tab to toggle
+ *
+ *   ←/→ to adjust · Enter to confirm · s for this session
+ *   only · Esc to cancel
+ *
  * ▲ stands over the level the slider is on. The levels are the card's options, picked with ←/→
- * and `s`, never Enter. Ultracode is left to the terminal.
+ * and `s`, never Enter: Enter saves the level as the default for new sessions.
+ *
+ * The line under the names is blank while the switch is off, and Claude's "Ultracode: dynamic
+ * workflows on every task" while it is on. The switch's key (Tab, unless the user bound another)
+ * flips it in the dialog only: `s` applies it, with the level ▲ is over, for this session, and Esc
+ * drops it. Nothing of it is saved for later sessions. So the card's own row for it is Tab, then
+ * `s` once the slider shows the switch flipped, and only where the slider names Tab as its key. A
+ * user who unbound the key gets the state alone, no key's line with it: the levels stay, with no
+ * row for the switch. Without Ultracode (a model that has no xhigh, dynamic workflows turned off)
+ * Claude draws no switch and no line for it, not even the blank one: at max the level's
+ * description is the line right under the names. So the names are found under the track.
  *
  * 2.1.301 describes the level ▲ is over between the names and the hint, after a blank line:
- * "~1.5x the estimated cost of medium (the default)", or two lines at max.
+ * "~1.5x the estimated cost of medium (the default)", or two lines at max. 2.1.311 draws max's
+ * under the Ultracode line, and in a narrow pane above the switch.
  */
 const CLAUDE_EFFORT_LEVEL_RE = /\b(?:low|medium|high|xhigh|max)\b/g;
 
 /** how far ▲ may stand from the middle of a level's name and still be over it */
 const CLAUDE_EFFORT_ALIGN = 3;
 
-/** lines between the level names and the hint, at most: blank ones, or the level's description that a narrow pane wrapped */
-const CLAUDE_EFFORT_UNDER_LINES = 8;
+/**
+ * lines between the level names and the hint, at most: the Ultracode line, the level's description
+ * that a narrow pane wrapped, and the switch's two lines drawn under them there
+ */
+const CLAUDE_EFFORT_UNDER_LINES = 12;
 
-/** a line of level names and nothing else (the toggle's hint aside) */
-const claudeEffortLevelsOnly = (line: string): boolean =>
-  line.trim() !== "" && line.replace(CLAUDE_EFFORT_LEVEL_RE, "").replace(/Tab to toggle/i, "").trim() === "";
+/** the switch's state: at the end of the track, or on a line of its own in a narrow pane */
+const CLAUDE_ULTRACODE_STATE_RE = /(?:^|\s{2,})Ultracode {2}(on|off)$/;
+
+/** the switch's key: at the end of the names, or on the line under the state in a narrow pane */
+const CLAUDE_ULTRACODE_KEY_RE = /(?:^|\s{2,})(\S+(?: \S+)*) to toggle$/;
+
+/** Claude's own line under the names while the switch is on, cut short by a narrow pane maybe */
+const CLAUDE_ULTRACODE_LINE_RE = /^Ultracode:(?:\s|…|$)/;
+
+/** a line of level names and nothing else (the switch's key aside): a key's line alone names none */
+function claudeEffortLevelsOnly(line: string): boolean {
+  const names = line.replace(CLAUDE_ULTRACODE_KEY_RE, "");
+  return names.search(CLAUDE_EFFORT_LEVEL_RE) >= 0 && names.replace(CLAUDE_EFFORT_LEVEL_RE, "").trim() === "";
+}
+
+/**
+ * Ultracode's switch as the slider draws it, beside the slider (70 columns or more) or under it on
+ * its own lines: its state and its key (null: the user unbound it, and Claude draws the state
+ * alone), or null when it draws none. Undefined: a drawing this reader does not know (a key without
+ * its state, or a switch drawn twice or in both places), which gets no card.
+ */
+function claudeUltracodeSwitch(lines: string[], labelsIndex: number, hintIndex: number): { on: boolean; key: string | null } | null | undefined {
+  const besideState = CLAUDE_ULTRACODE_STATE_RE.exec(lines[labelsIndex - 1]!);
+  const besideKey = CLAUDE_ULTRACODE_KEY_RE.exec(lines[labelsIndex]!);
+  const under: { on: boolean; key: string | null }[] = [];
+  // under the slider a state has its key on the line under it, or none where the key is unbound:
+  // a key under anything but a state (the names, a second key under the first) is half a switch
+  for (let index = labelsIndex; index < hintIndex; index += 1) {
+    const state = CLAUDE_ULTRACODE_STATE_RE.exec(lines[index]!.trim());
+    const key = CLAUDE_ULTRACODE_KEY_RE.exec(lines[index + 1]!.trim());
+    if (state) under.push({ on: state[1] === "on", key: key?.[1] ?? null });
+    else if (key) return undefined;
+  }
+  if ((besideKey && !besideState) || under.length > 1 || (besideState && under.length > 0)) return undefined;
+  if (besideState) return { on: besideState[1] === "on", key: besideKey?.[1] ?? null };
+  return under[0] ?? null;
+}
 
 function parseClaudeEffort(screen: string): ParsedPrompt | null {
   const lines = screen.replace(ANSI_RE, "").split(/\r?\n/).map((line) => line.trimEnd());
   const hintIndex = findLastIndex(lines, (_, index) => CLAUDE_EFFORT_HINT_RE.test(wrapped(lines, index)));
   if (hintIndex < 0) return null;
-  // the names: the nearest line of them above the hint with a blank line under it, which also
-  // passes over a level's description. Names cut or wrapped by a narrow pane are not read
+  // the names: the nearest line of them above the hint right under the ▲ track, which passes over
+  // what lies between them (Claude's Ultracode line, a level's description, the switch a narrow
+  // pane draws under the slider). Names cut or wrapped by a narrow pane are not read: a line of
+  // names under them is the rest of them
   let labelsIndex = -1;
   for (let index = hintIndex - 1; index > 0 && hintIndex - index <= CLAUDE_EFFORT_UNDER_LINES + 1; index -= 1) {
-    if (claudeEffortLevelsOnly(lines[index]!) && lines[index + 1]!.trim() === "") { labelsIndex = index; break; }
+    if (claudeEffortLevelsOnly(lines[index]!) && /^\s*─*▲/.test(lines[index - 1]!) && !claudeEffortLevelsOnly(lines[index + 1]!)) { labelsIndex = index; break; }
   }
   if (labelsIndex < 0) return null;
   const labels = lines[labelsIndex]!;
-  const track = lines[labelsIndex - 1] ?? "";
+  const track = lines[labelsIndex - 1]!;
   const scale = /^\s*[─▲]+/.exec(track)?.[0] ?? "";
   const titled = lines.slice(Math.max(0, labelsIndex - 4), Math.max(0, labelsIndex - 1)).some((line) => line.trim() === "Effort");
   if (!titled || scale.split("▲").length !== 2) return null;
+  // the switch and the line under the names agree: Claude's Ultracode line while the switch is on,
+  // a blank line while it is off, and no Ultracode line where it draws no switch
+  const ultracode = claudeUltracodeSwitch(lines, labelsIndex, hintIndex);
+  const under = lines[labelsIndex + 1]!.trim();
+  const said = CLAUDE_ULTRACODE_LINE_RE.test(under);
+  if (ultracode === undefined || (ultracode === null ? said : ultracode.on ? !said : under !== "")) return null;
   const arrow = track.indexOf("▲");
-  const levels = [...labels.matchAll(CLAUDE_EFFORT_LEVEL_RE)].map((match) => ({ name: match[0], middle: match.index + match[0].length / 2 }));
+  const levels = [...labels.replace(CLAUDE_ULTRACODE_KEY_RE, "").matchAll(CLAUDE_EFFORT_LEVEL_RE)].map((match) => ({ name: match[0], middle: match.index + match[0].length / 2 }));
   if (levels.length < 2 || new Set(levels.map(({ name }) => name)).size !== levels.length) return null;
   const distance = (index: number) => Math.abs(levels[index]!.middle - arrow);
   const selectedIndex = levels.reduce((best, _, index) => distance(index) < distance(best) ? index : best, 0);
   if (distance(selectedIndex) > CLAUDE_EFFORT_ALIGN) return null;
   const names = levels.map(({ name }) => name);
+  // the switch from the card only with the key the card sends: a key the user bound instead is
+  // theirs to press, and an unbound one leaves the switch to `/effort ultracode on|off`
+  const toggle = ultracode !== null && /^tab$/i.test(ultracode.key ?? "");
   return finishPrompt("claude", {
-    // where the slider stands is no part of what the card asks: one card wherever ▲ is
+    // where the slider stands is no part of what the card asks: one card wherever ▲ is. The
+    // switch's row names the state it turns to, so the card differs with the switch
     kind: "question",
     title: "",
     question: own("Set effort for this session"),
     body: null,
-    options: names.map((label) => ({ label, description: null })),
+    options: [
+      ...names.map((label) => ({ label, description: null })),
+      ...(toggle ? [{ label: own(ultracode.on ? "Turn Ultracode off" : "Turn Ultracode on"), description: own("Keeps the effort level, for this session only") }] : []),
+    ],
     multi_select: false,
     custom_option_index: null,
   }, {
     responder: "claude-effort", menuLabels: names, selectedIndex,
     checkedOptionIndices: [], customMenuIndex: null, rejectWithEscapeIndex: null,
-    // `s`, never Enter: the level stays in this session, and the default for new ones is left alone
-    optionSteps: names.map((_, index) => [...keySteps(sliderKeys(index - selectedIndex)), { text: "s" }]),
+    // `s`, never Enter: the level stays in this session, and the default for new ones is left
+    // alone. The switch flips with Tab, and `s` applies it with the level ▲ is over
+    optionSteps: [
+      ...names.map((_, index) => [...keySteps(sliderKeys(index - selectedIndex)), { text: "s" }]),
+      ...(toggle ? [[{ keys: [KEY.tab] }, { text: "s" }]] : []),
+    ],
+    // the state the switch shows, which the card does not send: an answer's last look checks it before `s`
+    claudeUltracode: ultracode?.on ?? null,
   });
 }
 
@@ -1012,7 +1094,12 @@ export const readers: readonly DialogReader[] = [
   {
     id: "claude-effort", agents: ["claude"], priority: 60,
     reread: "before-commit", list: "slider",
-    interaction: (parsed) => pickerPlan(parsed, parseClaudeEffort, parsed.optionSteps ?? [], (shown, cursor) => shown.menuLabels[cursor]),
+    // the level under ▲, and Ultracode's switch as the Tabs sent so far leave it: a level's `s`
+    // waits for the switch unchanged, the switch's own `s` for it flipped
+    interaction: (parsed) => pickerPlan(parsed, parseClaudeEffort, parsed.optionSteps ?? [], (shown, cursor, toggles) => {
+      const drawn = shown.claudeUltracode ?? null;
+      return `${shown.menuLabels[cursor]} ${drawn === null ? "no switch" : drawn !== (toggles % 2 === 1) ? "on" : "off"}`;
+    }),
     parse: (screen) => {
       const parsed = parseClaudeEffort(screen);
       return parsed?.responder === "claude-effort" ? parsed : null;

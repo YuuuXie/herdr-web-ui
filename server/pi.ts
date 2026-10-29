@@ -7,6 +7,7 @@ import { runsAgent } from "./gjc-runtime.ts";
 import { processEnviron } from "./omo.ts";
 import { piAgentDir } from "./pi-models.ts";
 import { transcriptInStore as piTranscriptInStore, unwrittenSession } from "./transcript-store.ts";
+import { userHome } from "./user-home.ts";
 export { transcriptInStore as piTranscriptInStore, unwrittenSession } from "./transcript-store.ts";
 
 /**
@@ -117,7 +118,7 @@ export async function piPaneAgentDirs(
   const info = options.processes === undefined
     ? await paneProcessInfo(paneId).catch(() => null)
     : { foreground_processes: [...options.processes] };
-  const home = options.home ?? process.env["HOME"] ?? process.env["USERPROFILE"] ?? "";
+  const home = options.home ?? userHome();
   const environOf = options.environOf ?? processEnviron;
   const argvOf = options.argvOf ?? processArgv;
   const pids: number[] = [];
@@ -162,7 +163,7 @@ export async function piTranscriptPath(
   const info = options.processes === undefined
     ? await paneProcessInfo(paneId).catch(() => undefined)
     : { foreground_processes: [...options.processes] };
-  const home = options.home ?? process.env["HOME"] ?? process.env["USERPROFILE"] ?? "";
+  const home = options.home ?? userHome();
   const environOf = options.environOf ?? processEnviron;
   const argvOf = options.argvOf ?? processArgv;
   const piProcesses: VerifiedPiProcess[] = [];

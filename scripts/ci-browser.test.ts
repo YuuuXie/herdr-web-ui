@@ -176,7 +176,7 @@ const MANUAL_BROWSER_SCRIPTS = [
   "scripts/terminal-file-links-regression.ts",
   "scripts/update-browser-qa.ts", // a private Git remote and install (docs/app-updates.md)
   "scripts/windows-lens-browser-qa.ts",
-  "scripts/windows-terminal-browser-qa.ts", // native Windows
+  "scripts/windows-terminal-browser-qa.ts", // native Windows: .github/workflows/windows-terminal-qa.yml
 ];
 
 /**

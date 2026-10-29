@@ -1,4 +1,5 @@
-import { useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { fontSettled } from "../lib/fontFamily.ts";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { ArrowLeft, ArrowUp, ChevronRight, ClipboardCheck, Clock, Eye, Quote, SendHorizontal, SquareTerminal, Trash2, TriangleAlert, Unplug, X } from "lucide-react";
@@ -17,11 +18,11 @@ import { messageQueues } from "../lib/messageQueue.ts";
 import { pendingMessages } from "../lib/pendingMessages.ts";
 import { heldCountShown, heldOpenAtFold, heldOpenOnFocus, heldRefocusDue, heldRowError, heldRowsFold, heldRowsHidden, heldToggleShown, SHORT_PHONE_QUERY } from "../lib/heldRows.ts";
 import { arrangeNotices, dismissNotice, NO_DISMISSALS, settleDismissed, type DismissedNotices } from "../lib/composerNotices.ts";
-import { MAX_COMPOSER_CHARS, QUEUE_READY_STATUS, agentDisplayLabel, typedTerminalCommand } from "../lib/compose.ts";
+import { MAX_COMPOSER_CHARS, QUEUE_READY_STATUS, agentDisplayLabel, claudeMainAtRest, typedTerminalCommand } from "../lib/compose.ts";
 import { usePaneCommands } from "../lib/usePaneCommands.ts";
 import { paneCommandsNow } from "../lib/paneCommandCache.ts";
 import { autoReturnArmed, paneLensFlags, screenReturnArmed, type PeekRequest, type TerminalPeek } from "../lib/terminalPeek.ts";
-import { FrameGate, inputRowState, readScreen, readsInputRow, type InputRowState } from "../lib/inputRow.ts";
+import { FrameGate, inputRowState, readScreen, readScreenLines, readsInputRow, type InputRowState } from "../lib/inputRow.ts";
 import { outcomeCommand } from "../lib/outcomeChip.ts";
 import { composerLift, greetingMemory, greetingFits, greetingFolder, roomOverComposer, showsGreeting } from "../lib/greeting.ts";
 import { DETACHED, usePaneBranch } from "../lib/paneBranch.ts";
@@ -48,7 +49,8 @@ import { useSettings, type Palette, type ResolvedTheme } from "../lib/settings.t
 import { useT } from "../lib/i18n.ts";
 import { isAppShortcut } from "../lib/shortcuts.ts";
 import { plainPageDirection } from "../lib/pageScroll.ts";
-import { keyboardToggleAction, keyboardUp } from "../lib/keyboard.ts";
+import { keyboardTypingField } from "../lib/keyboard.ts";
+import { keyboardControl } from "../lib/keyboardControl.ts";
 import { OpenFileContext } from "../lib/filePaths.ts";
 import { WebPanelContext } from "../lib/webPanel.ts";
 import { hyperlinkFilter } from "../lib/terminalFileLinks.ts";
@@ -267,6 +269,11 @@ export function PaneTerminal({
   const pinchStatusRef = useRef<HTMLSpanElement | null>(null);
   /** the user's font size (settings, or a pinch in progress); a narrow split pane may draw smaller */
   const baseFontRef = useRef(terminalFontSize);
+  // two fingers are pinching the font size (useTerminalMount.ts): a font arriving meanwhile keeps the live size
+  const pinchingRef = useRef(false);
+  // the terminal's first font is set (useTerminalRefits.ts): the first fit and the pty's size wait for it (usePaneAttach.ts)
+  const [firstFont] = useState(fontSettled);
+  const fontSettledRef = useRef(firstFont);
   const stackRef = useRef<HTMLDivElement | null>(null);
   const pageScroll = useRef<((direction: -1 | 1) => void) | null>(null);
   const lineScroll = useRef<((lines: number) => void) | null>(null);
@@ -472,6 +479,13 @@ export function PaneTerminal({
     if (!frameGateRef.current.current) return "unknown";
     return inputRowState(current, readScreen(term.buffer.active, term.cols, term.rows));
   }, []);
+  /** Claude's own screen says it can take a message now, whatever herdr reports (lib/compose.ts). */
+  const inputAtRest = useCallback((): boolean => {
+    const term = termRef.current;
+    if (term === null || agentRef.current !== "claude") return false;
+    const lines = readScreenLines(term.buffer.active, term.rows);
+    return lines !== null && claudeMainAtRest(inputRowNow(), lines);
+  }, [inputRowNow]);
   // The row as the send's receipt came, before the peek's own resize: the watch starts from it, since
   // the first frame for a new grid may be herdr's reflow of the old screen (FrameGate reflowing)
   const receiptRowRef = useRef<{ pane: string; text: string; state: InputRowState } | null>(null);
@@ -508,10 +522,23 @@ export function PaneTerminal({
   // Set here on each render, and at once by onData when it holds a key, before that render comes.
   const draftHeldForRef = useRef<string | null>(null);
   draftHeldForRef.current = paneId !== null && draftState.owner === paneStorageId(machineId, paneId) && !draftIsEmpty(draft) ? paneId : null;
-  // Set only while the key bar's keyboard control focuses or blurs a field: what that move causes is
-  // not the user's. reassertGrid leaves the grid alone, and onData drops the focus report (DECSET
+  // Set only while the key bar's own moves take the focus: the keyboard control's show/hide and the
+  // input mode's handoff from the grid to the line. What those moves cause is not the user's:
+  // reassertGrid leaves the grid alone, and onData drops the focus report (DECSET
   // 1004's ESC [ I / ESC [ O) xterm fires synchronously from inside that focus() or blur()
   const keyboardToggleFocusRef = useRef(false);
+  // whose word a keyboard-control tap leaves (lib/keyboardControl.ts): this component and the pane
+  // it shows, so a tap in flight here never holds another pane's control
+  const keyboardInstance = useId();
+  const keyboardOwner = `${keyboardInstance}:${paneId === null ? "" : paneStorageId(machineId, paneId)}`;
+  const keyboardOwnerRef = useRef(keyboardOwner);
+  keyboardOwnerRef.current = keyboardOwner;
+  // a tap still in flight when this pane stops being the selected, shown one (another pane picked,
+  // its tab left, or unmounted) is abandoned: coming back, its control reads the measurement
+  useEffect(() => {
+    if (!active || !presented) return;
+    return () => keyboardControl.release(keyboardOwner);
+  }, [active, presented, keyboardOwner]);
   useEffect(() => {
     if (!paneId || draftState.owner !== paneStorageId(machineId, paneId)) return;
     const key = `ovis:terminal-draft:${draftState.owner}`;
@@ -609,11 +636,11 @@ export function PaneTerminal({
     }, 2500);
   }, []);
 
-  useTerminalMount({ activeRef, barKeyRef, baseFontRef, cachedRef, cachedReleaseRef, cancelLeaveRef, cancelTouchRef, chatMountedRef, chatOutputRef, chatViewRef, clearModifiers, clipboardTimerRef, coarseRef, commitPendingText, composingRef, compositionCommitPendingRef, deferAttachRef, draftHeldForRef, draftPaneRef, endedRef, findOpenRef, fitRef, fittedRef, fixedGridRef, followCursorRef, followRef, frameGateRef, heldRef, hostRef, hyperlinksRef, keyboardHoldsRef, keyboardToggleFocusRef, leaveRef, lineScroll, machineId, machineSessions, mirroredRef, mirrorWrapRef, modifiersRef, modifyOtherKeysRef, narrowFontRef, noteClipboard, observeRef, onChatSuggestion, onInputRowFrameRef, onRoleAckRef, onServerMessageRef, openFileRef, openWebRef, osc52AllowedRef, outputTargetRef, palette, paneRef, pendingEpochRef, pendingScopeRef, pendingSubmissionsRef, pinchBadgeRef, pinchStatusRef, presentationRef, presentedRef, reassertIfStaleRef, reattachRef, redrawGreeting, releaseAwayRef, idleReleaseRef, setIdleView, releaseRef, releasedRef, retireOutputRef, secretRef, sessionRef, setChatInvalidation, setChatRefresh, setChatSent, setComposing, setConnected, setConnectedBefore, setConversationPushes, setDraft, setEnded, setHeld, setInputError, setInputReady, setObserving, setOutputError, setOutputReady, setParsedTarget, setReleased, setSecret, setSelectionQuote, setTerminal, setUnsupported, setWatching, sharedGridRef, shortcutSettings, shownRef, sizesPty, socketRef, stackRef, stalledRef, stopKeyRef, submitRetention, t, tRef, termRef, terminalFontSize, theme, updateSettings, uploadFileRef, watchingRef, wheelStateRef });
+  useTerminalMount({ activeRef, barKeyRef, baseFontRef, pinchingRef, cachedRef, cachedReleaseRef, cancelLeaveRef, cancelTouchRef, chatMountedRef, chatOutputRef, chatViewRef, clearModifiers, clipboardTimerRef, coarseRef, commitPendingText, composingRef, compositionCommitPendingRef, deferAttachRef, draftHeldForRef, draftPaneRef, endedRef, findOpenRef, fitRef, fittedRef, fixedGridRef, followCursorRef, followRef, frameGateRef, heldRef, hostRef, hyperlinksRef, keyboardHoldsRef, keyboardToggleFocusRef, leaveRef, lineScroll, machineId, machineSessions, mirroredRef, mirrorWrapRef, modifiersRef, modifyOtherKeysRef, narrowFontRef, noteClipboard, observeRef, onChatSuggestion, onInputRowFrameRef, onRoleAckRef, onServerMessageRef, openFileRef, openWebRef, osc52AllowedRef, outputTargetRef, palette, paneRef, pendingEpochRef, pendingScopeRef, pendingSubmissionsRef, pinchBadgeRef, pinchStatusRef, presentationRef, presentedRef, reassertIfStaleRef, reattachRef, redrawGreeting, releaseAwayRef, idleReleaseRef, setIdleView, releaseRef, releasedRef, retireOutputRef, secretRef, sessionRef, setChatInvalidation, setChatRefresh, setChatSent, setComposing, setConnected, setConnectedBefore, setConversationPushes, setDraft, setEnded, setHeld, setInputError, setInputReady, setObserving, setOutputError, setOutputReady, setParsedTarget, setReleased, setSecret, setSelectionQuote, setTerminal, setUnsupported, setWatching, sharedGridRef, shortcutSettings, shownRef, sizesPty, socketRef, stackRef, stalledRef, stopKeyRef, submitRetention, t, tRef, termRef, terminalFontSize, theme, updateSettings, uploadFileRef, watchingRef, wheelStateRef });
 
-  useTerminalRefits({ activeRef, autoSelected, baseFontRef, chatView, chatViewRef, coarseRef, findOpenRef, fitRef, fittedRef, fixedGridRef, follow, followCursorRef, keyboardHoldsRef, narrowFont, narrowFontFitted, observeRef, palette, paneRef, peekRef, sharedGridRef, shown, sizesPty, socketRef, termRef, terminalFontFamily, terminalFontSize, theme });
+  useTerminalRefits({ activeRef, autoSelected, baseFontRef, pinchingRef, fontSettledRef, chatView, chatViewRef, coarseRef, findOpenRef, fitRef, fittedRef, fixedGridRef, follow, followCursorRef, keyboardHoldsRef, narrowFont, narrowFontFitted, observeRef, palette, paneRef, peekRef, sharedGridRef, shown, sizesPty, socketRef, termRef, terminalFontFamily, terminalFontSize, theme });
 
-  usePaneAttach({ activeRef, autoSelected, cached, coarseRef, deferAttachRef, draftPaneRef, findOpenRef, fitRef, fittedRef, fixedGridRef, frameGateRef, hyperlinksRef, hostRef, machineId, mirrored, modifyOtherKeysRef, observeRef, paneId, pending, presented, presentationRef, releaseRef, releasedRef, retireOutputRef, secretRef, setDraft, setComposing, setEnded, setHeld, setInputError, setInputReady, setOutputError, setOutputReady, setReleased, setSecret, setUnsupported, setWatching, sharedGridRef, socketRef, stalledRef, terminalId, termRef, chatViewRef, cancelLeaveRef, cachedRef, watchingRef, keyboardHoldsRef, followRef, followCursorRef, leaveRef, shownRef });
+  usePaneAttach({ activeRef, autoSelected, cached, coarseRef, deferAttachRef, fontSettledRef, draftPaneRef, findOpenRef, fitRef, fittedRef, fixedGridRef, frameGateRef, hyperlinksRef, hostRef, machineId, mirrored, modifyOtherKeysRef, observeRef, paneId, pending, presented, presentationRef, releaseRef, releasedRef, retireOutputRef, secretRef, setDraft, setComposing, setEnded, setHeld, setInputError, setInputReady, setOutputError, setOutputReady, setReleased, setSecret, setUnsupported, setWatching, sharedGridRef, socketRef, stalledRef, terminalId, termRef, chatViewRef, cancelLeaveRef, cachedRef, watchingRef, keyboardHoldsRef, followRef, followCursorRef, leaveRef, shownRef });
 
 
   // A sibling already mounted in the split canvas becomes the keyboard target only on an
@@ -643,7 +670,7 @@ export function PaneTerminal({
     socketRef.current?.setMode(role);
   }, [role]);
 
-  const { sendDraft, discardDraft, submitComposerMessage, sendComposerText, sendTerminalLine, insertTerminalText, reassertGrid, pressEnter, toggleDirect } = useTerminalSends({ activeRef, agent, cancelTouchRef, chatView, coarse, composingRef, directTyping, draft, draftHeldForRef, heldRef, hostRef, inputLine, inputRowNow, keyboardToggleFocusRef, knownOutcomes, lineComposingRef, machineId, modifiersRef, onChatSuggestion, paneId, paneRef, pendingEpochRef, pendingSubmissionsRef, reassertIfStaleRef, redrawGreeting, releaseRef, secretRef, sessionRef, setChatRefresh, setChatSent, setDraft, showSentCommand, socketRef, stillOpenNote, stillOpenRef, submitRetention, tRef, termRef, updateSettings });
+  const { sendDraft, discardDraft, submitComposerMessage, sendComposerText, sendTerminalLine, insertTerminalText, reassertGrid, pressEnter, toggleDirect } = useTerminalSends({ activeRef, agent, cancelTouchRef, chatView, coarse, composingRef, directTyping, draft, draftHeldForRef, heldRef, hostRef, inputLine, inputRowNow, keyboardOwnerRef, keyboardToggleFocusRef, lineFocus: lineRef, knownOutcomes, lineComposingRef, machineId, modifiersRef, onChatSuggestion, paneId, paneRef, pendingEpochRef, pendingSubmissionsRef, reassertIfStaleRef, redrawGreeting, releaseRef, secretRef, sessionRef, setChatRefresh, setChatSent, setDraft, showSentCommand, socketRef, stillOpenNote, stillOpenRef, submitRetention, tRef, termRef, updateSettings });
 
   const { pressKey, toggleModifier, abortTurn } = useTypedKeys({ agent, agentStatus, barKeyRef, coarseRef, commitPendingText, compositionCommitPendingRef, composingRef, inputLineRef, modifiersRef, paneId, reassertIfStaleRef, setInputError, setModifiers, socketRef, stopKeyRef, tRef, termRef });
 
@@ -683,44 +710,50 @@ export function PaneTerminal({
   }, []);
 
   // the key bar's keyboard control: the soft keyboard for the current input mode, shown or put away
-  // without a key, a mode change, a fit or a resize (the grid under a keyboard stays, #1045). It
-  // acts on what lib/viewport.ts measured (data-keyboard), not on where the focus is: a field focused
-  // under a hardware keyboard counts as down, and Show only focuses it again. The focus runs inside
-  // the tap's own gesture, which is what lets a phone raise its keyboard. A composition in either
-  // field, or a commit still on its way, refuses the tap outright: nothing runs later, and no
-  // compositionend is forced, so the word being typed stays as it is. Safari's Hangul or dictation
-  // preedit has no composition events and waits for the next key, paste or blur (the xterm patch):
-  // the blur here types it, as a key-bar key does first (commitPendingText); refusing would leave
-  // Hide refused after every word typed that way
+  // without a key, a mode change, a fit or a resize (the grid under a keyboard stays, #1045). Label
+  // and tap share lib/keyboardControl.ts's tap word, so a mid-animation keyboard cannot read the tap
+  // for itself. The focus runs inside the tap's own gesture, which is what lets a phone raise its
+  // keyboard; Show's blur-and-refocus of an already focused field is a new input session, which a
+  // keyboard a back gesture put away needs. A composition in either field, a commit on its way or a
+  // paste reading the clipboard refuses the tap outright: nothing runs later, no compositionend is
+  // forced. Safari's Hangul or dictation preedit has no composition events and waits for a blur
+  // (the xterm patch): Hide's blur types it, as a key-bar key does first (commitPendingText)
   const toggleKeyboard = useCallback(() => {
     if (!activeRef.current || !presentedRef.current || modalOpen() || observeRef.current || heldRef.current || endedRef.current || releasedRef.current) return;
-    const action = keyboardToggleAction(keyboardUp(), composingRef.current || lineComposingRef.current || compositionCommitPendingRef.current);
-    if (action === "refuse") return;
     const stack = stackRef.current;
-    if (action === "hide") {
-      // only this pane's field: a sibling pane's keyboard is its own, and a keyboard still measured
-      // up after its field lost the focus (its hide animation) needs nothing, nor does the control
-      // itself, focused from a hardware keyboard: no field has the focus then
-      const focused = document.activeElement;
-      if (!(focused instanceof HTMLElement) || !stack?.contains(focused) || focused.closest(".key-bar")) return;
-      keyboardToggleFocusRef.current = true;
-      try {
-        focused.blur();
-      } finally {
-        keyboardToggleFocusRef.current = false;
+    // this pane's field alone: a sibling pane's keyboard is its own, and the control itself, focused
+    // from a hardware keyboard, holds no keyboard to put away
+    const focused = document.activeElement;
+    const hideTarget = focused instanceof HTMLElement && stack?.contains(focused) === true && focused.closest(".key-bar") === null ? focused : null;
+    // the field of the current input mode: the input line, else xterm's own field for direct typing
+    const line = stack?.querySelector<HTMLElement>(".terminal-input-text") ?? termRef.current?.textarea ?? null;
+    const action = keyboardControl.press({
+      refused: composingRef.current || lineComposingRef.current || compositionCommitPendingRef.current,
+      hideTarget: hideTarget !== null,
+      showTarget: line !== null,
+      owner: keyboardOwnerRef.current,
+    });
+    if (action !== "show" && action !== "hide") return;
+    const show = (): void => {
+      if (line === null) return;
+      if (line === document.activeElement) {
+        // a keyboard already put away while the field kept the focus (the back gesture): a blur and
+        // a focus inside the tap is a new input session, which is what a phone raises a keyboard for
+        line.blur();
       }
-      return;
-    }
-    // the field of the current input mode: the input line, else xterm's own textarea for direct
-    // typing (the bar is not shown while the masked input is, so it never needs that one)
-    const field = stack?.querySelector<HTMLElement>(".terminal-input-text");
+      if (line === termRef.current?.textarea) termRef.current?.focus();
+      else line.focus({ preventScroll: true });
+    };
     keyboardToggleFocusRef.current = true;
     try {
-      if (field) field.focus({ preventScroll: true });
-      else termRef.current?.focus();
+      if (action === "show") show();
+      else hideTarget?.blur();
     } finally {
       keyboardToggleFocusRef.current = false;
     }
+    // the tap's own blur that leaves no field focused anywhere is the keyboard going, where the
+    // measured state is blind (a zoomed page, a floating keyboard)
+    keyboardControl.settled(action, !keyboardTypingField(document.activeElement));
   }, []);
 
   // While the agent runs, append to its held messages. Each requires an explicit send.
@@ -859,7 +892,7 @@ export function PaneTerminal({
     }} />
     : null;
 
-  const { composerSend, actOnPending, waitingAnswer } = useComposerSends({ agent, agentStatus, answerPanePrompt, answering, draftHeldForRef, ended, heldByOpenQueue, heldRef, inputRowNow, knownOutcomes, observeRef, paneId, paneRef, pendingAnswer, pendingScopeRef, queueOwner, queueStore, machineId, secretRef, setPendingAnswer, setPromptRefresh, settings, showSentCommand, socketRef, stillOpenNote, stillOpenNotedRef, stillOpenRef, submitComposerMessage, submitRetention, t, chatNavigation, setChatLocalSend, sessionRef });
+  const { composerSend, actOnPending, waitingAnswer } = useComposerSends({ agent, agentStatus, answerPanePrompt, answering, draftHeldForRef, ended, heldByOpenQueue, heldRef, inputAtRest, inputRowNow, knownOutcomes, observeRef, paneId, paneRef, pendingAnswer, pendingScopeRef, queueOwner, queueStore, machineId, secretRef, setPendingAnswer, setPromptRefresh, settings, showSentCommand, socketRef, stillOpenNote, stillOpenNotedRef, stillOpenRef, submitComposerMessage, submitRetention, t, chatNavigation, setChatLocalSend, sessionRef });
 
 
   // Capture the owner's pane for the entire upload batch, even across a pane switch.
@@ -1307,7 +1340,7 @@ export function PaneTerminal({
         modifiers={modifiers} onToggleModifier={toggleModifier} items={settings.keyBarItems}
         {...(coarse ? { directTyping, onToggleDirect: toggleDirect, directDisabled: lineComposing, onPaste: pasteIntoLine, pasteDisabled: linePasting,
           note: pasteGuidance ? t("Tap Input line to paste.") : null, onNoteDismiss: dismissPasteGuidance,
-          onToggleKeyboard: toggleKeyboard, keyboardDisabled: !connected || !inputReady || held || ended, keyboardRefused: composing || lineComposing || linePasting } : {})} />}
+          onToggleKeyboard: toggleKeyboard, keyboardOwner, keyboardDisabled: !connected || !inputReady || held || ended, keyboardRefused: composing || lineComposing || linePasting } : {})} />}
     </div>
   );
 }

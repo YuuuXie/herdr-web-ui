@@ -109,8 +109,17 @@ function outcomeProcess(info: ProcessInfo | undefined, agent: string, bound?: nu
 }
 
 /** The OmO process holding a session among `info`'s, for an OmO send only; read without holding the event loop. */
-const heldOmoOf = async (pane: HerdrPane | null | undefined, agent: string, info: ProcessInfo | undefined): Promise<number | null> =>
+const heldOmoOf = async (pane: HerdrPane | null | undefined, agent: string, info: ProcessInfo | undefined): Promise<{ pid: number; started: number | null } | null> =>
   pane && agent === "omo" ? await heldOmoProcess(pane, info?.foreground_processes ?? []).catch(() => null) : null;
+
+/**
+ * outcomeProcess for a send, the OmO holder keyed by the start its holder check verified: a pid reused between that
+ * check and this read is another process, which the next poll tells apart (checkBoundProcess), never the holder (#2190).
+ */
+function sentToProcess(info: ProcessInfo | undefined, agent: string, held: { pid: number; started: number | null } | null): { pid: number; started: number | null; held?: true } | null {
+  const found = outcomeProcess(info, agent, undefined, held?.pid ?? null);
+  return found?.held && held ? { ...found, started: held.started } : found;
+}
 
 /** How long a poll waits for a send's process binding before it judges that send without one, this time. */
 const BINDING_WAIT_MS = 250;
@@ -137,9 +146,12 @@ const sameProcess = (a: { pid: number; started: number | null }, b: { pid: numbe
  * starts alongside delivery and can answer after a replacement: a process that started at or after the send never
  * received it, so the send is left unidentified rather than bound to it. Outside Linux and macOS no start time is
  * known and the answer is taken as the send-time one. `pane`: the pane the send went to, which places an OmO's
- * session holder (heldOmoProcess).
+ * session holder (heldOmoProcess). `held`: that holder as the caller already checked it (a queued send's pending
+ * context), or null when its process is no holder: then no holder is read again, so two holders listed in another
+ * order meanwhile cannot move the send to the other one (#2190).
  */
-export function bindCommandProcess(paneId: string, command: PaneCommandSend | undefined, seen?: ProcessInfo, pane?: HerdrPane | null): void {
+export function bindCommandProcess(paneId: string, command: PaneCommandSend | undefined, seen?: ProcessInfo, pane?: HerdrPane | null,
+  held?: { pid: number; started: number | null } | null): void {
   const visibility = command?.visibility;
   if (!command || !visibility || visibility.process !== undefined || visibility.binding) return;
   const sentAt = Date.now();
@@ -147,12 +159,12 @@ export function bindCommandProcess(paneId: string, command: PaneCommandSend | un
     if (seen) {
       // the /proc start-time read waits until delivery has its turn
       await Promise.resolve();
-      visibility.process = outcomeProcess(seen, command.agent, undefined, await heldOmoOf(pane, command.agent, seen));
+      visibility.process = sentToProcess(seen, command.agent, held !== undefined ? held : await heldOmoOf(pane, command.agent, seen));
       if (!visibility.process) visibility.unmatched = true;
       return;
     }
     const info = await paneProcessInfo(paneId).catch(() => undefined);
-    const found = outcomeProcess(info, command.agent, undefined, await heldOmoOf(pane, command.agent, info));
+    const found = sentToProcess(info, command.agent, held !== undefined ? held : await heldOmoOf(pane, command.agent, info));
     const startedBy = found ? await processStartUpperBoundAsync(found.pid) : null;
     visibility.process = found && (startedBy === null || startedBy < sentAt) ? found : null;
     if (!found) visibility.unmatched = true;
@@ -674,6 +686,23 @@ async function piAskRefusesKeys(paneId: string, signal?: AbortSignal): Promise<b
 
 /** A pi-ask form opened under a key-driven answer: nothing more is sent. */
 class PiAskFormOpen extends Error {}
+
+/**
+ * Whether omp itself holds the pane's input: one of its own processes is in the pane's foreground (herdr's
+ * `pane.process_info`). herdr keeps naming the pane omp while omp is stopped behind its shell (job control,
+ * live-verified with herdr 0.9.5: the foreground is then the shell alone), and the screen can still show omp's
+ * last dialog: a key answered there would go to the shell. Unknown (herdr did not answer) is not omp's. Windows
+ * has no job control and no foreground process group (process_info names only the shell there,
+ * windows-processes.ts), so nothing can stand in front of a running omp: its panes are read as before.
+ */
+async function ompOwnsInput(paneId: string): Promise<boolean> {
+  if (process.platform === "win32") return true;
+  const info = await paneProcessInfo(paneId).catch(() => undefined);
+  return agentProcesses(info?.foreground_processes ?? [], "omp").length > 0;
+}
+
+/** The shell (or anything but omp) took the pane's input under a key-driven omp answer: nothing more is sent. */
+class OmpNotInFront extends Error {}
 const ompAskReader = new OmoAskReader(ompAsksAfter);
 
 /** An omp Ask card in the agent's own Markdown when its session's open ask call is the menu on screen (omp-ask.ts); else the card as drawn. */
@@ -911,6 +940,10 @@ async function readKnownPrompt(
   let prompt = piNative ? publicPrompt(piNative)
     : parseInteractivePrompt(agent, screen, omoAsks[0] ?? null, omoTrusted, omoAsks, agent === "claude" ? heldCandidate(paneId) : null, pane.agent_status === "working");
   if (markdown && prompt && agent === "omp" && pane.cwd) prompt = await withOmpMarkdown(paneId, pane.cwd, prompt);
+  // every omp card answers by keys, and so would a fallback card: offered only while omp holds the input
+  if (agent === "omp" && (prompt !== null || pane.agent_status === "blocked") && !(await ompOwnsInput(paneId))) {
+    return { prompt: null, screen, suppressFallback: true };
+  }
   if (prompt && await claudeHeldIsGrey(paneId, prompt)) return { prompt: null, screen };
   // pi-ask's form with no card: pi-ask takes no typed keys (its docs/remote-events.md), so no card
   // that answers by keys is offered, pi's own dialogs included (the answer would refuse them too):
@@ -1458,6 +1491,9 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
         const sendStep = async (step: AnswerStep, move: boolean, more: boolean): Promise<void> => {
           // right before each key: a pi-ask form that opened since the read takes none of them
           if (agent === "pi" && await piAskRefusesKeys(body.pane_id, deadline)) throw new PiAskFormOpen();
+          // and an omp stopped behind its shell since the read takes none either: the shell would. A stop between
+          // this look and herdr writing the key is not seen: herdr's send_keys takes no condition on the foreground
+          if (agent === "omp" && !(await ompOwnsInput(body.pane_id))) throw new OmpNotInFront();
           const first = !move && !committed;
           if (!move) committed = true;
           try {
@@ -1555,7 +1591,7 @@ export async function handlePromptRequest(request: Request, url: URL, options: P
           && body.option_index !== parsed.rejectWithEscapeIndex) noteCommandEvidence(body.pane_id, sent.id, { kind: "dialog", at: Date.now() });
       } catch (error) {
         if (error instanceof InvalidAnswer) return badRequest("invalid_answer", error.message);
-        if (error instanceof PiAskFormOpen) return promptChanged();
+        if (error instanceof PiAskFormOpen || error instanceof OmpNotInFront) return promptChanged();
         throw error;
       } finally {
         answersUnderWay.delete(body.pane_id);

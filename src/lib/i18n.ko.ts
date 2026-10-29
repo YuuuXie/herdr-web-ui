@@ -8,6 +8,7 @@ import { WORKSPACE_KO } from "./i18n/workspace.ko.ts";
 import { FILES_KO } from "./i18n/files.ko.ts";
 import { DEVICES_KO } from "./i18n/devices.ko.ts";
 import { USAGE_KO } from "./i18n/usage.ko.ts";
+import { SETUP_KO } from "./i18n/setup.ko.ts";
 import { UPDATES_KO } from "./i18n/updates.ko.ts";
 import { PALETTE_KO } from "./i18n/palette.ko.ts";
 
@@ -139,6 +140,8 @@ const BASE: Record<string, string> = {
   // ---- new workspace ----
   "Browse": "찾아보기",
   "Cancel": "취소",
+  "Install": "설치",
+  "Sign in": "로그인",
   "Starting…": "시작 중…",
   "Start": "시작",
   // the launch's model, effort, first message and skills (lib/agentLaunchMode.ts, lib/newSession.ts)
@@ -306,6 +309,7 @@ export const KO_PARTS: Record<string, Record<string, string>> = {
   files: FILES_KO,
   devices: DEVICES_KO,
   usage: USAGE_KO,
+  setup: SETUP_KO,
   updates: UPDATES_KO,
   palette: PALETTE_KO,
 };

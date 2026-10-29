@@ -30,7 +30,7 @@ try {
   await herdrRpc("pane.send_input", { pane_id: paneId, text: "for n in $(seq 1 180); do printf 'history %03d: record\\n' $n; if [ $n = 12 ] || [ $n = 90 ] || [ $n = 170 ]; then printf 'mark_%s tail mark_%s\\n' needle needle; fi; done; printf 'wide_%s%s%sZ\\n' '界' 'e' '́'; printf 'viewport_%s\\n' ready; exec cat", keys: ["enter"] });
   await ready;
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 }, locale: "en-US" });
-  await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", defaultView: "terminal", alertsOn: false })));
+  await context.addInitScript(() => localStorage.setItem("ovis:settings", JSON.stringify({ language: "en", theme: "light", defaultView: "terminal", alertsOn: false })));
   const page = await context.newPage();
   page.setDefaultTimeout(10000);
   const errors: string[] = [];
@@ -68,6 +68,14 @@ try {
   const firstMetrics = page.waitForResponse((response) => response.url().includes("/api/pane/scroll?") && response.request().method() === "GET");
   await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(paneId)}`);
   await firstMetrics;
+  const backgrounds = await page.evaluate(() => ({
+    viewport: getComputedStyle(document.querySelector(".xterm-viewport")!).backgroundColor,
+    host: getComputedStyle(document.querySelector(".terminal-host")!).backgroundColor,
+  }));
+  assert.equal(backgrounds.viewport, backgrounds.host, "the terminal gutter follows the light theme instead of showing a black frame");
+  // equal backgrounds prove nothing if both stayed dark: the light theme must actually be on
+  const [r, g, b] = (backgrounds.host.match(/\d+(\.\d+)?/g) ?? []).map(Number);
+  assert.ok((0.2126 * r! + 0.7152 * g! + 0.0722 * b!) / 255 > 0.5, `the light theme paints a light terminal background (got ${backgrounds.host})`);
   assert.ok((await paneScrollInfo(paneId))!.max_offset_from_bottom > 100, "herdr holds the full history");
   const widths = await page.evaluate(() => ({ grid: document.querySelector(".pane-terminal")!.getBoundingClientRect().width, surface: document.querySelector(".terminal-surface")!.getBoundingClientRect().width }));
   assert.equal(widths.grid, widths.surface, "the grid takes the full width, with no column reserved beside it");

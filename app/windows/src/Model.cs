@@ -27,6 +27,8 @@ namespace Ovis
         public bool AliveWithoutHerdr;
         /// <summary>The answering server says it runs without the update supervisor: not one the plugin's start runs, or one whose supervisor has not reported yet.</summary>
         public bool Unmanaged;
+        /// <summary>GET /api/access answered 401: the server asks for a token the app does not have, so Tailscale's state is unknown.</summary>
+        public bool AccessLocked;
     }
 
     /// <summary>
@@ -95,7 +97,7 @@ namespace Ovis
         /// </summary>
         public async Task Update()
         {
-            Retry = Update;
+            Retry = UpdateAgain;
             var title = Lang.L("Updating the Ovis server…", "Ovis 서버를 업데이트하는 중…");
             // a linked checkout or a fork is never moved or reinstalled (the screen offers no Update for one)
             if (plugin != null && plugin.NotOurs)
@@ -131,7 +133,7 @@ namespace Ovis
             // server that runs them, and the start would find it answering. Its own stop says when it ended a verified
             // Ovis process, which a probe of the port can miss (a PORT edited since it started): that one is started again
             // if the update fails.
-            var stop = await Run.Program("bun", new[] { PluginScript(plugin), "stop" }, Append);
+            var stop = await PluginCommand(plugin, "stop", Append);
             if (stop.Status != 0)
             {
                 Fail(Lang.L("Could not stop the Ovis server, so nothing was updated.", "Ovis 서버를 멈추지 못해 아무것도 업데이트하지 않았습니다."));
@@ -168,6 +170,27 @@ namespace Ovis
             }
             await WaitUntilRunning();
             await Refresh();
+        }
+
+        /// <summary>
+        /// Try again after a failed update. The update may have moved or removed the plugin it read (install.ps1 takes the
+        /// old id's checkout away), so what is on this PC is read again: the update runs again while one is due (or the
+        /// plugin is gone); for a current server, the update's last steps run again: its login start, and its start when it
+        /// is stopped.
+        /// </summary>
+        private async Task UpdateAgain()
+        {
+            await Refresh();
+            if (Phase == Phase.Outdated || Phase == Phase.NotInstalled)
+            {
+                await Update();
+                return;
+            }
+            if (Phase != Phase.Installed) return;
+            // the login start the update adds, which may be the step that failed while the server already runs
+            if (!LoginStart() || (Status != null && Status.Running)) return;
+            await Restart();
+            if (Phase == Phase.Failed) Retry = UpdateAgain;
         }
 
         /// <summary>herdr set up from a terminal has no login start yet: add it, as Install does.</summary>
@@ -301,7 +324,7 @@ namespace Ovis
             Retry = MakePhoneAddress;
             ClearLog();
             Set(Phase.Working, Lang.L("Making the phone address…", "휴대폰 주소를 만드는 중…"));
-            await Run.Program("bun", new[] { PluginScript(plugin), "phone" }, Append, true, 5 * 60);
+            await PluginCommand(plugin, "phone", Append, true, 5 * 60);
             await Refresh();
         }
 
@@ -353,15 +376,41 @@ namespace Ovis
         /// </summary>
         private async Task<bool> Stop(Plugin plugin)
         {
-            return (await Run.Program("bun", new[] { PluginScript(plugin), "stop" }, Append)).Status == 0;
+            return (await PluginCommand(plugin, "stop", Append)).Status == 0;
+        }
+
+        /// <summary>
+        /// The plugin's plugin.ts, run here as herdr runs its actions: told the state dir herdr keeps for the plugin. Releases
+        /// under the old id from before 0.4.13 look for their server's pid there only when told, and in ~/.local/state
+        /// otherwise, where they find none: their stop ended nothing, so a server that outlived herdr kept the old
+        /// checkout's files open for the move's uninstall, and their status named no pid. Every release under the new id
+        /// finds herdr's dir itself, and keeps its own for a server started by hand from the checkout.
+        /// </summary>
+        private static async Task<RunResult> PluginCommand(Plugin plugin, string command, Action<string> onLine, bool keepStderr = true, int limitSeconds = 120)
+        {
+            var words = new[] { PluginScript(plugin), command };
+            if (plugin.Id != Links.LegacyPluginId) return await Run.Program("bun", words, onLine, keepStderr, limitSeconds);
+            // the child takes this process's environment when it starts; the app's steps run one at a time
+            var given = Environment.GetEnvironmentVariable("HERDR_PLUGIN_STATE_DIR");
+            Environment.SetEnvironmentVariable("HERDR_PLUGIN_STATE_DIR", Setup.HerdrPluginStateDir(plugin.Id, Environment.GetEnvironmentVariable));
+            RunResult result;
+            try
+            {
+                result = await Run.Program("bun", words, onLine, keepStderr, limitSeconds);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("HERDR_PLUGIN_STATE_DIR", given);
+            }
+            // a server started by hand from the checkout keeps its pid in its own dir, which the given one hides: a stop
+            // that found none there asks the way it did before
+            if (command == "stop" && result.Status == 0 && !Setup.StoppedServer(result.Output)) return await Run.Program("bun", words, onLine, keepStderr, limitSeconds);
+            return result;
         }
 
         private static string[] PowerShell(string command)
         {
-            // TLS 1.2 for Windows PowerShell on Windows 10, and UTF-8 output for the log
-            var script = "[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor 3072; " +
-                         "[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false); $ProgressPreference = 'SilentlyContinue'; " + command;
-            return new[] { "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", Convert.ToBase64String(Encoding.Unicode.GetBytes(script)) };
+            return Setup.PowerShellArguments(command);
         }
 
         private static string PluginScript(Plugin plugin)
@@ -379,11 +428,13 @@ namespace Ovis
         /// <summary>`plugin.ts status` knows the port the plugin settled on: "running http://127.0.0.1:7317 (pid 1)" or "down …".</summary>
         private static async Task<Status> ReadStatus(Plugin plugin)
         {
-            var result = await Run.Program("bun", new[] { PluginScript(plugin), "status" }, null, false);
+            var result = await PluginCommand(plugin, "status", null, false);
             var words = (result.Output.Split('\n').FirstOrDefault() ?? "").Split(' ');
             var status = new Status { Running = words[0] == "running", Origin = words.Length > 1 ? words[1] : null, Version = Setup.StatusVersion(result.Output), Pid = Setup.StatusPid(result.Output) };
             if (!status.Running && status.Pid != null && status.Origin != null) status.AliveWithoutHerdr = await BridgeAnswers(status.Origin);
             if (!status.Running || status.Origin == null) return status;
+            // the token that opened GET /api/updates opens GET /api/access too; one the server refused is not sent again
+            string accessToken = null;
             try
             {
                 using (var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) })
@@ -395,8 +446,9 @@ namespace Ovis
                         // behind a token: the plugin's own settings hold it, as `plugin.ts` reads them
                         var token = await PluginToken(plugin);
                         answer.Dispose();
-                        if (token == null) return await WithAccess(status);
+                        if (token == null) return await WithAccess(status, null);
                         answer = await GetTwice(client, url, token);
+                        if (answer.StatusCode != System.Net.HttpStatusCode.Unauthorized) accessToken = token;
                     }
                     using (answer)
                     {
@@ -413,7 +465,7 @@ namespace Ovis
             {
                 // no version from the server: one that runs is then one whose version cannot be read
             }
-            return await WithAccess(status);
+            return await WithAccess(status, accessToken);
         }
 
         /// <summary>
@@ -470,14 +522,30 @@ namespace Ovis
             return Setup.EnvToken(new[] { environment }.Concat(files));
         }
 
-        /// <summary>The phone address and Tailscale's state, from GET /api/access.</summary>
-        private static async Task<Status> WithAccess(Status status)
+        /// <summary>
+        /// The phone address and Tailscale's state, from GET /api/access, with the server's token when it asks for one (the
+        /// PC's own token, from the plugin's settings): without it, a server behind a token answers 401, and that is all
+        /// that is known.
+        /// </summary>
+        private static async Task<Status> WithAccess(Status status, string token)
         {
             try
             {
                 using (var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) })
+                using (var request = new HttpRequestMessage(HttpMethod.Get, status.Origin.TrimEnd('/') + "/api/access"))
                 {
-                    var body = await client.GetStringAsync(status.Origin.TrimEnd('/') + "/api/access");
+                    if (token != null) request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+                    string body;
+                    using (var answer = await client.SendAsync(request))
+                    {
+                        if (answer.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+                        {
+                            status.AccessLocked = true;
+                            return status;
+                        }
+                        if (!answer.IsSuccessStatusCode) return status;
+                        body = await answer.Content.ReadAsStringAsync();
+                    }
                     var access = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(body);
                     object value;
                     var tailscale = access != null && access.TryGetValue("tailscale", out value) ? value as Dictionary<string, object> : null;

@@ -195,6 +195,13 @@ try {
     const chord = await mark(s, "Ctrl+ArrowLeft", before);
     assert.equal(chord.read, "\x1b[1;5D", "Ctrl+ArrowLeft received once");
     assert.deepEqual(chord.frames, [{ type: "input", pane_id: s.pane, text: "\x1b[1;5D" }]);
+    // Alt+arrow moves a word as Ctrl+arrow does off a Mac (ESC b on one): xterm.js 5.5's mapping,
+    // which 6.0 dropped (xterm.js #5346) and the patch keeps
+    const altBefore = s.frames.length;
+    // xterm's own platform test (navigator.platform), not the host's
+    const altLeft = await s.page.evaluate(() => /Mac/.test(navigator.platform)) ? "\x1bb" : "\x1b[1;5D";
+    await s.page.keyboard.press("Alt+ArrowLeft");
+    assert.equal((await mark(s, "Alt+ArrowLeft", altBefore)).read, altLeft, "Alt+ArrowLeft moves a word");
 
     // A held arrow: keyboard autorepeat (~30/s) with letters typed between some of the repeats.
     // Every key must arrive in order within the bounded delivery wait below. The repeat after a

@@ -8,6 +8,7 @@ import { WORKSPACE_JA } from "./i18n/workspace.ja.ts";
 import { FILES_JA } from "./i18n/files.ja.ts";
 import { DEVICES_JA } from "./i18n/devices.ja.ts";
 import { USAGE_JA } from "./i18n/usage.ja.ts";
+import { SETUP_JA } from "./i18n/setup.ja.ts";
 import { UPDATES_JA } from "./i18n/updates.ja.ts";
 import { PALETTE_JA } from "./i18n/palette.ja.ts";
 
@@ -141,6 +142,8 @@ const BASE: Record<string, string> = {
   // ---- new workspace ----
   "Browse": "参照",
   "Cancel": "キャンセル",
+  "Install": "インストール",
+  "Sign in": "ログイン",
   "Starting…": "起動しています…",
   "Start": "開始",
   // the launch's model, effort, first message and skills (lib/agentLaunchMode.ts, lib/newSession.ts)
@@ -308,6 +311,7 @@ export const JA_PARTS: Record<string, Record<string, string>> = {
   files: FILES_JA,
   devices: DEVICES_JA,
   usage: USAGE_JA,
+  setup: SETUP_JA,
   updates: UPDATES_JA,
   palette: PALETTE_JA,
 };

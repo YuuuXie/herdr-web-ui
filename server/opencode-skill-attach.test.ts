@@ -371,6 +371,14 @@ describe("typeWithSkills", () => {
     expect(result.prompt.map((piece) => "typed" in piece ? piece.typed : piece.pasted).join("")).toBe(io.input());
   });
 
+  it("types Tab's padding-coloured space once when a model-only wait ends on a blank redraw", async () => {
+    // the attached token shows while the row names no agent; the deadline read finds no prompt at all
+    const io = simulatedInput((now) => now >= OPENCODE_SKILL_ACCEPT_WAIT_MS ? "" : samePadding(narrow("accepted")), "@effect ", samePadding(ansi("first-selected")));
+    const result = await typeWithSkills("@effect go", ["effect"], () => true, io, async () => {});
+    expect(io.input()).toBe("@effect go");
+    expect(result.prompt.map((piece) => "typed" in piece ? piece.typed : piece.pasted).join("")).toBe(io.input());
+  });
+
   it("does not record a model-only redraw as an agent switch after attachment", async () => {
     const after = narrow("accepted").replace("MiniMax M3.1 Flash Free", "Another Model");
     const io = pane((writes) => writes.includes(`keys:${OPENCODE_SKILL_ACCEPT_KEY}`) ? after : narrow("first-selected"));

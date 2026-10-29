@@ -1,7 +1,7 @@
 /** Browser-only regression fixture, bundled by chat-history-browser-qa.ts. */
 import React, { Profiler, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { SettingsProvider } from "../src/lib/settings.ts";
+import { SettingsProvider, useSettings } from "../src/lib/settings.ts";
 import { PaneTerminal } from "../src/components/PaneTerminal.tsx";
 import { ChatView } from "../src/components/ChatView.tsx";
 import { useWholeOutput } from "../src/lib/useWholeOutput.ts";
@@ -10,9 +10,9 @@ import { useUpdates } from "../src/lib/updates.ts";
 import { UpdateNotice } from "../src/components/UpdateControls.tsx";
 import "../src/styles.css";
 
-declare global { interface Window { qa: { requests: { url: string; signal: AbortSignal; resolve: (text: string) => void; reject: () => void }[]; commits: string[][]; answered: string[]; target: (url: string, scope: string) => void; chat: (pane: string, machine?: string) => void; select: (pane: string, machine: string, agent?: string) => void; refresh: () => void } } }
+declare global { interface Window { qa: { requests: { url: string; signal: AbortSignal; resolve: (text: string) => void; reject: () => void }[]; commits: string[][]; answered: string[]; target: (url: string, scope: string) => void; chat: (pane: string, machine?: string) => void; select: (pane: string, machine: string, agent?: string) => void; refresh: () => void; historyPrompts: (prompts: number) => void } } }
 const nativeFetch = window.fetch;
-window.qa = { requests: [], commits: [], answered: [], target: () => {}, chat: () => {}, select: () => {}, refresh: () => {} };
+window.qa = { requests: [], commits: [], answered: [], target: () => {}, chat: () => {}, select: () => {}, refresh: () => {}, historyPrompts: () => {} };
 window.fetch = (input, init) => {
   const url = String(input);
   if (!url.includes("tool-output") && !url.startsWith("/qa-output")) {
@@ -41,6 +41,9 @@ function Fixture() {
   const [machine, setMachine] = useState("local");
   const [refresh, setRefresh] = useState(0);
   const output = useWholeOutput(target.url, target.scope);
+  const { update } = useSettings();
+  // Settings, Chat, History page size: changed while the chat stays mounted
+  window.qa.historyPrompts = (historyPrompts) => update({ historyPrompts });
   window.qa.target = (url, scope) => setTarget({ url, scope });
   window.qa.chat = (pane, machine = "local") => { setPane(pane); setMachine(machine); };
   window.qa.refresh = () => setRefresh((value) => value + 1);

@@ -13,7 +13,7 @@ import { PendingInputs } from "../pending-input.ts";
 import { connectionData, type Client } from "./connections.ts";
 
 // herdr's status events come from the test, as the collector would hand them over
-type Handlers = { onStatus: (paneId: string, status: string, agent: string, replay?: { before: string; agent: string }) => void; onBaseline: (panes: unknown[]) => void };
+type Handlers = { onStatus: (paneId: string, status: string, agent: string, replay?: { before: string; agent: string }) => void; onBaseline: (panes: unknown[]) => void; herdrLive?: { identity: () => string | null; onChange: (identity: string | null) => void } };
 export let handlers: Handlers;
 export let collectorSnapshot: () => Promise<{ panes: HerdrPane[] }>;
 const originalCollector = collector.startStatusCollector;
@@ -41,11 +41,11 @@ const store = join(root, "opencode.db");
 {
   const db = new Database(store, { create: true });
   db.exec(`CREATE TABLE session_v2 (id text PRIMARY KEY, parent_id text, time_created integer);
-    CREATE TABLE session_message (id text PRIMARY KEY, session_id text, type text, seq integer, time_created integer, data text)`);
+    CREATE TABLE session_message (id text PRIMARY KEY, session_id text, type text, seq integer, time_created integer, time_updated integer, data text)`);
   db.query("INSERT INTO session_v2 VALUES ('ses_child', 'ses_parent', ?)").run(at + 1000);
-  const row = db.query("INSERT INTO session_message VALUES (?, ?, 'user', 1, ?, ?)");
-  row.run("msg_parent", "ses_parent", at, JSON.stringify({ time: { created: at } }));
-  row.run("msg_child", "ses_child", at + 1000, JSON.stringify({ time: { created: at + 1000 } }));
+  const row = db.query("INSERT INTO session_message VALUES (?, ?, 'user', 1, ?, ?, ?)");
+  row.run("msg_parent", "ses_parent", at, at, JSON.stringify({ time: { created: at } }));
+  row.run("msg_child", "ses_child", at + 1000, at + 1000, JSON.stringify({ time: { created: at + 1000 } }));
   db.close();
 }
 const CLAUDE = "11111111-1111-4111-8111-111111111111";
@@ -63,8 +63,11 @@ export const opencode = (session: string | null) => ({ ...base, agent: "opencode
 export const claude = { ...base, agent: "claude", agent_session: { agent: "claude", source: "hook", kind: "id", value: CLAUDE } };
 
 let hubs = 0;
-/** The status hub with herdr, OpenCode's service and the Claude lookup stood in for; what a browser and web push are sent. */
-export function hub<Owner = unknown, Lease = unknown>(path = transcript, queued?: PendingInputs<Owner, Lease>, drain?: (paneId: string) => void) {
+/**
+ * The status hub with herdr, OpenCode's service and the Claude lookup stood in for; what a browser and web push are sent.
+ * `herdrIdentity`: what the stood-in herdr's socket reads as (server/finishes.ts), when a test needs one.
+ */
+export function hub<Owner = unknown, Lease = unknown>(path = transcript, queued?: PendingInputs<Owner, Lease>, drain?: (paneId: string) => void, herdrIdentity?: () => string | null) {
   let panes: unknown[] = [];
   let gate: Promise<void> | null = null;
   let reading: (() => void) | undefined;
@@ -83,7 +86,7 @@ export function hub<Owner = unknown, Lease = unknown>(path = transcript, queued?
   const client = { data: connectionData({ deviceId: undefined, readOnly: false }), getBufferedAmount: () => 0, send: (encoded: string) => { frames.push(JSON.parse(encoded)); return 1; } } as unknown as Client;
   const pending = queued ?? new PendingInputs<Owner, Lease>(() => {});
   const status = createStatusHub({
-    options: { stateDir: join(root, `state${++hubs}`), opencodeDb: store, machines: false },
+    options: { stateDir: join(root, `state${++hubs}`), opencodeDb: store, machines: false, ...(herdrIdentity ? { herdrIdentity } : {}) },
     devices: { gated: false, has: () => true, onPaired: () => {} } as never, preferences: { get: () => ({ muted_panes: [] }), subscribe: () => () => {} } as never,
     clients: new Set([client]), present: new Set(), pending, drainPending: drain ?? (() => {}), holdPendingPane() {},
     usage: { invalidate() {} } as never, usageLogin: { ended: () => false } as never,

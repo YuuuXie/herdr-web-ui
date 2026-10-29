@@ -159,6 +159,46 @@ describe("omp Ask cards in the agent's own Markdown (#1644)", () => {
     expect(ompMarkdownPrompt(picture, pictured)).toBe(picture);
   });
 
+  it("leaves the card as drawn for a question the card would draw as a diagram, or options it would show alike (#2233)", () => {
+    // omp draws a ```mermaid fence's code; the chat's Markdown would draw a diagram in its place
+    const multi = card(screen("18.13.2", "multi", 120));
+    expect(ompMarkdownPrompt(multi, open("18.13.2"))?.text_format).toBe("markdown");
+    const diagram = withArgs(open("18.13.2"), (args) => { args.questions[1]!.question = args.questions[1]!.question.replace("```sh", "```mermaid"); });
+    expect(ompMarkdownPrompt(multi, diagram)).toBe(multi);
+
+    // two options omp draws as different characters (or with different link addresses) that the card shows alike
+    const version = "18.12.6";
+    const drawnScreen = screen(version, "single", 120);
+    const relabel = (labels: [string, string]) => {
+      let out = drawnScreen;
+      for (const [from, to] of [["Use local socket (Recommended)", labels[0]], ["Remote relay", labels[1]]] as const) {
+        const at = out.lastIndexOf(from);
+        out = out.slice(0, at) + to.padEnd(from.length) + out.slice(at + from.length);
+      }
+      return out;
+    };
+    const cases: [string, [string, string], [string, string]][] = [
+      ["spacing twins", ["Keep **production**", "Keep  **production**"], ["Keep production", "Keep  production"]],
+      ["one link's words to two addresses", ["Keep [production](https://a.example)", "Keep [production](https://b.example)"], ["Keep production", "Keep production"]],
+      ["case twins", ["Keep **Production**", "Keep **production**"], ["Keep Production", "Keep production"]],
+    ];
+    for (const [name, asked, shown] of cases) {
+      const menu = card(relabel(shown));
+      const calls = withArgs(open(version), (args) => {
+        args.questions[0]!.options[0]!.label = asked[0];
+        args.questions[0]!.options[1]!.label = asked[1];
+      });
+      expect(ompMarkdownPrompt(menu, calls), name).toBe(menu);
+    }
+    // two options told apart on the card keep their Markdown
+    const apart = card(relabel(["Keep production", "Keep staging"]));
+    const named = withArgs(open(version), (args) => {
+      args.questions[0]!.options[0]!.label = "Keep **production**";
+      args.questions[0]!.options[1]!.label = "Keep **staging**";
+    });
+    expect(ompMarkdownPrompt(apart, named)?.text_format).toBe("markdown");
+  });
+
   it("closes an omp session's ask call at its result and at the next user message", () => {
     const call = { type: "message", message: { role: "assistant", content: [{ type: "toolCall", id: "a", name: "ask", arguments: { questions: [] } }] } };
     const opened = ompAsksAfter([], call);

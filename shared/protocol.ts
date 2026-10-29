@@ -122,7 +122,8 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *         Unsupported methods/actions get 405 method_not_allowed; a watch-only device gets
  *         403 read_only. Startup holds HTTP/WS requests until leftover Portal cleanup completes;
  *         unreadable saved state or unverifiable cleanup fails closed with 500 internal_error.
- *  GET    /api/updates                   -> UpdateStatus (shared/update.ts), no-store
+ *  GET    /api/updates                   -> UpdateStatus (shared/update.ts), no-store; to the bridge
+ *         token (which cannot read /api/access) also `port` and `serving_url`, where it answers
  *  POST   /api/updates/check             -> 202 { accepted: true }
  *  POST   /api/updates/install           -> 202 { accepted: true }; UpdateInstallRequest JSON body
  *         (at most 1 KiB): 400 invalid_update_install for a missing or malformed revision,
@@ -144,6 +145,25 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *         kinds `agent.start` accepts, plus omo and gjc when they are on this server's PATH,
  *         each with `installed`: whether its command is on this server's PATH; for the
  *         new-session dialog)
+ *  GET    /api/agent-catalog             -> AgentCatalogResponse (shared/agent-catalog.ts: every agent
+ *         Ovis can install, with this PC's platform's official commands and whether each is
+ *         installed here, at which version, read by running its version flag (5 s limit; kept until
+ *         the executable file changes). Read only, no-store; a watch device may read it. A remote PC
+ *         from before the endpoint answers 404 through /api/machines/<id>/agent-catalog)
+ *  POST   /api/agent-catalog/install { agent, alternative? } -> { pane_id, workspace_id, command,
+ *         shell } (opens a tab and types that agent's official command for this PC's platform into its
+ *         shell: the catalog's primary, or alternatives[alternative]; the request never carries a
+ *         command. 400 unknown_agent / invalid_alternative / unknown_field (any other field); 409
+ *         no_install_command, command_refused, shell_mismatch (Windows: the method's shell is not the
+ *         tab's), shell_unknown (Windows: herdr names no PowerShell or cmd.exe in the tab within 10 s);
+ *         both type nothing and close the tab, as any failure after the tab opened does;
+ *         install_running (one install per agent per PC while its installer runs in its tab: until
+ *         the tab is back at its shell, the tab closes, no installer was seen within 2 min, or 30
+ *         min pass; finding the agent installed does not end it), platform_unsupported)
+ *  POST   /api/agent-catalog/sign-in { agent } -> the same (a tab running the agent's own sign-in
+ *         command, or the agent itself when it signs in inside; 400 unknown_field; 409 no_sign_in,
+ *         not_installed, shell_unknown). Both
+ *         are mutations: a watch device gets 403 read_only; another PC's go through the PC proxy
  *  GET    /api/integrations              -> IntegrationsResponse (herdr's `integration.list`, in
  *         herdr's order; read only: nothing here installs or removes one, Settings shows the
  *         `herdr integration install` command instead)
@@ -517,7 +537,7 @@ export interface ConversationResponse {
   activity?: "thinking" | "working" | "idle";
   /** Stable across appends; changes on transcript replacement or native context clear. */
   history_id?: string;
-  source: "copilot-transcript" | "grok-transcript" | "agy-transcript" | "muse-transcript" | "claude-transcript" | "omp-transcript" | "omo-transcript" | "gjc-transcript" | "pi-transcript" | "cmd-transcript" | "codex-transcript" | "devin-transcript" | "opencode-transcript" | "hermes-transcript" | "scrollback";
+  source: "copilot-transcript" | "grok-transcript" | "agy-transcript" | "muse-transcript" | "letta-transcript" | "claude-transcript" | "omp-transcript" | "omo-transcript" | "gjc-transcript" | "pi-transcript" | "cmd-transcript" | "codex-transcript" | "devin-transcript" | "opencode-transcript" | "hermes-transcript" | "scrollback";
   turns: ConversationTurn[];
   metadata?: ConversationMetadata;
   /**
@@ -945,10 +965,15 @@ export interface ClientConnectionTrace {
   events: ClientConnectionEvent[];
 }
 
-/** What a server supports beyond the base protocol, listed in its first snapshot; older bridges list nothing. */
+/** What a server supports beyond the base protocol, listed in its `features` frame and its first snapshot; older bridges list nothing. */
 export type ServerFeature = "submit" | "pending-input" | "pending-hold" | "secret-input" | "input-ready" | "take-over" | "watch" | "conversation-watch" | "ping" | "terminal-insert";
 
 export type ServerMessage =
+  /** the first frame of a connection, before the snapshot that can wait seconds on herdr: what this server
+   * supports and this socket's `connection` id (the snapshot names the same), and the herdr it reads now
+   * (`herdr_lifetime` as a snapshot names it; absent when unproven). A page acts on it before the snapshot only
+   * when that herdr is the one it already knows. Older bridges never send it: their features come with the snapshot */
+  | { type: "features"; features: ServerFeature[]; connection: string; herdr_lifetime?: string }
   /** `connection`: this socket's id on the PC, for a create request's `first_message_connection`; older bridges send none */
   | { type: "snapshot"; snapshot: SessionSnapshot; features?: ServerFeature[]; connection?: string }
   /** raw PTY bytes: append to the terminal, never repaint over it. A mirrored pane (HerdrIdentity.terminal_mirror) sends whole screens the same way. */

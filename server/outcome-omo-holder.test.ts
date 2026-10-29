@@ -27,10 +27,11 @@ function omoPane(holderPids: number[]) {
   const holders = join(agentDir, "sessions", omo.omoSessionFolder(cwd), "session-holders", "sess-1");
   mkdirSync(holders, { recursive: true });
   for (const pid of holderPids) writeFileSync(join(holders, `${pid}.json`), JSON.stringify({ pid, processStartedAtMs: 1_000, cwd }));
-  const state = { foreground: [] as Foreground[], start: 1_000 };
+  // `readStart`: what a synchronous start read finds instead, as when the pid changed hands after the holder check
+  const state = { foreground: [] as Foreground[], start: 1_000, readStart: undefined as number | undefined };
   const listed = (pid: number) => state.foreground.some((entry) => entry.pid === pid);
   spyOn(processStart, "processStartedAtAsync").mockImplementation(async (pid) => listed(pid) ? state.start : null);
-  spyOn(processStart, "processStartedAt").mockImplementation((pid) => listed(pid) ? state.start : null);
+  spyOn(processStart, "processStartedAt").mockImplementation((pid) => listed(pid) ? state.readStart ?? state.start : null);
   spyOn(processStart, "processAlive").mockImplementation((pid) => listed(pid));
   spyOn(omo, "processEnviron").mockReturnValue([`OMO_CODING_AGENT_DIR=${agentDir}`]);
 
@@ -102,6 +103,21 @@ it("keeps the OmO a command was bound to when another holder of the session come
   fixture.state.foreground = [peer, parent];
   expect(await fixture.served()).toEqual([command.id]);
   expect(holderReads).not.toHaveBeenCalled();
+});
+
+it("binds a command to the OmO its holder check verified, not a process that got its pid before the next start read (#2190)", async () => {
+  const fixture = omoPane([parent.pid]);
+  fixture.state.foreground = [parent, sdk];
+  // the holder check read the OmO's own start; by the next read its pid belongs to a process started later
+  fixture.state.readStart = 9_000;
+  const command = await fixture.send();
+  expect(command.visibility?.process).toEqual({ pid: parent.pid, started: 1_000, held: true });
+
+  // that later process is not the OmO the command went to: its row does not follow it
+  fixture.state.start = 9_000;
+  fixture.state.readStart = undefined;
+  fixture.reportSession();
+  expect(await fixture.served()).toBeUndefined();
 });
 
 for (const platform of ["linux", "darwin"] as const) {

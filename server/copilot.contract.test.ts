@@ -5,10 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "./index.ts";
 import { herdrRpc, paneProcessInfo, sessionSnapshot, workspaceClose, workspaceCreate } from "./herdr/client.ts";
-import { forgetTranscriptState } from "./conversation.ts";
+import { forgetTranscriptState, paneConversation } from "./conversation.ts";
 import { copilotHandoffSession, copilotProcessSession } from "./copilot-store.ts";
 import { processEnviron } from "./omo.ts";
-import * as processStart from "./process-start.ts";
+import * as processOwner from "./process-owner.ts";
 
 const id = "12aa83d8-48bc-41f2-a498-7055c5c44a01";
 const other = "12aa83d8-48bc-41f2-a498-7055c5c44a02";
@@ -173,8 +173,8 @@ const handoffTest = async () => {
     const ancestry = spyOn(fs, "readFileSync").mockImplementation(alteredStat);
     try { expect(handoff()).toBeNull(); } finally { ancestry.mockRestore(); }
     expect(handoff()?.sessionId).toBe(handoffId);
-    const realStarted = processStart.processStartedAt;
-    const unavailableStart = spyOn(processStart, "processStartedAt").mockImplementation((pid) => pid === parent ? null : realStarted(pid));
+    const realBirth = processOwner.readProcessBirth;
+    const unavailableStart = spyOn(processOwner, "readProcessBirth").mockImplementation((pid) => pid === parent ? { state: "unknown" } : realBirth(pid));
     try {
       writeFileSync(parentLog, new Date().toISOString() + " [INFO] Registering foreground session: " + other + "\n");
       expect(copilotProcessSession(processEnviron(parent), parentProcess.argv, parent, "unregistered")).toBeNull();
@@ -195,6 +195,9 @@ const handoffTest = async () => {
       await startFixture(duplicate.root_pane.pane_id, handoffId);
       await herdrRpc("pane.report_agent_session", { pane_id: duplicate.root_pane.pane_id, agent: "copilot",
         source: "herdr:copilot", seq: Date.now() * 1000 + 1, agent_session_id: handoffId });
+      await expect(paneConversation(current)).rejects.toMatchObject({
+        message: "no_session_path", diagnostic: "copilot_peer_conflict",
+      });
       expect((await read()).source).toBe("scrollback");
     } finally { await workspaceClose(duplicate.workspace.workspace_id); }
     expect((await read()).turns[0]?.parts[0]?.text).toBe("handoff history");

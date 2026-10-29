@@ -31,10 +31,12 @@ export interface TerminalInputProps {
   ref?: Ref<TerminalInputHandle>;
 }
 
-/** What the key bar's Paste asks of the line (PaneTerminal.tsx). */
+/** What the key bar's Paste and the mode switch ask of the line (PaneTerminal.tsx). */
 export interface TerminalInputHandle {
   /** reads the clipboard for the line, from the user's own tap and for this line alone */
   paste(): void;
+  /** takes the focus without dismissing or re-raising the keyboard, caret kept: true when the field was there */
+  focus(): boolean;
 }
 
 /** Lines the box grows to before it scrolls. */
@@ -293,7 +295,14 @@ export function TerminalInput({ owner, active = true, connected, onSend, onEnter
       if (mounted.current) setPending(null);
     });
   }, [onPasting, owner, pasteTarget, t]);
-  useImperativeHandle(ref, () => ({ paste }), [paste]);
+  // the mode switch's handoff (useTerminalSends): a focus alone, no selection reset, keyboard and caret where they were
+  const focus = useCallback((): boolean => {
+    const element = box.current;
+    if (element === null) return false;
+    element.focus({ preventScroll: true });
+    return true;
+  }, []);
+  useImperativeHandle(ref, () => ({ paste, focus }), [paste, focus]);
   // a paste that outlives the line (a pane switch, the masked input taking its place) is dropped above; the bar's Paste comes back
   const pastingCallback = useRef(onPasting);
   pastingCallback.current = onPasting;

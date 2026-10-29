@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 import type { InteractivePrompt } from "../../shared/protocol.ts";
 import { setCurrentLanguage, translate } from "./i18n.ts";
 import { CASE_FOLDING_DATA } from "./caseFolding.generated.ts";
+import { CONFUSABLES_DATA } from "./confusables.generated.ts";
 import { answerFromText, answerHint, answerRefusal, blocksStepNavigation, focusFollowsAnswer, needsConfirmation, pressOrigin, sendsChecksWithText, skeleton, type PressOrigin, type TypedAnswer } from "./promptAnswer.ts";
 
 const prompt = (options: string[], custom: number | null, multi = false): InteractivePrompt => ({
@@ -81,7 +82,8 @@ describe("answering a prompt from the chat", () => {
     // the chat's scanner reads the first label's stars as emphasis: both rows read alike
     const globs = { ...prompt(["Keep *.log and *.tmp", "Keep .log and .tmp"], 2), agent: "omp", text_format: "markdown" as const };
     expect(answerFromText(globs, "Keep .log and .tmp")).toEqual({ custom_text: "Keep .log and .tmp" });
-    expect(answerFromText(globs, "2")).toEqual({ custom_text: "2" });  // the pair shares a skeleton: its row number refuses too (a click still picks it)
+    // a row's number picks that row, as a click on it does, though its name reads like another row's (#2233)
+    expect(answerFromText(globs, "2")).toEqual({ option_index: 1 });
     // rows the card draws alike once spacing collapses, as a page does
     const spaced = { ...prompt(["Keep **production**", "Keep  **production**"], 2), agent: "omp", text_format: "markdown" as const };
     expect(answerFromText(spaced, "Keep production")).toEqual({ custom_text: "Keep production" });
@@ -112,8 +114,8 @@ describe("answering a prompt from the chat", () => {
     expect(answerFromText(prompt(["1", "2"], null, true), "2")).toEqual({ option_indices: [1] });
     const alike = prompt(["Retry", "retry"], null);
     expect(answerFromText(alike, "retry")).toBeNull();
-    // the pair shares a skeleton: its row number refuses too (a click still picks it)
-    expect(answerFromText(alike, "1")).toBeNull();
+    // the pair shares a skeleton, but the number the card shows for a row is that row (#2233)
+    expect(answerFromText(alike, "1")).toEqual({ option_index: 0 });
   });
   it("matches the whole typed text to the shown names first, and reads numbers only from text that names no row (#2220 review)", () => {
     type Case = [name: string, labels: string[], multi: boolean, other: boolean, typed: string, expected: TypedAnswer | null];
@@ -161,10 +163,10 @@ describe("answering a prompt from the chat", () => {
         [`multi: ${kind}`, [label, "Keep **production**"], true, false, "Keep production", null],
       ]),
       ["single: a braille blank typed", ["Keep **production**\u2800", "Keep **production**"], false, true, "Keep production\u2800", custom("Keep production\u2800")],
-      // a row number picks no row whose name may look like another row's (a click still does)
-      ["single: the number of a skeleton twin", ["Keep **production**\u2800", "Keep **production**", "Remote relay"], false, true, "1", custom("1")],
+      // a row number picks its row, as a click does, also a row whose name may look like another row's (#2233)
+      ["single: the number of a skeleton twin", ["Keep **production**\u2800", "Keep **production**", "Remote relay"], false, true, "1", { option_index: 0 }],
       ["single: the number of a distinct row beside twins", ["Keep **production**\u2800", "Keep **production**", "Remote relay"], false, true, "3", { option_index: 2 }],
-      ["multi: numbers that take a skeleton twin", ["Keep **production**\u2800", "Keep **production**", "Remote relay"], true, false, "1 3", null],
+      ["multi: numbers that take a skeleton twin", ["Keep **production**\u2800", "Keep **production**", "Remote relay"], true, false, "1 3", { option_indices: [0, 2] }],
       ["multi: numbers of distinct rows only", ["Keep **production**\u2800", "Keep **production**", "Remote relay"], true, false, "3", { option_indices: [2] }],
       // names that differ only by Unicode case folding (ß and ss, ẞ and SS, final ς and σ) are twins too
       ...([["ß and SS", "Keep **Straße**", "Keep **STRASSE**"], ["ẞ and ss", "Keep **STRAẞE**", "Keep **strasse**"], ["ς and σ", "Keep **οδος**", "Keep **οδοσ**"],
@@ -175,13 +177,40 @@ describe("answering a prompt from the chat", () => {
         return [
           [`single: ${kind}, the first name`, rows, false, true, typedA!, custom(typedA!)],
           [`single: ${kind}, the second name`, rows, false, true, typedB!, custom(typedB!)],
-          [`single: ${kind}, by number`, rows, false, true, "2", custom("2")],
+          [`single: ${kind}, by number`, rows, false, true, "2", { option_index: 1 }],
           [`multi: ${kind}, the first name`, rows, true, false, typedA!, null],
-          [`multi: ${kind}, by number`, rows, true, false, "1", null],
-          [`multi: ${kind}, in a mixed list`, rows, true, false, "1 2", null],
+          [`multi: ${kind}, by number`, rows, true, false, "1", { option_indices: [0] }],
+          [`multi: ${kind}, in a mixed list`, rows, true, false, "1 2", { option_indices: [0, 1] }],
           [`multi: ${kind}, a distinct row beside them`, rows, true, false, "3", { option_indices: [2] }],
         ];
       }),
+      // letters of another script drawn like Latin ones (Unicode's confusables, UTS #39): Cyrillic о, Greek ο, Cyrillic Р and І, a digit 0 (#2233)
+      ...([["Cyrillic о", "Keep **pr\u043Eduction**", "Keep **production**"], ["Greek ο", "Keep **sc\u03BFpe**", "Keep **scope**"],
+        ["Cyrillic capitals", "Keep **\u0420ROD**", "Keep **PROD**"], ["Cyrillic І beside a Latin I", "Keep **\u0406ndex**", "Keep **Index**"], ["a digit 0", "Keep **r00t**", "Keep **root**"]] as const).flatMap(([kind, a, b]): Case[] => {
+        const rows = [a, b, "Remote relay"];
+        const [typedA, typedB] = [a, b].map((label) => label.replaceAll("**", ""));
+        return [
+          [`single: ${kind}, the first name`, rows, false, true, typedA!, custom(typedA!)],
+          [`single: ${kind}, the second name`, rows, false, true, typedB!, custom(typedB!)],
+          [`single: ${kind}, by number`, rows, false, true, "1", { option_index: 0 }],
+          [`multi: ${kind}, the second name`, rows, true, false, typedB!, null],
+          [`multi: ${kind}, by numbers`, rows, true, false, "2 3", { option_indices: [1, 2] }],
+        ];
+      }),
+      // a capital I keeps its lower case's skeleton, never l's: case twins stay twins (#2233 review)
+      ["single: case twins with a capital I", ["Keep **Index.**", "Keep **index**"], false, true, "Keep index", custom("Keep index")],
+      ["single: ß and SS twins with a capital I", ["Keep **Straße Index**", "Keep **STRASSE index**"], false, true, "Keep STRASSE index", custom("Keep STRASSE index")],
+      ["multi: ß and SS twins with a capital I", ["Keep **Straße Index**", "Keep **STRASSE index**"], true, false, "Keep STRASSE index", null],
+      ["no typed answer: case twins with punctuation", ["Keep API.", "Keep api!"], false, false, "Keep API.", null],
+      // rows whose names only look like the digits typed: the digits are row numbers (#2233 review)
+      ["single: a number beside rows that look like it", ["l", "\uFF4C"], false, false, "1", { option_index: 0 }],
+      ["multi: numbers beside rows that look like them", ["I", "l"], true, false, "1 2", { option_indices: [0, 1] }],
+      ["single: a number beside I and l", ["I", "l"], false, false, "1", { option_index: 0 }],
+      // a row alone in its script is still named by its words
+      ["single: a Cyrillic row beside Latin ones", ["Keep **\u043F\u0440\u043E\u0434**", "Keep **production**"], false, true, "Keep \u043F\u0440\u043E\u0434", { option_index: 0 }],
+      // only separators: no number at all, so the text itself (#2233)
+      ["multi: separators alone", ["Desktop", "Phone"], true, false, ",,,", null],
+      ["multi: separators alone with a typed answer", ["Desktop", "Phone"], true, true, " , ,", custom(", ,")],
       // not twins under D146: the acute sits on the alpha in one and on the iota in the other, as drawn
       ["single: ᾀ under an acute beside ἀι under an acute", ["Keep **\u1F80\u0301**", "Keep **\u1F00\u03B9\u0301**"], false, true, "Keep \u1F80\u0301", { option_index: 0 }],
       ["multi: words that read as two rows", ["Keep production.", "Keep production!"], true, false, "keep production", null],
@@ -201,6 +230,21 @@ describe("answering a prompt from the chat", () => {
     const unstable = letters.flatMap((letter) => ["", "\u0301", "\u0345\u0301", "\u0301\u0345", "\u00B7\u0301", "\u0323\u0301"].map((marks) => letter + marks))
       .filter((text) => skeleton(skeleton(text)) !== skeleton(text));
     expect(unstable).toEqual([]);
+  });
+  it("gives every letter Unicode draws like a Latin letter or digit a skeleton that is its own skeleton, the Latin one's (#2233)", () => {
+    const pairs = CONFUSABLES_DATA.split(";").map((entry) => entry.split("=").map((hex) => String.fromCodePoint(parseInt(hex, 16))) as [string, string]);
+    expect(pairs.length).toBeGreaterThan(1000);
+    expect(pairs.filter(([from]) => skeleton(skeleton(from)) !== skeleton(from)).map(([from]) => from)).toEqual([]);
+    // a letter with a case of its own, or a compatibility form (math bold \u{1D408}, lunate \u03F2), takes the skeleton of its
+    // folded, compatibility form (capital I and \u{1D408} are i, not l); every other one its Latin letter's
+    const folded = new Set(CASE_FOLDING_DATA.split(";").map((entry) => String.fromCodePoint(parseInt(entry.split("=")[0]!, 16))));
+    const own = ([from]: [string, string]) => folded.has(from) || from.normalize("NFKD") !== from.normalize("NFD");
+    expect(pairs.filter((pair) => own(pair) && skeleton(pair[0]) !== skeleton(pair[0].normalize("NFKD").toLowerCase())).map(([from]) => from)).toEqual([]);
+    expect(pairs.filter((pair) => !own(pair) && skeleton(pair[0]) !== skeleton(pair[1])).map(([from]) => from)).toEqual([]);
+  });
+  it("gives a name and its case folding one skeleton (#2233 review)", () => {
+    const pairs = CASE_FOLDING_DATA.split(";").map((entry) => entry.split("=").map((hex) => String.fromCodePoint(...hex.split(" ").map((code) => parseInt(code, 16)))) as [string, string]);
+    expect(pairs.filter(([from, to]) => skeleton(from) !== skeleton(to)).map(([from]) => from)).toEqual([]);
   });
   it("answers a free-form question (Codex's queue) with the text itself, numbers included", () => {
     const freeForm = prompt([], 0);

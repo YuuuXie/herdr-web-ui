@@ -767,6 +767,14 @@ describe("update API", () => {
     });
     try {
       expect(await (await call("/api/updates", `Bearer ${bridge}`)).json()).toMatchObject({ managed: true, available: true, latest_revision: offered });
+      // where it answers comes with the status, to the bridge token only: /api/access stays its own token's (#2191)
+      const told = await (await call("/api/updates", `Bearer ${bridge}`)).json() as UpdateStatus;
+      expect(told.port).toBe(own.port);
+      expect(told.serving_url === null || typeof told.serving_url === "string").toBe(true);
+      expect((await call("/api/access", `Bearer ${bridge}`)).status).toBe(401);
+      const owner = await (await call("/api/updates", "Bearer own-token")).json() as UpdateStatus;
+      expect(owner).toMatchObject({ managed: true, latest_revision: offered });
+      expect("port" in owner || "serving_url" in owner).toBe(false);
       // the install still names the offer, as from the app's own controls
       expect((await call("/api/updates/install", `Bearer ${bridge}`, "{}")).status).toBe(400);
       expect(requests).toEqual([]);

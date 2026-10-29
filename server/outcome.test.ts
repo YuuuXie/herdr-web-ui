@@ -4,7 +4,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HerdrPane, PanePromptResponse, SlashCommand } from "../shared/protocol.ts";
-import { commandInvocations, commandOutcome, CommandReservations, ownsCommandDialog, type CommandSend } from "./outcome.ts";
+import { commandInvocations, commandOutcome, CommandReservations, ownsCommandDialog, WINDOW_MS, type CommandSend } from "./outcome.ts";
 import { parsePrompt } from "./dialogs/live.ts";
 import { finishPrompt, type DialogReader } from "./dialogs/shared.ts";
 import { bindCommandProcess, commandSendFrom, handlePromptRequest, noteCommandEvidence, noteSubmitted } from "./prompt.ts";
@@ -912,6 +912,61 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     expect(ownsCommandDialog(second, prompt!, later, registry.readerFor(prompt!.responder)!, readers)).toBe(false);
   });
 
+  it("gives a later send no terminal command's question through an echo count inherited from screens read the other way (#2207)", () => {
+    // as above, the second send's echoes were counted as drawn; once the first send's reservation expires, the third's
+    // screens, read alike, are cut, and the second's count would let the third skip its own echo for the next one
+    const edge = (text: string, panel = "") => `${text.padEnd(99)}\u2502${panel}`;
+    const top = Array.from({ length: 7 }, (_, index) => edge(`fixture-row-${index}`, index === 0 ? "1 file changed +2" : ""));
+    const skill = [{ ...row("review"), source: "skill" as const }];
+    const first = { ...send("/review", "claude", skill), id: "first", screen: top.join("\n") };
+    const second = { ...send("/review", "claude", skill), id: "second", at: at + 1,
+      screen: [...top, edge("\u276f /review", " 3 +three"), edge("\u25cf Reviewed."), edge("fixture-tail")].join("\n") };
+    const third = { ...send("/review", "claude", skill), id: "third", at: at + WINDOW_MS,
+      screen: [...second.screen.split("\n"), edge("\u276f /review"), edge("\u25cf Reviewed again."), edge("third-tail")].join("\n") };
+    const question = ["\u2610 Dataset", "", "Which evaluation dataset should we use?", "", "\u276f 1. LM-O", "  2. YCB-V",
+      "  3. Type something.", "\u2500".repeat(28), "  4. Chat about this", "", "Enter to select \u00b7 \u2191/\u2193 to navigate \u00b7 Esc to cancel"];
+    // the third send's own result, then the same command typed in the terminal, which asks
+    const later = [...third.screen.split("\n"), edge("\u276f /review"), edge("\u25cf Reviewed a third time."), edge("\u276f /review"),
+      ...question.map((line) => edge(line))].join("\n");
+    const reservations = new CommandReservations();
+    const readers = registry.readersFor("claude");
+    reservations.add(first, readers);
+    reservations.add(second, readers);
+    expect(second.countedCut).toBe(false);
+    reservations.add(third, readers);
+    expect(third.countedCut).toBe(true);
+    const prompt = parsePrompt("claude", later);
+    expect(prompt).toMatchObject({ kind: "question" });
+    expect(ownsCommandDialog(third, prompt!, later, registry.readerFor(prompt!.responder)!, readers)).toBe(false);
+  });
+
+  it("still gives a send its own question after a send counted the other way whose result was seen and whose screen scrolled off", () => {
+    const edge = (text: string, panel = "") => `${text.padEnd(99)}\u2502${panel}`;
+    const top = Array.from({ length: 7 }, (_, index) => edge(`fixture-row-${index}`, index === 0 ? "1 file changed +2" : ""));
+    const skill = [{ ...row("review"), source: "skill" as const }];
+    const first = { ...send("/review", "claude", skill), id: "first", screen: top.join("\n") };
+    const second = { ...send("/review", "claude", skill), id: "second", at: at + 60_000,
+      screen: [...top, edge("\u276f /review", " 3 +three"), edge("\u25cf Reviewed."), edge("old-tail")].join("\n") };
+    const third = { ...send("/review", "claude", skill), id: "third", at: at + WINDOW_MS,
+      screen: [...Array.from({ length: 7 }, (_, index) => edge(`fresh-row-${index}`)), edge("fresh-tail")].join("\n") };
+    const reservations = new CommandReservations();
+    const readers = registry.readersFor("claude");
+    reservations.add(first, readers);
+    reservations.add(second, readers);
+    // Claude's own records acknowledge both earlier sends: neither still owes an echo
+    const acknowledged = (time: number) => JSON.stringify({ type: "user", timestamp: new Date(time).toISOString(), message: { content: "/review" } });
+    first.outcome = commandOutcome("p", first, { now: at + 60_020, transcript: acknowledged(at + 10) });
+    second.outcome = commandOutcome("p", second, { now: at + 60_020, transcript: acknowledged(at + 60_010) });
+    expect(second.outcome.state).toBe("result-observed");
+    reservations.add(third, readers);
+    const question = ["\u2610 Dataset", "", "Which evaluation dataset should we use?", "", "\u276f 1. LM-O", "  2. YCB-V",
+      "  3. Type something.", "\u2500".repeat(28), "  4. Chat about this", "", "Enter to select \u00b7 \u2191/\u2193 to navigate \u00b7 Esc to cancel"];
+    const later = [third.screen, edge("\u276f /review"), ...question.map((line) => edge(line))].join("\n");
+    const prompt = parsePrompt("claude", later);
+    expect(prompt).toMatchObject({ kind: "question" });
+    expect(ownsCommandDialog(third, prompt!, later, registry.readerFor(prompt!.responder)!, readers)).toBe(true);
+  });
+
   it("completes a named Claude model card through the real answer handler", async () => {
     const pane = { agent: "claude", status: "idle", screen: `❯ /model
 
@@ -941,6 +996,41 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
       pane.screen = "fixture-anchor\n> ";
       expect((await served(paneId)).outcomes?.at(-1)).toMatchObject({ state: "result-observed", evidence: [{ kind: "dialog" }] });
     });
+  });
+
+  it("completes Claude's /effort while Ultracode is on, and through its switch (#2232)", async () => {
+    // Claude Code 2.1.311's slider: with the switch on (no card before the switch was read), a level
+    // picked with `s`; with it off, the switch's row, Tab, then `s` once the slider shows it on
+    const cases = [
+      { start: "on", option: 3, label: "Turn Ultracode off", keys: ["s"] },
+      { start: "off", option: 5, label: "Turn Ultracode on", keys: [["tab"], "s"] },
+    ];
+    for (const { start, option, label, keys: expected } of cases) {
+      let keys: unknown[] = [];
+      const pane = { agent: "claude", status: "idle",
+        get screen() {
+          if (keys.includes("s")) return fixture("claude-effort-2.1.311-set-120.txt");
+          return fixture(`claude-effort-2.1.311-${keys.some((sent) => Array.isArray(sent) && sent.includes("tab")) ? "on" : start}-120.txt`);
+        } };
+      await withFakeHerdr(pane, async (paneId, sent) => {
+        keys = sent;
+        const current = { ...send("/effort", "claude", [{ ...row("effort", "dialog"), forms: claudeSource.forms!.effort }]),
+          at: Date.now() - 10, screen: "fixture-anchor", identity: JSON.stringify([undefined, undefined]), store: null };
+        expect(current.form).toEqual({ match: "bare", interaction: "dialog", dialog: "claude-effort" });
+        noteSubmitted(paneId, current.text, current);
+        const shown = await served(paneId);
+        expect(shown.outcomes?.at(-1)?.state, start).toBe("interaction-required");
+        expect(shown.prompt?.options.at(-1)?.label, start).toBe(label);
+        // the switch's drawn state stays with the server
+        expect(shown.prompt, start).not.toHaveProperty("claudeUltracode");
+        const url = new URL("http://localhost/api/pane/prompt/answer");
+        const answered = await handlePromptRequest(new Request(url, { method: "POST",
+          body: JSON.stringify({ pane_id: paneId, prompt_id: shown.prompt!.id, option_index: option }) }), url);
+        expect(answered?.status, start).toBe(200);
+        expect(keys, start).toEqual(expected);
+        expect((await served(paneId)).outcomes?.at(-1), start).toMatchObject({ state: "result-observed", evidence: [{ kind: "dialog" }] });
+      });
+    }
   });
 
   it("closes a command's card correlation when a later plain message is sent", async () => {
@@ -1012,7 +1102,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     expect(outcome(sent, { transcript: compaction("auto", at + 10) }).state).toBe("accepted");
   });
   it("keeps omp's /handoff interaction-required on its card, and a cancel from it never resolves the send", async () => {
-    const pane = { agent: "omp", status: "working", screen: fixture("omp-handoff-18.8.7-generating-narrow.txt") };
+    const pane = { agent: "omp", status: "working", screen: fixture("omp-handoff-18.8.7-generating-narrow.txt"), pid: 4242, argv: ["omp"] };
     await withFakeHerdr(pane, async (paneId, keys) => {
       const current = { ...send("/handoff", "omp", [handoffRow]), at: Date.now() - 1, id: "handoff-send", identity: JSON.stringify([undefined, undefined]), store: null };
       noteSubmitted(paneId, current.text, current);

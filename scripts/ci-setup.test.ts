@@ -248,6 +248,15 @@ describe("CI cache contract", () => {
 });
 
 describe("action pins and checkout credentials", () => {
+  it("runs the Windows terminal QA on a pull request's merge with main, as ci.yml does", () => {
+    // the PR head of a branch cut before a QA script fix would run the old, broken script (#2243)
+    const workflow = Bun.YAML.parse(readFileSync(join(root, ".github/workflows/windows-terminal-qa.yml"), "utf8")) as {
+      jobs: Record<string, { steps: Array<{ uses?: string; with?: Record<string, string> }> }>;
+    };
+    const checkout = workflow.jobs["qa"]!.steps.find((step) => step.uses && actionName(step.uses) === "actions/checkout")!;
+    expect(checkout.with!.ref).toBe("${{ github.sha }}");
+  });
+
   it("pins every external action to a full commit SHA and keeps local actions and workflows relative", () => {
     const names = new Set<string>();
     for (const file of actionFiles) {

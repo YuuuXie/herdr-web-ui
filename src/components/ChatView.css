@@ -1086,6 +1086,36 @@ ol.markdown-list {
 
 .chat-inline-error { color: var(--status-blocked); }
 
+/* a sent message the agent has not written as a turn yet (SentWaiting.tsx): the user's own bubble,
+   its words faded to --text-dim (still 4.5:1), so the turn that replaces it reads as the same bubble
+   coming up to full strength. A late one's clock sits where the turn's time will be */
+.chat-sent-waiting-list {
+  display: flex;
+  flex-direction: column;
+  align-self: stretch;
+  gap: var(--space-2);
+}
+
+.chat-turn-waiting .chat-bubble {
+  color: var(--text-dim);
+  white-space: pre-wrap;
+}
+
+.chat-turn-waiting .chat-turn-meta {
+  opacity: 1;
+}
+
+.chat-sent-late {
+  display: inline-flex;
+  color: var(--text-dim);
+  font-size: var(--chat-fs-xs);
+}
+
+.chat-sent-late svg {
+  width: 1em;
+  height: 1em;
+}
+
 /* a read that failed (ChatView.tsx FailureLine): the one line, Try again beside it where it is the
    way on, and a dim Details toggle under them for the advice and the PC's own words */
 .chat-failure {

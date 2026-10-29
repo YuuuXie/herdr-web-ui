@@ -2,6 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import type { InteractivePrompt } from "../../shared/protocol.ts";
 import { answerKeys, claudeRewindOpen, parseInteractivePrompt } from "../prompt.ts";
+import { executeInteractionPlan } from "./interaction-plan.ts";
+import { registry } from "./registry.ts";
+import { parsedByPublicPrompt, type AnswerStep } from "./shared.ts";
 
 const fixture = (state: string, width: number): string =>
   readFileSync(new URL(`../fixtures/claude-goal-2.1.304-${state}-${width}.txt`, import.meta.url), "utf8");
@@ -34,6 +37,159 @@ describe("Claude Code's terminal rewind", () => {
     const screen = rewind("select-banana", 40);
     expect(claudeRewindOpen(screen)).toBe(true);
     expect(parseInteractivePrompt("claude", screen)).toBeNull();
+  });
+});
+
+/** Claude Code 2.1.311's /effort, recorded through an isolated herdr's pane.read from the command down (fixtures named by Ultracode's state and width; none: a model without it) */
+const effort = (state: string, width: number): string =>
+  readFileSync(new URL(`../fixtures/claude-effort-2.1.311-${state}-${width}.txt`, import.meta.url), "utf8");
+
+const LEVELS = ["low", "medium", "high", "xhigh", "max"];
+
+const labels = (prompt: InteractivePrompt | null) => prompt?.options.map((option) => option.label);
+
+describe("Claude Code's /effort with Ultracode (#2232)", () => {
+  test("offers the switch beside the slider, 70 columns or more, as a row that turns it the other way", () => {
+    for (const [state, width] of [["off", 120], ["off-max", 120]] as const) {
+      const prompt = parseInteractivePrompt("claude", effort(state, width));
+      expect(labels(prompt), state).toEqual([...LEVELS, "Turn Ultracode on"]);
+      expect(prompt?.own_text?.labels, state).toEqual({ 5: { key: "Turn Ultracode on" } });
+      expect(prompt?.own_text?.descriptions, state).toEqual({ 5: { key: "Keeps the effort level, for this session only" } });
+    }
+    // on: Claude's own line under the names, where the slider drew a blank line before
+    for (const [state, width] of [["on", 120], ["on-max", 120], ["on", 70]] as const) {
+      expect(labels(parseInteractivePrompt("claude", effort(state, width))), `${state} ${width}`).toEqual([...LEVELS, "Turn Ultracode off"]);
+    }
+  });
+
+  test("reads the slider of a pane under 70 columns, where the switch has two lines of its own under it", () => {
+    expect(labels(parseInteractivePrompt("claude", effort("off", 60)))).toEqual([...LEVELS, "Turn Ultracode on"]);
+    for (const [state, width] of [["on", 69], ["on", 60], ["on-max", 60]] as const) {
+      expect(labels(parseInteractivePrompt("claude", effort(state, width))), `${state} ${width}`).toEqual([...LEVELS, "Turn Ultracode off"]);
+    }
+  });
+
+  test("is one card for each state of the switch, wherever ▲ is and at any width", () => {
+    const id = (state: string, width: number) => parseInteractivePrompt("claude", effort(state, width))?.id;
+    const off = id("off", 120);
+    const on = id("on", 120);
+    expect(off).toBeDefined();
+    expect(on).toBeDefined();
+    expect(on).not.toBe(off);
+    for (const [state, width] of [["off-max", 120], ["off", 60]] as const) expect(id(state, width), `${state} ${width}`).toBe(off);
+    for (const [state, width] of [["on-max", 120], ["on", 70], ["on", 69], ["on", 60], ["on-max", 60]] as const) expect(id(state, width), `${state} ${width}`).toBe(on);
+  });
+
+  test("moves ▲ from the level it is over, and turns the switch with Tab, then s", () => {
+    // ▲ over xhigh, as the session started
+    const atXhigh = parseInteractivePrompt("claude", effort("on", 60))!;
+    expect(answerKeys(atXhigh, { option_index: 1 })).toEqual([{ keys: ["left"] }, { keys: ["left"] }, { text: "s" }]);
+    expect(answerKeys(atXhigh, { option_index: 3 })).toEqual([{ text: "s" }]);
+    expect(answerKeys(atXhigh, { option_index: 5 })).toEqual([{ keys: ["tab"] }, { text: "s" }]);
+    // ▲ over max, its description between the names and the switch
+    const atMax = parseInteractivePrompt("claude", effort("on-max", 60))!;
+    expect(answerKeys(atMax, { option_index: 3 })).toEqual([{ keys: ["left"] }, { text: "s" }]);
+    expect(answerKeys(atMax, { option_index: 5 })).toEqual([{ keys: ["tab"] }, { text: "s" }]);
+  });
+
+  test("offers the levels alone for a model without Ultracode, which draws no switch", () => {
+    for (const width of [120, 60]) {
+      const prompt = parseInteractivePrompt("claude", effort("none", width));
+      expect(labels(prompt), String(width)).toEqual(LEVELS);
+      expect(() => answerKeys(prompt!, { option_index: 5 })).toThrow();
+    }
+  });
+
+  test("reads the slider at max for a model without Ultracode, max's description right under the names", () => {
+    // 2.1.311 keeps the line under the names for the switch only: without one, ▲ over max puts
+    // the level's description there (as off-max-120 draws it under that line)
+    const none = effort("none", 120);
+    const description = effort("off-max", 120).split("\n").find((line) => line.includes("May use excessive tokens"))!;
+    const atMax = none
+      .replace(`${"─".repeat(30)}▲${"─".repeat(11)}`, `${"─".repeat(40)}▲─`)
+      .replace("max\n\n", `max\n${description}\n\n`);
+    expect(atMax).not.toBe(none);
+    const prompt = parseInteractivePrompt("claude", atMax)!;
+    expect(labels(prompt)).toEqual(LEVELS);
+    expect(prompt.id).toBe(parseInteractivePrompt("claude", none)!.id);
+    expect(answerKeys(prompt, { option_index: 3 })).toEqual([{ keys: ["left"] }, { text: "s" }]);
+    expect(parsedByPublicPrompt.get(prompt)?.claudeUltracode).toBeNull();
+    // names a narrow pane wrapped are still not read, with no blank line under them to tell: the
+    // line of names under them is the rest of them
+    const wrapped = none
+      .replace(`${"─".repeat(30)}▲`, `${"─".repeat(20)}▲${"─".repeat(10)}`)
+      .replace("high     xhigh      max", `high\n${" ".repeat(39)}xhigh      max`);
+    expect(parseInteractivePrompt("claude", wrapped.replace(`high\n${" ".repeat(39)}xhigh`, "high     xhigh"))!.id).toBe(prompt.id);
+    expect(parseInteractivePrompt("claude", wrapped)).toBeNull();
+    expect(registry.waits("claude", wrapped)).toBe(true);
+  });
+
+  test("offers the levels alone where the user unbound the switch's key, and Claude draws its state alone", () => {
+    // {"context": "EffortSlider", "bindings": {"tab": null}}: Claude names no key, so draws no key's line
+    const unbound = [
+      [effort("off", 120).replace("      Tab to toggle", ""), false],
+      [effort("off", 60).replace("                       Tab to toggle\n", ""), false],
+      [effort("on", 120).replace("      Tab to toggle", ""), true],
+    ] as const;
+    for (const [screen, drawn] of unbound) {
+      expect(screen).not.toContain("to toggle");
+      const prompt = parseInteractivePrompt("claude", screen)!;
+      expect(labels(prompt), screen).toEqual(LEVELS);
+      expect(answerKeys(prompt, { option_index: 1 }), screen).toEqual([{ keys: ["left"] }, { keys: ["left"] }, { text: "s" }]);
+      expect(() => answerKeys(prompt, { option_index: 5 }), screen).toThrow();
+      // the state drawn still guards a level's s
+      expect(parsedByPublicPrompt.get(prompt)?.claudeUltracode, screen).toBe(drawn);
+    }
+  });
+
+  test("sends no level's s where the unbound switch shows another state than the card was read from", async () => {
+    const reader = registry.readerFor("claude-effort")!;
+    const off = effort("off", 120).replace("      Tab to toggle", "");
+    const on = effort("on", 120).replace("      Tab to toggle", "");
+    for (const [shown, result] of [[off, "answered"], [on, "prompt_changed"]] as const) {
+      const plan = reader.interaction!(parsedByPublicPrompt.get(parseInteractivePrompt("claude", off)!)!);
+      const sent: AnswerStep[] = [];
+      const outcome = await executeInteractionPlan(plan, 3, {
+        rereadMoves: true,
+        active: () => true,
+        cancelled: () => false,
+        read: async () => shown,
+        send: async (step) => { sent.push(step); },
+      });
+      expect(outcome).toBe(result);
+      expect(sent).toEqual(result === "answered" ? [{ text: "s" }] : []);
+    }
+  });
+
+  test("keeps the switch's drawn state for the answer's last look, out of the card it sends", () => {
+    for (const [state, width, drawn] of [["on", 120, true], ["off", 60, false], ["none", 120, null]] as const) {
+      const prompt = parseInteractivePrompt("claude", effort(state, width))!;
+      expect(parsedByPublicPrompt.get(prompt)?.claudeUltracode, `${state} ${width}`).toBe(drawn);
+      expect(prompt, `${state} ${width}`).not.toHaveProperty("claudeUltracode");
+    }
+  });
+
+  test("offers no card once s applied the switch, and holds nothing", () => {
+    const set = effort("set", 120);
+    expect(parseInteractivePrompt("claude", set)).toBeNull();
+    expect(registry.waits("claude", set)).toBe(false);
+  });
+
+  test("sends the switch's s only once the slider shows it flipped at the same level", async () => {
+    const reader = registry.readerFor("claude-effort")!;
+    for (const [shown, result] of [[effort("on", 60), "answered"], [effort("off", 60), "prompt_changed"], [effort("on-max", 60), "prompt_changed"]] as const) {
+      const plan = reader.interaction!(parsedByPublicPrompt.get(parseInteractivePrompt("claude", effort("off", 60))!)!);
+      const sent: AnswerStep[] = [];
+      const outcome = await executeInteractionPlan(plan, 5, {
+        rereadMoves: true,
+        active: () => true,
+        cancelled: () => false,
+        read: async () => shown,
+        send: async (step) => { sent.push(step); },
+      });
+      expect(outcome).toBe(result);
+      expect(sent).toEqual(result === "answered" ? [{ keys: ["tab"] }, { text: "s" }] : [{ keys: ["tab"] }]);
+    }
   });
 });
 
