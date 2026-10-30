@@ -725,7 +725,7 @@ SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ## LobeHub Icons
 
-The agent marks in `src/components/agentSvgMarks.ts` other than droid and maki, which the
+The agent marks in `src/components/agentSvgMarks.ts` other than droid, maki and letta, which the
 built client in `dist/` and the ovis.sh home page (`ovis-site/index.html`) carry, come from
 [LobeHub Icons](https://github.com/lobehub/lobe-icons) (`@lobehub/icons-static-svg`). The marks themselves belong to their owners.
 

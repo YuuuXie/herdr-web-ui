@@ -26,6 +26,10 @@ let socketBefore: string | undefined;
 let title: string | null;
 /** The pane's folders herdr reports. */
 let agentFolders: { cwd?: string; foreground_cwd?: string };
+/** The session herdr reports for the pane (agent.get), null for none. */
+let reportedSession: { source: string; agent: string; kind: string; value: string } | null;
+/** The answers to the pane's next process reads, in order (null: herdr gives no process_info); [foreground] once used up. */
+let processReads: ({ pid: number; name?: string; argv?: string[] }[] | null)[];
 const children: ReturnType<typeof Bun.spawn>[] = [];
 
 beforeEach(() => {
@@ -44,6 +48,8 @@ beforeEach(() => {
   screen = "";
   title = null;
   agentFolders = {};
+  reportedSession = null;
+  processReads = [];
   peerScreens = new Map();
   foreground = [];
   foregrounds = new Map();
@@ -63,9 +69,12 @@ beforeEach(() => {
           socket.end(`${JSON.stringify({ id: request.id, error: { code: "pane_not_found", message: peerScreen.message } })}\n`);
           return;
         }
-        const result = request.method === "agent.get" ? { agent: { ...agentFolders, ...(title === null ? {} : { terminal_title: title, terminal_title_stripped: title }) } }
-          : request.method === "pane.process_info" ? { process_info: { foreground_processes: foregrounds.get(request.params?.pane_id ?? "") ?? foreground } }
+        const own = request.method === "pane.process_info" && request.params?.pane_id === root && processReads.length > 0 ? processReads.shift() : undefined;
+        const result = request.method === "agent.get" ? { agent: { ...agentFolders, ...(title === null ? {} : { terminal_title: title, terminal_title_stripped: title }), ...(reportedSession === null ? {} : { agent_session: reportedSession }) } }
+          : request.method === "pane.process_info" ? (own === null ? {} : { process_info: { foreground_processes: own ?? foregrounds.get(request.params?.pane_id ?? "") ?? foreground } })
           : request.method === "pane.read" ? { read: { text: peerScreen ?? screen } }
+          // the session as a background reader asks for it: this pane alone
+          : request.method === "session.snapshot" ? { snapshot: { panes: [{ pane_id: root, workspace_id: root, tab_id: root, terminal_id: root, agent: "codex", agent_status: "working", cwd: root, focused: false, revision: 0 }], workspaces: [], tabs: [], layouts: [], agents: [] } }
           : null;
         if (result === null) throw new Error(`unexpected RPC ${request.method}`);
         socket.end(`${JSON.stringify({ id: request.id, result })}\n`);
@@ -90,6 +99,21 @@ const resolve = () => codexTranscriptPath(root, root, home, [{
   agent: "codex", agent_status: "working", cwd: root, focused: false, revision: 0,
 }]);
 
+/** A fixture's first line, whole: a busy pipe can hand "READY" and its newline over in two reads. */
+async function firstLine(stdout: ReadableStream<Uint8Array>): Promise<string> {
+  const reader = stdout.getReader();
+  const decoder = new TextDecoder();
+  let text = "";
+  try {
+    while (!text.includes("\n")) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+  } finally { reader.releaseLock(); }
+  return text;
+}
+
 /** A ready, owned process with Codex's argv[0], no rollout descriptor and no timer. */
 async function runningCodex(resume = false): Promise<ReturnType<typeof Bun.spawn>> {
   const node = Bun.which("node");
@@ -99,10 +123,7 @@ async function runningCodex(resume = false): Promise<ReturnType<typeof Bun.spawn
     "fixture", join(root, "codex"), node, ...(resume ? ["resume", thread] : []),
   ], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   children.push(child);
-  const reader = child.stdout.getReader();
-  const ready = await reader.read();
-  reader.releaseLock();
-  expect(new TextDecoder().decode(ready.value)).toBe("READY\n");
+  expect(await firstLine(child.stdout)).toBe("READY\n");
   return child;
 }
 
@@ -114,6 +135,19 @@ it.skipIf(process.platform !== "linux")("selects the resumed rollout when Linux 
 
 it("selects the resumed rollout for the observed native executable alias", async () => {
   foreground = [{ pid: 2147483647, argv: ["/home/user/.local/bin/codex.opencodex-real", "resume", thread] }];
+  expect(await resolve()).toBe(path);
+});
+
+it("binds a conversation with a spaced local file link and keeps it when its screen no longer tells", async () => {
+  foreground = [{ pid: 2147483647, argv: ["/usr/bin/codex"] }];
+  const linked = `${answer} [Daily report](</home/user/My Project/Daily notes/report.md>)`;
+  writeFileSync(path, [
+    { type: "session_meta", payload: { id: thread, cwd: root } },
+    { type: "event_msg", payload: { type: "agent_message", message: linked } },
+  ].map((entry) => JSON.stringify(entry)).join("\n"));
+  screen = `• ${answer} Daily report (Daily notes/report.md)`;
+  expect(await resolve()).toBe(path);
+  screen = "";
   expect(await resolve()).toBe(path);
 });
 
@@ -139,6 +173,8 @@ it.skipIf(process.platform !== "linux")("drops the recovered binding when its pr
 
 it("finds the threads of a Windows cwd that Codex stored with the \\\\?\\ prefix (#518)", async () => {
   const cwd = "D:\\work\\app";
+  // a running Codex in the pane: a screen with none proves nothing
+  foreground = [{ pid: 2147483647, argv: ["/usr/bin/codex"] }];
   const db = new Database(join(home, "state_5.sqlite"));
   db.query("UPDATE threads SET cwd = ?").run(`\\\\?\\${cwd}`);
   db.close();
@@ -418,10 +454,7 @@ async function loadedByExec(id: string): Promise<ReturnType<typeof Bun.spawn>> {
   // only cat, once Python has become it, echoes what it reads
   child.stdin.write("READY\n");
   await child.stdin.flush();
-  const reader = child.stdout.getReader();
-  const ready = await reader.read();
-  reader.releaseLock();
-  expect(new TextDecoder().decode(ready.value)).toBe("READY\n");
+  expect(await firstLine(child.stdout)).toBe("READY\n");
   return child;
 }
 
@@ -438,10 +471,7 @@ async function holding(ids: string[], kind: "readable" | "unreadable"): Promise<
     "sys.stdin.read()",
   ].join("\n"), kind, ...ids.map((id) => join(folder, `${id}.lock`))], { stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   children.push(child);
-  const reader = child.stdout.getReader();
-  const ready = await reader.read();
-  reader.releaseLock();
-  expect(new TextDecoder().decode(ready.value)).toBe("READY\n");
+  expect(await firstLine(child.stdout)).toBe("READY\n");
   return child;
 }
 
@@ -480,8 +510,8 @@ describe("a thread of another folder Codex has loaded, as a resume through the p
     expect(await resolve()).toBeNull();
     await loaded(other);
     expect(await resolve()).toBe(rollout);
-    // an answer with a time in parentheses is no status row
-    screen = `• ${otherAnswer} All tests passed (38s).`;
+    // a line with a time in parentheses below it is no status row (and the answer counts only whole)
+    screen = `• ${otherAnswer}\n• All tests passed (38s).`;
     expect(await resolve()).toBe(rollout);
     // nothing binds: a background reader is not told, and the screen is asked again each time,
     // as after /resume of another, older conversation in the same TUI (the old one stays loaded)
@@ -1604,4 +1634,294 @@ shortIt("finds a profile's short conversation after native completion footers", 
     + "› hi\n\n• Hi! What would you like to work on?\n\n  Worked for 1s • 11:11 AM\n\n"
     + "› hi\n\n• Hi again! How can I help?\n\n  Worked for 2s • 11:11 AM\n\n› Ask Codex to do anything";
   expect(await resolve()).toBe(path);
+});
+
+// --- what is not this pane's conversation: another conversation's prompts, a herdr report alone, a quote ---
+
+describe("another session's conversation is never shown for a plain Codex pane", () => {
+  const live = [{ pid: 2147483647, argv: ["/usr/bin/codex"] }];
+  const shortReplies = ["The build finished without errors this time.", "All checks on the feature branch pass again."];
+  /** This folder's thread (another pane's, A) and one of another folder this pane shows (B): the same short answers to other prompts. */
+  function sameAnswersOtherPrompts(): string {
+    writeFileSync(path, [
+      { type: "session_meta", payload: { id: thread, cwd: root } },
+      { type: "event_msg", payload: { type: "user_message", message: "Build the release for the first fixture" } },
+      { type: "event_msg", payload: { type: "agent_message", message: shortReplies[0] } },
+      { type: "event_msg", payload: { type: "user_message", message: "Now check the first fixture's branch" } },
+      { type: "event_msg", payload: { type: "agent_message", message: shortReplies[1] } },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    otherFolderThread([
+      { type: "user_message", message: "Build the second fixture elsewhere" },
+      { type: "agent_message", message: shortReplies[0]! },
+      { type: "user_message", message: "And check that second fixture's branch" },
+      { type: "agent_message", message: shortReplies[1]! },
+    ]);
+    return `OpenAI Codex (v0.165.0)\n\n› Build the second fixture elsewhere\n\n• ${shortReplies[0]}\n\n› And check that second fixture's branch\n\n• ${shortReplies[1]}\n\n› `;
+  }
+
+  // the pane's process read live, absent, or absent between two live reads (#2420's review, H1)
+  for (const [name, reads] of [["live", [live]], ["absent", [null]], ["live, absent, live", [live, null, live]]] as const) {
+    it(`takes no short answers another conversation gave to the prompts the screen shows (process reads: ${name})`, async () => {
+      screen = sameAnswersOtherPrompts();
+      foreground = live;
+      processReads = [...reads];
+      expect(await resolve()).toBeNull();
+    });
+  }
+
+  it("takes no short answers given to prompts that differ from the shown ones only in punctuation", async () => {
+    const replies = ["The condition evaluates to true in this example.", "All checks on the feature branch pass again."];
+    writeFileSync(path, [
+      { type: "session_meta", payload: { id: thread, cwd: root } },
+      { type: "event_msg", payload: { type: "user_message", message: "Check whether a < b for these inputs" } },
+      { type: "event_msg", payload: { type: "agent_message", message: replies[0] } },
+      { type: "event_msg", payload: { type: "user_message", message: "Check the branch named feature-one" } },
+      { type: "event_msg", payload: { type: "agent_message", message: replies[1] } },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    otherFolderThread([
+      { type: "user_message", message: "Check whether a > b for these inputs" },
+      { type: "agent_message", message: replies[0]! },
+      { type: "user_message", message: "Check the branch named feature_one" },
+      { type: "agent_message", message: replies[1]! },
+    ]);
+    foreground = live;
+    screen = `OpenAI Codex (v0.165.0)\n\n› Check whether a > b for these inputs\n\n• ${replies[0]}\n\n› Check the branch named feature_one\n\n• ${replies[1]}\n\n› `;
+    expect(await resolve()).toBeNull();
+  });
+
+  it("still takes short answers below the prompts they answered", async () => {
+    foreground = live;
+    sameAnswersOtherPrompts();
+    screen = `OpenAI Codex (v0.165.0)\n\n› Build the release for the first fixture\n\n• ${shortReplies[0]}\n\n› Now check the first fixture's branch\n\n• ${shortReplies[1]}\n\n› `;
+    // B, of another folder, is no candidate here: only this folder's threads are weighed
+    expect(await resolve()).toBe(path);
+  });
+
+  // a herdr report may be stale or the shared daemon's (#2420's review, H2)
+  for (const kind of ["path", "id"] as const) {
+    it(`binds nothing by a reported ${kind} alone that began before this pane's Codex, while another Codex pane here may run it`, async () => {
+      // this pane's Codex started long after the reported thread began: a report an earlier Codex left, or another pane's
+      const started = spyOn(processStart, "processStartLowerBound").mockReturnValue(1_000_000);
+      const upper = spyOn(processStart, "processStartUpperBound").mockReturnValue(1_000_000);
+      try { await reportedAlone(kind); } finally { started.mockRestore(); upper.mockRestore(); }
+    });
+  }
+
+  async function reportedAlone(kind: "path" | "id"): Promise<void> {
+    {
+      foreground = live;
+      reportedSession = { source: "herdr:codex", agent: "codex", kind, value: kind === "path" ? path : thread };
+      peerScreens.set("peer", "");
+      const panes = [fixturePane(root), fixturePane("peer")];
+      expect(await codexTranscriptPath(root, root, home, panes)).toBeNull();
+      expect(await codexOpenRollout(root, root, home)).toBeNull();
+      // its answer on this pane's screen tells, as for any pane
+      screen = `• ${answer}`;
+      expect(await codexTranscriptPath(root, root, home, panes)).toBe(path);
+    }
+  }
+
+  it("takes the reported thread as the pane's fresh conversation only when nothing else could have begun it", async () => {
+    // this pane's Codex started at 1000 s; a peer's at 990 s or 1005 s
+    const starts = new Map([[900001, 1_000_000], [900002, 990_000], [900003, 1_005_000]]);
+    // the start read from below (peers) and from above (this pane) alike: the same instant here
+    const bound = spyOn(processStart, "processStartLowerBound").mockImplementation((pid) => starts.get(pid) ?? null);
+    const upper = spyOn(processStart, "processStartUpperBound").mockImplementation((pid) => starts.get(pid) ?? null);
+    const setCreated = (seconds: number) => {
+      const db = new Database(join(home, "state_5.sqlite"));
+      db.query("UPDATE threads SET created_at = ?").run(seconds);
+      db.close();
+    };
+    try {
+      foreground = [{ pid: 900001, argv: ["/usr/bin/codex"] }];
+      reportedSession = { source: "herdr:codex", agent: "codex", kind: "id", value: thread };
+      // begun as this Codex started, its first answer not on screen yet: the chat and the background reader take it
+      setCreated(1001);
+      expect(await resolve()).toBe(path);
+      expect(await codexOpenRollout(root, root, home)).toBe(path);
+      // begun before this Codex started: a report an earlier one left
+      setCreated(999);
+      expect(await resolve()).toBeNull();
+      expect(await codexOpenRollout(root, root, home)).toBeNull();
+      setCreated(1001);
+      // another Codex of this cwd was running when it began: it may be that pane's, reported here by the daemon
+      foregrounds.set("peer", [{ pid: 900002, argv: ["/usr/bin/codex"] }]);
+      peerScreens.set("peer", "");
+      expect(await codexTranscriptPath(root, root, home, [fixturePane(root), fixturePane("peer")])).toBeNull();
+      // nor one started in the very second it began, which a store of whole seconds cannot tell apart
+      starts.set(900005, 1_001_290);
+      foregrounds.set("peer", [{ pid: 900005, argv: ["/usr/bin/codex"] }]);
+      expect(await codexTranscriptPath(root, root, home, [fixturePane(root), fixturePane("peer")])).toBeNull();
+      // one started after it began did not
+      foregrounds.set("peer", [{ pid: 900003, argv: ["/usr/bin/codex"] }]);
+      expect(await codexTranscriptPath(root, root, home, [fixturePane(root), fixturePane("peer")])).toBe(path);
+      // another Codex pane in another folder, running when it began: `codex -C` or a resume opens a thread of this one
+      foregrounds.set("peer", [{ pid: 900002, argv: ["/usr/bin/codex"] }]);
+      expect(await codexTranscriptPath(root, root, home, [fixturePane(root), fixturePane("peer", join(root, "elsewhere"))])).toBeNull();
+      // begun after the earliest this Codex may have started, but maybe before it did: an earlier Codex's
+      starts.set(900004, 1_000_500);
+      foreground = [{ pid: 900004, argv: ["/usr/bin/codex"] }];
+      upper.mockImplementation((pid) => pid === 900004 ? 1_001_500 : starts.get(pid) ?? null);
+      expect(await resolve()).toBeNull();
+      foreground = [{ pid: 900001, argv: ["/usr/bin/codex"] }];
+      upper.mockImplementation((pid) => starts.get(pid) ?? null);
+      // nor after a newer thread of the cwd began (a /new)
+      const db = new Database(join(home, "state_5.sqlite"));
+      db.query("INSERT INTO threads VALUES (?, ?, ?, 0, NULL, 1002, 1002, 'cli')").run("01a0c7a1-56d9-7e20-9f08-f7a2d973bc02", join(home, "sessions", "missing.jsonl"), root);
+      db.close();
+      expect(await resolve()).toBeNull();
+    } finally { bound.mockRestore(); upper.mockRestore(); }
+  });
+
+  it("reads nothing from a screen once the pane's last process lookup finds no Codex", async () => {
+    // Given a pane showing this cwd thread's long answer, as an earlier occupant left it on screen
+    screen = `OpenAI Codex (v0.165.0)\n\n› Explain the selection\n\n• ${answer}\n\n› `;
+    // When herdr's process facts for the lookup show no Codex any more
+    foreground = live;
+    processReads = [[]];
+    // Then nothing ties the screen to a running Codex: the terminal stands in
+    expect(await resolve()).toBeNull();
+  });
+
+  it("takes no long answer that differs from the shown one in its punctuation", async () => {
+    const answers = [
+      ["After carefully reviewing the requested configuration, the decisive result is a < b and all remaining verification steps completed successfully.",
+        "After carefully reviewing the requested configuration, the decisive result is a > b and all remaining verification steps completed successfully."],
+      ["After carefully reviewing the requested configuration, the decisive result is a != b and all remaining verification steps completed successfully.",
+        "After carefully reviewing the requested configuration, the decisive result is a = b and all remaining verification steps completed successfully."],
+      ["After carefully reviewing the requested configuration, the branch to release is feature-one and all remaining verification steps completed successfully.",
+        "After carefully reviewing the requested configuration, the branch to release is feature_one and all remaining verification steps completed successfully."],
+    ] as const;
+    for (const [index, [said, shown]] of answers.entries()) {
+      // a Codex process of its own each time: a pane a match bound keeps that rollout while its screen says nothing new
+      foreground = [{ pid: 2147483640 - index, argv: ["/usr/bin/codex"] }];
+      // Given this cwd's thread said one answer, and the pane shows its own conversation's other one
+      writeFileSync(path, [
+        { type: "session_meta", payload: { id: thread, cwd: root } },
+        { type: "event_msg", payload: { type: "user_message", message: "Review the configuration" } },
+        { type: "event_msg", payload: { type: "agent_message", message: said } },
+      ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+      screen = `OpenAI Codex (v0.165.0)\n\n› Check the release configuration\n\n• ${shown}\n\n› `;
+      expect(await resolve()).toBeNull();
+      // and the same answer, as said, still tells
+      screen = `OpenAI Codex (v0.165.0)\n\n› Review the configuration\n\n• ${said}\n\n› `;
+      expect(await resolve()).toBe(path);
+    }
+  });
+
+  it("reads no long answer whose markdown Codex renders its own way: the terminal stands in rather than a guess", async () => {
+    const raw = "The **migration** now rewrites `legacy_records` in place, as _the important result_ shows; see [the plan](docs/plan.md) and:\n- every check passes, including a < b";
+    writeFileSync(path, [
+      { type: "session_meta", payload: { id: thread, cwd: root } },
+      { type: "event_msg", payload: { type: "user_message", message: "Summarize the migration" } },
+      { type: "event_msg", payload: { type: "agent_message", message: raw } },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    foreground = live;
+    screen = "OpenAI Codex (v0.165.0)\n\n› Summarize the migration\n\n• The migration now rewrites legacy_records in place, as the important result shows; see the plan\n  (docs/plan.md) and:\n  - every check passes, including a < b\n\n› ";
+    expect(await resolve()).toBeNull();
+  });
+
+  it("still reads a long answer however the screen wraps it, and no answer starting like a tool call or with markdown", async () => {
+    const cases = [
+      // a wrap before a spaced dash, a year, a plus
+      ["The release notes list every change since the last tag - including the migration of the legacy records and the new reports.", "The release notes list every change since the last tag\n  - including the migration of the legacy records and the new reports."],
+      ["The migration of the legacy records finished early in 2026. After that every report used the new schema and passed its checks.", "The migration of the legacy records finished early in\n  2026. After that every report used the new schema and passed its checks."],
+      ["The two configurations differ in one setting + the timeout, which the new release raises for every slow report it builds.", "The two configurations differ in one setting\n  + the timeout, which the new release raises for every slow report it builds."],
+    ] as const;
+    for (const [index, [said, shown]] of cases.entries()) {
+      foreground = [{ pid: 2147483630 - index, argv: ["/usr/bin/codex"] }];
+      writeFileSync(path, [
+        { type: "session_meta", payload: { id: thread, cwd: root } },
+        { type: "event_msg", payload: { type: "user_message", message: "Summarize the release" } },
+        { type: "event_msg", payload: { type: "agent_message", message: said } },
+      ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+      screen = `OpenAI Codex (v0.165.0)\n\n› Summarize the release\n\n• ${shown}\n\n› `;
+      expect([index, await resolve()]).toEqual([index, path]);
+    }
+    // an answer that starts like a tool call, or ends in markdown Codex renders its own way: the terminal stands in
+    const fallbacks = [
+      // an answer that starts with a word a tool call also starts with
+      ["Running the full suite again showed every check passing, so the migration of the legacy records is complete and safe.", "Running the full suite again showed every check passing, so the migration of the legacy records is complete and safe."],
+      ["Ran the full test suite and verified that all checks pass successfully across the migrated legacy records and reports.", "Ran the full test suite and verified that all checks pass successfully across the migrated legacy records and reports."],
+      // an autolink, which Codex shows without its brackets
+      ["The migration guide is published at <https://example.com/migration> and covers every legacy record the reports still read.", "The migration guide is published at https://example.com/migration and covers every legacy record the reports still read."],
+    ] as const;
+    for (const [index, [said, shown]] of fallbacks.entries()) {
+      foreground = [{ pid: 2147483600 - index, argv: ["/usr/bin/codex"] }];
+      writeFileSync(path, [
+        { type: "session_meta", payload: { id: thread, cwd: root } },
+        { type: "event_msg", payload: { type: "user_message", message: "Summarize the release" } },
+        { type: "event_msg", payload: { type: "agent_message", message: said } },
+      ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+      screen = `OpenAI Codex (v0.165.0)\n\n› Summarize the release\n\n• ${shown}\n\n› `;
+      expect([index, await resolve()]).toEqual([index, null]);
+    }
+  });
+
+  it("takes no answer the screen shows with more at either end (#2430's review, H3)", async () => {
+    const said = "After carefully reviewing the requested configuration, the decisive offset is base and all remaining verification steps completed";
+    writeFileSync(path, [
+      { type: "session_meta", payload: { id: thread, cwd: root } },
+      { type: "event_msg", payload: { type: "user_message", message: "Review the configuration" } },
+      { type: "event_msg", payload: { type: "agent_message", message: said } },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    for (const [index, shown] of [`${said}.`, `Briefly: ${said}`].entries()) {
+      foreground = [{ pid: 2147483580 - index, argv: ["/usr/bin/codex"] }];
+      screen = `OpenAI Codex (v0.165.0)\n\n› Check the configuration\n\n• ${shown}\n\n› `;
+      expect([shown, await resolve()]).toEqual([shown, null]);
+    }
+    foreground = [{ pid: 2147483578, argv: ["/usr/bin/codex"] }];
+    screen = `OpenAI Codex (v0.165.0)\n\n› Review the configuration\n\n• ${said}\n\n› `;
+    expect(await resolve()).toBe(path);
+  });
+
+  it("takes no answer differing in a number or an operator, nor one quoted by consecutive running calls (#2430's review)", async () => {
+    const said = "After carefully reviewing the requested configuration, the decisive offset is base + 1 and all remaining verification steps completed.";
+    writeFileSync(path, [
+      { type: "session_meta", payload: { id: thread, cwd: root } },
+      { type: "event_msg", payload: { type: "user_message", message: "Review the configuration" } },
+      { type: "event_msg", payload: { type: "agent_message", message: said } },
+    ].map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    foreground = [{ pid: 2147483590, argv: ["/usr/bin/codex"] }];
+    screen = `OpenAI Codex (v0.165.0)\n\n› Check the configuration\n\n• ${said.replace("base + 1", "base - 1")}\n\n› `;
+    expect(await resolve()).toBeNull();
+    foreground = [{ pid: 2147483591, argv: ["/usr/bin/codex"] }];
+    screen = `OpenAI Codex (v0.165.0)\n\n› Run both\n\n• Running printf "${said}"\n\n• Running sleep 5\n\n• Working (3s • esc to interrupt)\n\n› `;
+    expect(await resolve()).toBeNull();
+  });
+
+  it("knows Codex by its release binary's name and a Windows file name in any case", async () => {
+    screen = `OpenAI Codex (v0.165.0)\n\n› Explain the selection\n\n• ${answer}\n\n› `;
+    for (const [index, executable] of ["/opt/codex/codex-x86_64-unknown-linux-musl", "C:\\Tools\\Codex.exe"].entries()) {
+      foreground = [{ pid: 2147483620 - index, argv: [executable] }];
+      expect([executable, await resolve()]).toEqual([executable, path]);
+    }
+  });
+
+  it("takes no long answer a tool call's command quotes", async () => {
+    foreground = live;
+    for (const shown of [
+      `• Ran printf "${answer}"\n  └ command is still running`,
+      `• Running printf "${answer}"`,
+      // a heredoc Codex shows with "│" lines, and no output yet
+      `• Ran cat <<'EOF'\n  │ ${answer}\n  │ EOF`,
+      // a shell command the user ran from the composer
+      `• You ran printf "${answer}"\n  └ (no output)`,
+    ]) {
+      screen = `OpenAI Codex (v0.165.0)\n\n› Execute the diagnostic\n\n${shown}\n\n• Working (3s • esc to interrupt)\n\n› `;
+      expect(await resolve()).toBeNull();
+    }
+  });
+
+  it("takes no long answer the pane only quotes in a prompt (#2420's review, H3)", async () => {
+    foreground = live;
+    screen = `OpenAI Codex (v0.165.0)\n\n› Explain this quoted answer: ${answer}\n\n• Working (2s • esc to interrupt)\n\n› `;
+    expect(await resolve()).toBeNull();
+    // nor one typed into the input box
+    screen = `OpenAI Codex (v0.165.0)\n\n› ${answer}`;
+    expect(await resolve()).toBeNull();
+    // nor one in a message queued to be sent
+    screen = `OpenAI Codex (v0.165.0)\n\n• Working (2s • esc to interrupt)\n  ↳ Explain this quoted answer: ${answer}\n\n› `;
+    expect(await resolve()).toBeNull();
+  });
 });

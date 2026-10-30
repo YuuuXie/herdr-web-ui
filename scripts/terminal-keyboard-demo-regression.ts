@@ -625,13 +625,16 @@ async function focusReports(browser: Browser): Promise<Record<string, unknown>> 
       .filter((frame) => types.includes(frame.type)).map((frame) => `${frame.type}:${JSON.stringify(frame.text ?? "")}`), { from, types: [...FORBIDDEN] });
     const frameCount = (): Promise<number> => page.evaluate(() => (window as unknown as QaWindow).sentFrames.length);
     const nothingFocused = (): Promise<boolean> => page.evaluate(() => document.activeElement === null || document.activeElement === document.body);
+    // input-ready precedes fixture playback, whose last frame can outlast flushTimers. Let the clock
+    // run until that frame is drawn before adding output its cursor moves could overwrite.
+    await page.locator(".pane-frame:not(.is-hidden) .xterm-rows", { hasText: "0 fail" }).waitFor();
     // a known start: whatever the load leaves for later has run, then nothing is focused when the mode
     // goes on, so no focus or blur of the load's can report inside the window the assertions read
     await flushTimers(page);
     await blur(page);
     assert.equal(await nothingFocused(), true, "nothing focused before focus reporting goes on");
     // xterm parses its input in order: the marker after DECSET 1004 drawn is proof the mode is on
-    await socket(page, { type: "pty-data", pane_id: panes.shell, data: "\u001b[?1004hfocus reporting on" });
+    await socket(page, { type: "pty-data", pane_id: panes.shell, data: "\r\n\u001b[?1004hfocus reporting on" });
     await page.locator(".pane-frame:not(.is-hidden) .xterm-rows", { hasText: "focus reporting on" }).waitFor();
     await flushTimers(page);
     assert.equal(await nothingFocused(), true, "still nothing focused once the mode is on");

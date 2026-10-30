@@ -283,3 +283,11 @@ describe("pending message ownership", () => {
     expect(store.read("p")[0]!.text).toBe("check the tests");
   });
 });
+
+// #511: a saved copy of a message for an agent alone stays one across a reload
+it("keeps a saved row's agent_only across a reload", () => {
+  const port = storage(), first = new PendingMessageStore(() => port);
+  first.accept("p", { ...message("only", "held", "> q\nc"), agent_only: true }, null);
+  first.accept("p", message("plain", "held"), null);
+  expect(new PendingMessageStore(() => port).read("p").map((row) => [row.id, row.agent_only])).toEqual([["only", true], ["plain", undefined]]);
+});

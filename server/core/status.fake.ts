@@ -13,10 +13,10 @@ import { PendingInputs } from "../pending-input.ts";
 import { connectionData, type Client } from "./connections.ts";
 
 // herdr's status events come from the test, as the collector would hand them over
-type Handlers = { onStatus: (paneId: string, status: string, agent: string, replay?: { before: string; agent: string }) => void; onBaseline: (panes: unknown[]) => void; herdrLive?: { identity: () => string | null; onChange: (identity: string | null) => void } };
+type Handlers = { onStatus: collector.StatusCollectorHandlers["onStatus"]; onBaseline: (panes: readonly unknown[]) => void; onReconciled: (panes: readonly HerdrPane[]) => void; onResync: NonNullable<collector.StatusCollectorHandlers["onResync"]>; onPaneEnded: (paneId: string) => void; herdrLive?: { identity: () => string | null; onChange: (identity: string | null) => void } };
 export let handlers: Handlers;
 export let collectorSnapshot: () => Promise<{ panes: HerdrPane[] }>;
-const originalCollector = collector.startStatusCollector;
+export const originalCollector = collector.startStatusCollector;
 mock.module("../collector.ts", () => ({
   ...collector,
   startStatusCollector: (seen: Handlers, deps: { snapshot: typeof collectorSnapshot }) => {
@@ -83,7 +83,7 @@ export function hub<Owner = unknown, Lease = unknown>(path = transcript, queued?
     spyOn(conversation, "claudePanePid").mockResolvedValue(null as never),
   );
   const frames: { type: string; agent_status?: string; background_tasks?: number; background_wait?: boolean }[] = [];
-  const client = { data: connectionData({ deviceId: undefined, readOnly: false }), getBufferedAmount: () => 0, send: (encoded: string) => { frames.push(JSON.parse(encoded)); return 1; } } as unknown as Client;
+  const client: Client = { data: connectionData({ deviceId: undefined, readOnly: false }), readyState: WebSocket.OPEN, getBufferedAmount: () => 0, send: (encoded: string) => { frames.push(JSON.parse(encoded)); return 1; }, close: () => {} };
   const pending = queued ?? new PendingInputs<Owner, Lease>(() => {});
   const status = createStatusHub({
     options: { stateDir: join(root, `state${++hubs}`), opencodeDb: store, machines: false, ...(herdrIdentity ? { herdrIdentity } : {}) },

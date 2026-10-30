@@ -1,4 +1,4 @@
-import type { AgentCatalogRow, AgentTabStarted } from "../../shared/agent-catalog.ts";
+import { agentRuns, type AgentCatalogRow, type AgentTabStarted } from "../../shared/agent-catalog.ts";
 
 /**
  * Where one agent's setup stands (AgentSetupCard): its install runs in a terminal tab, Ovis reads
@@ -12,7 +12,8 @@ export type SetupStep =
   | { kind: "installed"; version: string | null; onPath: boolean }
   | { kind: "signing-in"; tab: AgentTabStarted; version: string | null }
   | { kind: "ready"; version: string | null }
-  | { kind: "failed"; message: string; after: "install" | "sign-in" };
+  /** message null: the agent is on the PC but does not run, so it is installed again */
+  | { kind: "failed"; message: string | null; after: "install" | "sign-in" };
 
 export type SetupEvent =
   | { type: "install-started"; tab: AgentTabStarted }
@@ -33,6 +34,9 @@ export function setupStep(step: SetupStep, event: SetupEvent): SetupStep {
     case "detected": {
       if (step.kind !== "idle" && step.kind !== "installing") return step;
       if (!installedRow(event.row)) return step;
+      // there but not running (its version flag fails or hangs): never ready. An install under way
+      // may still repair it, so the card keeps waiting; otherwise it offers to install it again.
+      if (!agentRuns(event.row.state)) return step.kind === "installing" ? step : { kind: "failed", message: null, after: "install" };
       const version = event.row.state.version;
       // an agent that needs no sign-in is ready as soon as it is there
       return event.row.sign_in === null ? { kind: "ready", version } : { kind: "installed", version, onPath: event.row.state.on_path !== false };

@@ -27,6 +27,19 @@ describe("agent setup", () => {
     expect(setupStep({ kind: "installed", version: null, onPath: true }, { type: "skip-sign-in" })).toEqual({ kind: "ready", version: null });
   });
 
+  it("never makes an agent ready that is there but does not run, and waits while an install may repair it", () => {
+    const broken = row("opencode", { installed: true, binary: "opencode", on_path: true, version: null, version_error: "failed" });
+    const hung = row("opencode", { installed: true, binary: "opencode", on_path: true, version: null, version_error: "timeout" });
+    const unknownVersion = row("opencode", { installed: true, binary: "opencode", on_path: true, version: null, version_error: "unreadable" });
+    expect(setupStep({ kind: "idle" }, { type: "detected", row: broken })).toEqual({ kind: "failed", message: null, after: "install" });
+    expect(setupStep({ kind: "idle" }, { type: "detected", row: hung })).toEqual({ kind: "failed", message: null, after: "install" });
+    // an install under way may still repair it: the card keeps waiting
+    const installing = setupStep({ kind: "idle" }, { type: "install-started", tab });
+    expect(setupStep(installing, { type: "detected", row: broken })).toBe(installing);
+    // a version it cannot read is no sign it is broken
+    expect(setupStep(installing, { type: "detected", row: unknownVersion })).toEqual({ kind: "installed", version: null, onPath: true });
+  });
+
   it("says which step failed, and starts over on cancel", () => {
     expect(setupStep({ kind: "installing", tab }, { type: "failed", message: "x" })).toEqual({ kind: "failed", message: "x", after: "install" });
     expect(setupStep({ kind: "signing-in", tab, version: null }, { type: "failed", message: "y" })).toMatchObject({ after: "sign-in" });

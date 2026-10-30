@@ -12,7 +12,7 @@ import { startStatusCollector } from "../collector.ts";
 import { CompletionTracker, type OmoRest } from "../completion.ts";
 import { Finishes, herdrLifetime } from "../finishes.ts";
 import { claudePanePid, claudePaneSession, forgetPaneTranscriptState } from "../conversation.ts";
-import { releaseOpenCodePane, trackVerifiedOpenCodePanes } from "../opencode-native.ts";
+import { openCodeNativeState, openCodeVerificationCheckpoint, releaseOpenCodePane, trackVerifiedOpenCodePanes } from "../opencode-native.ts";
 import { opencodeDatabasePath } from "../opencode.ts";
 import { OpencodeSubagentStatus } from "../opencode-subagents.ts";
 import { openCodeServiceOptions, readOpenCodeService } from "../opencode-service.ts";
@@ -20,7 +20,7 @@ import { processStartUpperBoundAsync } from "../process-start.ts";
 import type { DeviceStore } from "../devices.ts";
 import { createGjcStatus, gjcPanes, readOmoSnapshot, reconcileProviderStatus } from "../gjc-status.ts";
 import type { HerdrMachineProfile } from "../herdr-profiles.ts";
-import { paneGet, sessionSnapshot } from "../herdr/client.ts";
+import { paneGet, paneProcessInfo, sessionSnapshot } from "../herdr/client.ts";
 import { resolveAgent } from "../pane-context.ts";
 import { launchedAgents } from "../launched-agents.ts";
 import { bridgeAgentNews, MachineManager } from "../machines.ts";
@@ -36,6 +36,7 @@ import type { Telemetry } from "../telemetry.ts";
 import type { UsageLoginService } from "../usage-login.ts";
 import type { UsageService } from "../usage.ts";
 import { type Client, send } from "./connections.ts";
+import type { TelemetryIngress, TelemetrySurface } from "../../shared/telemetry.ts";
 
 /** a focus or reconnect re-reads the panes for the daily active message at most this often */
 const VISIT_READ_MS = 10 * 60_000;
@@ -85,6 +86,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     lookupTitle: async (paneId) => {
       return paneTitle(await paneGet(paneId));
     },
+    // each pane alert that reached a device, for the daily active message's usage
+    onAlertDelivered: () => options.telemetry?.tally("alerts_delivered"),
   });
   // a mute made while an alert waits calls it off, so an unmute cannot resurrect an old finish
   const stopMutes = preferences.subscribe(() => push.mutesChanged());
@@ -307,7 +310,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
    * VISIT_READ_MS (in between they still count the day, with the kinds already known).
    */
   let visitReadAt = -Infinity;
-  function countVisit(snapshot?: ReturnType<typeof clientSnapshot>): void {
+  function countVisit(snapshot?: ReturnType<typeof clientSnapshot>, visit: { surface?: TelemetrySurface; ingress?: TelemetryIngress } = {}): void {
     const telemetry = options.telemetry;
     if (!telemetry?.counting()) return;
     let agents: Promise<(string | null)[]> | (string | null)[] = [];
@@ -315,7 +318,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       visitReadAt = Date.now();
       agents = (snapshot ?? clientSnapshot()).then((read) => read.panes.map((pane) => resolveAgent(pane).agent));
     }
-    void telemetry.active(agents)
+    void telemetry.active(agents, visit)
       .catch((error) => console.error(`telemetry: the visit was not counted (${error instanceof Error ? error.message : String(error)})`));
   }
   /** A pane's status frame: every one says whether the pane waits on its turn's background work. */
@@ -411,10 +414,10 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
 
   /** A status herdr reported for a pane, or one read back from a snapshot around a gap (`replay`). */
   function onStatus(paneId: string, read: AgentStatus, agent: string | null, replay?: { before: AgentStatus; agent: string | null }): void {
-    if (agent !== "opencode") {
+    if (agent !== "opencode" && (!replay || agent || read !== "unknown")) {
       options.openCodeState?.forget(paneId);
-      // no longer an OpenCode pane: it holds OpenCode's event stream open no more
-      releaseOpenCodePane(paneId);
+      // Snapshot replays release in onReconciled, with the snapshot's verification checkpoint.
+      if (!replay) releaseOpenCodePane(paneId);
     }
     // The agent identity precedes the poll: a delayed Claude callback cannot finish its successor.
     agentNow.set(paneId, agent);
@@ -482,6 +485,10 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     }
   }
 
+  // Process proof belongs to this exact snapshot, so the collector's newer-event guards
+  // cover the process read too. Never turn an unknown handover snapshot into an agent exit.
+  const shellSnapshots = new WeakSet<HerdrPane>();
+  const snapshotVerifications = new WeakMap<HerdrPane, number>();
   const collector = startStatusCollector({
     onStatus,
     // the herdr this server's lifecycle subscription was answered by, while that subscription is open
@@ -512,7 +519,16 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     },
     // a pane created a moment ago got its agent after the roster's own read of it. After the
     // snapshot's replays: a roster read before them could show a finish ahead of its status frame
-    onReconciled: (panes) => { if (machines) machines.localAgents(panes); else bridgeAgents!.reconciled(panes); },
+    onReconciled: (panes) => {
+      // only a verified pane holds the stream: a verification still in flight settles for itself, and
+      // a snapshot read before it started must not cancel it
+      const verified = new Set(openCodeNativeState().panes);
+      for (const pane of panes) {
+        if (!verified.has(pane.pane_id) || pane.agent === "opencode") continue;
+        if (pane.agent || pane.agent_status !== "unknown" || shellSnapshots.has(pane)) releaseOpenCodePane(pane.pane_id, snapshotVerifications.get(pane));
+      }
+      if (machines) machines.localAgents(panes); else bridgeAgents!.reconciled(panes);
+    },
     // the tracker first: what it makes of each pane (a finish after work is done, not idle) is
     // what the alerts are measured against from here, or the next event would alert of it
     onResync: (panes, newer) => {
@@ -524,6 +540,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       push.resync(panes.map((pane) => ({ ...pane, agent_status: alertStatus(settled(pane), waits.waiting(pane.pane_id)) })), newer);
     },
     onPaneEnded: (paneId) => {
+      omo.ended(paneId);
+      gjc.ended(paneId);
       options.openCodeState?.forget(paneId);
       releaseOpenCodePane(paneId);
       finishes.ended(paneId);
@@ -543,7 +561,25 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
       push.onEnded(paneId).catch(logPushError);
     },
     onStructureChange: () => broadcastAll({ type: "session-changed" }),
-  }, { snapshot: rawSnapshot });
+  }, { snapshot: async () => {
+    const checkpoint = openCodeVerificationCheckpoint();
+    const snapshot = await rawSnapshot();
+    for (const pane of snapshot.panes) snapshotVerifications.set(pane, checkpoint);
+    // Windows reports only the shell even while its agent runs; it supplies no foreground proof.
+    if (process.platform !== "win32") {
+      const verified = new Set(openCodeNativeState().panes);
+      await Promise.all(snapshot.panes.map(async (pane) => {
+        if (pane.agent || pane.agent_status !== "unknown" || !verified.has(pane.pane_id)) return;
+        const info = await paneProcessInfo(pane.pane_id).catch(() => undefined);
+        const front = info?.foreground_processes?.[0];
+        // `exec opencode` keeps the shell's pid, but not its process identity.
+        const shell = /(?:^|\/)-?(?:sh|bash|dash|zsh|fish|ksh|mksh|csh|tcsh|ash|nu)$/u;
+        if (info?.shell_pid != null && info.foreground_processes?.length === 1 && front?.pid === info.shell_pid
+          && shell.test(front.name) && shell.test(front.argv?.[0] ?? front.argv0 ?? front.name)) shellSnapshots.add(pane);
+      }));
+    }
+    return snapshot;
+  } });
   omo.start();
   gjc.start();
   claudeAgents.start();

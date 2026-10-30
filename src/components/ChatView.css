@@ -354,6 +354,22 @@
   height: auto;
 }
 
+/* A Markdown picture keeps its prose size and opens the chat's image viewer. */
+.markdown-image-open {
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: start;
+  line-height: 0;
+  vertical-align: middle;
+  cursor: zoom-in;
+}
+
+.markdown-image-open.is-standalone { display: block; width: 100%; }
+
+.markdown-image-retry { margin-inline-start: var(--space-2); }
+
 /* an image holds its box until it decodes (Markdown.tsx ReservedImage, lib/imageBox.ts): the wrapper
    is the box while the bytes arrive and after a failure, and gives it up once the picture is in, so
    the image renders bare and nothing around it is laid out anew */

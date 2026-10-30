@@ -42,6 +42,10 @@ describe("AgentSetupCard", () => {
     expect(buttons(notOnPath)).toEqual(["Sign in", "Skip", "Show details"]);
     expect(buttons(render({ kind: "installed", version: "2.1.312", onPath: true }))).toEqual(["Sign in", "Skip", "Show details"]);
     expect(states(render({ kind: "failed", message: "fixture failure", after: "install" }))).toEqual({ status: "failed", steps: ["failed", "next"] });
+    // there but not running: installed again from the same card
+    const broken = render({ kind: "failed", message: null, after: "install" });
+    expect(states(broken)).toEqual({ status: "failed", steps: ["failed", "next"] });
+    expect(buttons(broken)).toEqual(["Try again", "Show details", "Cancel"]);
     expect(buttons(render({ kind: "ready", version: "2.1.312" }))).toEqual(["Start Claude Code"]);
     expect(buttons(render({ kind: "failed", message: "fixture failure", after: "install" }))).toEqual(["Try again", "Show details", "Cancel"]);
   });

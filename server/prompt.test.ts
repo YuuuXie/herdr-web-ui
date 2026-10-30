@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { InteractivePrompt } from "../shared/protocol.ts";
 
-import { answerKeys, hermesInputDraft, claudeClearableDraft, claudeInputBoxText, claudeInputDraft, claudeInputEmpty, viewportShowsLive, removedInvisible, noteSubmitted, codexQuestionsCollapsed, codexQueuedPrompt, handlePromptRequest, openOmoAsks, parseClaudeSuggestion, parseFallbackPrompt, parseInteractivePrompt, pendingOmoAsk, promptWaitEnded, claudeRestoredDraft, lastChatSubmitted } from "./prompt.ts";
+import { answerKeys, hermesInputDraft, claudeClearableDraft, claudeInputBoxText, claudeInputDraft, claudeInputEmpty, historyEndShowsLive, viewportShowsLive, removedInvisible, noteSubmitted, codexQuestionsCollapsed, codexQueuedPrompt, handlePromptRequest, openOmoAsks, parseClaudeSuggestion, parseFallbackPrompt, parseInteractivePrompt, pendingOmoAsk, promptWaitEnded, claudeRestoredDraft, lastChatSubmitted } from "./prompt.ts";
 import { registry } from "./dialogs/registry.ts";
 import { gjcCustomEditorMatches } from "./dialogs/fallback.ts";
 import { parsedByPublicPrompt } from "./dialogs/shared.ts";
@@ -2442,6 +2442,25 @@ describe("Claude's suggested next prompt", () => {
     expect(viewportShowsLive(bottom, bottom, colors, live.replace("run the tests", "run the test"), live)).toBe(false);
   });
 
+  test("the history's last rows lend their colors only when they are the unchanged live screen, colors included", () => {
+    const live = screen("❯ \u001b[2mrun the tests\u001b[0m").replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
+    const colors = screen("❯ \u001b[2mrun the tests\u001b[0m");
+    expect(historyEndShowsLive(colors, colors, [live, live])).toBe(true);
+    // other rows than the live screen's (a resize between the reads, an older box)
+    expect(historyEndShowsLive("● older output\r\n" + colors, "● older output\r\n" + colors, [live, live])).toBe(false);
+    // the live screen changed across the colored reads, before or after them
+    const changed = live.replace("run the tests", "run the test");
+    expect(historyEndShowsLive(colors, colors, [changed, live])).toBe(false);
+    expect(historyEndShowsLive(colors, colors, [live, changed])).toBe(false);
+    expect(historyEndShowsLive(colors, colors, [])).toBe(false);
+    // the suggestion accepted with Tab between the colored reads: the same words, typed now
+    const typed = screen("❯ run the tests");
+    expect(historyEndShowsLive(colors, typed, [live, live])).toBe(false);
+    expect(historyEndShowsLive(typed, colors, [live, live])).toBe(false);
+    // a read with no color at all (NO_COLOR): its tip and the same words typed read the same
+    expect(historyEndShowsLive(live, live, [live, live])).toBe(false);
+  });
+
   test("bash mode, a box clipped by the pane, or a viewport that is not the live box hold a pending message", () => {
     const draft = (ansi: string, live = ansi.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")) => claudeInputDraft(live, ansi);
     // the Enter after a paste would run it as a command
@@ -4149,7 +4168,9 @@ describe("an answer and the menu it was made for", () => {
           return void setTimeout(() => answer({ read: { text: request.params.source === "visible" && pane.visibleScreen !== undefined ? pane.visibleScreen : request.params.format === "ansi" ? pane.viewport ?? pane.screen : pane.screen } }), pane.readDelay ?? 0);
         }
         if (request.method === "pane.process_info") return answer({ process_info: { foreground_processes: pane.omo?.live ? [{ pid: pane.omo.pid, argv: ["omo"] }]
-          : pane.agent === "omp" ? [pane.ompStopped ? { pid: 4100, argv: ["/bin/bash"] } : { pid: 4242, argv: ["omp"] }] : [] } });
+          : pane.agent === "omp" ? [pane.ompStopped ? { pid: 4100, argv: ["/bin/bash"] } : { pid: 4242, argv: ["omp"] }]
+          // a Codex pane runs Codex: its rollout is read only while one does
+          : pane.agent === "codex" ? [{ pid: 2147483647, argv: ["/usr/bin/codex"] }] : [] } });
         if (request.method === "agent.get" && pane.agentUnanswered) return;
         if (request.method === "agent.get") return answer({ agent: pane.rollout ? { agent_session: { kind: "path", value: pane.rollout } } : {} });
         if (request.method !== "pane.send_keys" && request.method !== "pane.send_text") throw new Error(`unexpected fixture RPC: ${request.method}`);
@@ -5947,7 +5968,9 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
   });
 
   test("answers a question of Codex's collapsed queue, and opens no queue for a request given up", async () => {
-    const collapsed = "\n• WAITING\n• Queued follow-up inputs\n  ? 2 questions · 8s\n    alt+↑ to answer\n› Ask Codex to do anything\n  GPT-6-Sol xhigh · ~/lab · Context 97% left\n";
+    // the conversation's earlier answer on screen ties the pane to its rollout (herdr's report alone does not)
+    const said = "The training data is split by date, so the evaluation never sees a later example.";
+    const collapsed = `\n\u2022 ${said}\n` + "\n• WAITING\n• Queued follow-up inputs\n  ? 2 questions · 8s\n    alt+↑ to answer\n› Ask Codex to do anything\n  GPT-6-Sol xhigh · ~/lab · Context 97% left\n";
     const open = (at: number) => `\n• Queued follow-up inputs\n  1 of 2\n  Which split?\n  ${at === 0 ? "›" : " "} 1. train\n  ${at === 1 ? "›" : " "} 2. test\n  ${at === 2 ? "›" : " "} 3. Other\n  enter submit   ctrl+] skip   alt+↓ main prompt\n`;
     const item = (payload: unknown) => `${JSON.stringify({ type: "response_item", payload })}\n`;
     const ask = (call: string, count = 1) => item({ type: "function_call", name: "request_user_input_async", call_id: call, arguments: JSON.stringify({ questions: Array.from({ length: count }, () => ({ title: "Which split?", options: ["train", "test"] })) }) });
@@ -5957,7 +5980,7 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
       pane.rollout = join(home, "sessions", "rollout.jsonl");
       pane.cwd = pane.root;
       // one call asks the same question twice: the card is the first of the two
-      writeFileSync(pane.rollout, `${JSON.stringify({ type: "session_meta", payload: { id: "t", source: "cli" } })}\n${ask("call_1", 2)}`);
+      writeFileSync(pane.rollout, `${JSON.stringify({ type: "session_meta", payload: { id: "t", source: "cli" } })}\n${item({ type: "message", role: "assistant", content: [{ type: "output_text", text: said }] })}${ask("call_1", 2)}`);
       const queued = (await card(home))!;
       expect(queued.queued).toBe("collapsed");
       // another terminal client opens the queue between this answer's first read and its read

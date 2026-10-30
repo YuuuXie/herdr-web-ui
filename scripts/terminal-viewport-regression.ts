@@ -155,7 +155,9 @@ try {
   // The jump button: absent at the bottom, shown above it, and a click returns to the bottom without
   // taking the terminal's focus or sending input to the program.
   const jump = page.getByRole("button", { name: "Jump to bottom", exact: true });
-  assert.equal(await jump.count(), 0, "no jump button at the native bottom");
+  // herdr is at the bottom once paging returns; the page drops the button only after it reads that
+  // page's answer and draws it, so its going is waited for, not sampled
+  await jump.waitFor({ state: "detached" });
   await pageToEdge(1);
   await jump.waitFor();
   const jumpBox = (await jump.boundingBox())!, gridBox = (await page.locator(".pane-terminal").boundingBox())!;

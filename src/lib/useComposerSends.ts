@@ -49,7 +49,7 @@ export interface ComposerSendsDeps {
   stillOpenNote: (open: { pane: string; agent: string; command: string; named: boolean; history: string | undefined }) => string;
   stillOpenNotedRef: MutableRefObject<boolean>;
   stillOpenRef: MutableRefObject<{ pane: string; agent: string; command: string; named: boolean; history: string | undefined } | null>;
-  submitComposerMessage: (text: string, delivery: SubmitDelivery, clearDraft?: string, sendAnyway?: boolean, pendingId?: string, resendGeneration?: number) => Promise<SubmitResult> | null;
+  submitComposerMessage: (text: string, delivery: SubmitDelivery, clearDraft?: string, sendAnyway?: boolean, pendingId?: string, resendGeneration?: number, agentOnly?: boolean) => Promise<SubmitResult> | null;
   submitRetention: PaneSubmitRetention | null;
   t: Translate;
 }
@@ -84,7 +84,7 @@ export function useComposerSends(deps: ComposerSendsDeps) {
   }, [answering, paneId, pendingAnswer, sendAnswer, setPendingAnswer]);
 
   const composerSend = useCallback(
-    (text: string, clearDraft?: string, sendAnyway = false): boolean | string | DraftRefusal | Promise<boolean | string | DraftRefusal> => {
+    (text: string, clearDraft?: string, sendAnyway = false, agentOnly = false): boolean | string | DraftRefusal | Promise<boolean | string | DraftRefusal> => {
       const pane = paneRef.current;
       // Codex's queue open in the terminal holds the input: a message would become the answer
       if (pane !== null && heldByOpenQueue) {
@@ -134,7 +134,7 @@ export function useComposerSends(deps: ComposerSendsDeps) {
       const socket = socketRef.current, session = sessionRef.current;
       const sentAt = Date.now();
       const sentAfter = pane === null ? null : waitingBaseline(waitingKey(machineId, pane));
-      const result = submitComposerMessage(text, delivery, delivery === "immediate" ? clearDraft : undefined, sendAnyway);
+      const result = submitComposerMessage(text, delivery, delivery === "immediate" ? clearDraft : undefined, sendAnyway, undefined, undefined, agentOnly);
       return result === null ? false : result.then((answer) => {
         // Neither a dropped connection nor a cleared old draft proves this message was typed.
         // Without a receipt, leave the retryable composer text and report the uncertainty.
@@ -196,7 +196,7 @@ export function useComposerSends(deps: ComposerSendsDeps) {
             // before pending-result arrives. A concurrent delivery never restores text.
             if (action === "edit" && !edited && frame.removed?.some((item) => item.id === id && item.outcome === "discarded")) {
               edited = true;
-              composerDrafts.restorePending(`ovis:composer-draft:${owner}`, message.text);
+              composerDrafts.restorePending(`ovis:composer-draft:${owner}`, message.text, message.agent_only === true);
             }
           });
           try {
@@ -226,7 +226,7 @@ export function useComposerSends(deps: ComposerSendsDeps) {
           }
           const known = knownOutcomes(pane);
           const seen = inputRowNow() === "ready";
-          const result = submitComposerMessage(message.text, "immediate", undefined, false, id, message.resendGeneration ?? 0);
+          const result = submitComposerMessage(message.text, "immediate", undefined, false, id, message.resendGeneration ?? 0, message.agent_only === true);
           if (!result) {
             pendingMessages.fail(owner, id, { code: "not_transmitted", message: "the connection dropped before this message was sent" }, false);
             return;

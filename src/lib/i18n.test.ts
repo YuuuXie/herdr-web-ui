@@ -120,17 +120,18 @@ describe.each(Object.entries(DICTIONARIES))("%s dictionary", (_name, dictionary)
 const PART_FILES: Record<string, string[]> = {
   settings: ["components/SettingsDialog.tsx", "components/KeyBarSettings.tsx", "lib/paletteSettings.ts", "components/TelemetryControls.tsx", "components/SettingsControls.tsx"],
   terminal: ["components/PaneTerminal.tsx", "lib/useTerminalMount.ts", "lib/useComposerSends.ts", "lib/usePeekReturn.ts", "lib/useTypedKeys.ts", "components/PaneCanvas.tsx", "components/KeyBar.tsx", "components/FindBar.tsx", "components/TerminalViewportTools.tsx", "components/SplitDropPreview.tsx", "components/TabStrip.tsx", "lib/terminalLabel.ts", "lib/tabName.ts"],
-  composer: ["components/Composer.tsx", "components/ComposerNotices.tsx", "components/VoiceInput.tsx", "components/SecretInput.tsx", "components/TerminalInput.tsx", "components/PendingMessages.tsx", "lib/compose.ts", "components/PromptCard.tsx", "lib/promptAnswer.ts", "../shared/card-text.ts"],
-  chat: ["components/ChatView.tsx", "components/SentWaiting.tsx", "components/Markdown.tsx", "components/MermaidLightbox.tsx", "components/ChatMinimap.tsx", "components/ImageLightbox.tsx", "components/BackgroundTasks.tsx", "components/BackgroundAgentDetail.tsx", "components/MarkdownLinkMenu.tsx", "lib/workBlocks.ts", "lib/toolVerbs.ts", "lib/outcomeChip.ts", "lib/chatTimestamp.ts", "lib/chatReadDeadline.ts"],
+  composer: ["components/Composer.tsx", "components/ReplyComments.tsx", "components/ComposerNotices.tsx", "components/VoiceInput.tsx", "components/SecretInput.tsx", "components/TerminalInput.tsx", "components/PendingMessages.tsx", "lib/compose.ts", "components/PromptCard.tsx", "lib/promptAnswer.ts", "../shared/card-text.ts"],
+  chat: ["components/ChatView.tsx", "components/SentWaiting.tsx", "components/Markdown.tsx", "components/MermaidLightbox.tsx", "components/ChatMinimap.tsx", "components/ImageLightbox.tsx", "components/BackgroundTasks.tsx", "components/BackgroundAgentDetail.tsx", "components/Artifacts.tsx", "components/MarkdownLinkMenu.tsx", "lib/workBlocks.ts", "lib/toolVerbs.ts", "lib/outcomeChip.ts", "lib/chatTimestamp.ts", "lib/chatReadDeadline.ts"],
   sidebar: ["components/Sidebar.tsx", "components/AgentSidebar.tsx", "components/SidebarResizer.tsx"],
   machines: ["components/MachineSidebar.tsx", "components/MachineDialog.tsx", "lib/bridgeProgress.ts"],
   workspace: ["components/NewSessionDialog.tsx", "components/WorktreeDialog.tsx", "components/DirectoryBrowser.tsx", "components/RecentFolderChips.tsx", "components/SessionHistory.tsx", "lib/sessionHistory.ts", "lib/useAgentSkills.ts"],
   files: ["components/FileViewer.tsx", "components/FilesDialog.tsx", "components/FileReader.tsx", "components/TextFileView.tsx", "components/FilePathLink.tsx", "components/FilePanelResizer.tsx", "components/HighlightedCode.tsx", "components/RepoDiffViewer.tsx", "components/RepoChanges.tsx", "components/RepoDiff.tsx", "lib/repoDiff.ts", "components/WebPanel.tsx"],
   devices: ["components/DevicesPanel.tsx", "components/PhonePanel.tsx", "components/PortalPanel.tsx", "components/PushTestControls.tsx", "components/AccessGate.tsx", "components/LanExposureNotice.tsx", "components/DevicePairedNotice.tsx", "lib/install.ts"],
-  usage: ["components/UsageSettings.tsx", "components/UsageAccountDialog.tsx", "components/UsageLocalLogin.tsx", "components/UsageHubConnect.tsx", "components/CLIProxyLogin.tsx", "components/UsageMeters.tsx", "lib/usage.ts"],
+  usage: ["components/UsageAccountDialog.tsx", "components/UsageSignInDialog.tsx", "components/UsageLocalLogin.tsx", "components/UsageHubConnect.tsx", "components/CLIProxyLogin.tsx", "components/UsageMeters.tsx", "lib/usage.ts"],
   updates: ["components/UpdateControls.tsx", "lib/updateProgress.ts"],
   palette: ["components/CommandPalette.tsx"],
-  setup: ["components/AgentSetupCard.tsx"],
+  setup: ["components/AgentSetupCard.tsx", "components/AddAgentPanel.tsx", "components/AgentTile.tsx", "components/AgentsSettings.tsx"],
+  guide: ["components/SetupGuide.tsx"],
 };
 
 /** Parts in src/lib/i18n/ hold the keys only one feature uses; the base dictionary holds the rest. */

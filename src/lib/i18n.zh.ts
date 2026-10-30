@@ -9,6 +9,7 @@ import { FILES_ZH } from "./i18n/files.zh.ts";
 import { DEVICES_ZH } from "./i18n/devices.zh.ts";
 import { USAGE_ZH } from "./i18n/usage.zh.ts";
 import { SETUP_ZH } from "./i18n/setup.zh.ts";
+import { GUIDE_ZH } from "./i18n/guide.zh.ts";
 import { UPDATES_ZH } from "./i18n/updates.zh.ts";
 import { PALETTE_ZH } from "./i18n/palette.zh.ts";
 
@@ -26,6 +27,7 @@ import { PALETTE_ZH } from "./i18n/palette.zh.ts";
  * Placeholders in braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "Save": "保存",
   "Goal": "目标",
   "Waiting for your answer": "等待你的回答",
   "Back": "返回",
@@ -46,7 +48,6 @@ const BASE: Record<string, string> = {
   "Agent default": "代理默认",
   "Phone & devices": "手机和设备",
   "Access token": "访问 Token",
-  "Install app": "安装应用",
 
   // ---- shortcuts (lib/shortcuts.ts labels) ----
   "Command palette": "命令面板",
@@ -56,6 +57,10 @@ const BASE: Record<string, string> = {
   "New workspace": "新建工作区",
   "Previous pane": "上一个窗格",
   "Next pane": "下一个窗格",
+  "Previous tab": "上一个标签页",
+  "Next tab": "下一个标签页",
+  "Previous workspace": "上一个工作区",
+  "Next workspace": "下一个工作区",
 
   // ---- agent status words (lib/status.ts) ----
   "READY": "就绪",
@@ -145,6 +150,8 @@ const BASE: Record<string, string> = {
   "Browse": "浏览",
   "Cancel": "取消",
   "Install": "安装",
+  "Installed": "已安装",
+  "Not installed": "未安装",
   "Sign in": "登录",
   "Starting…": "正在启动…",
   "Start": "启动",
@@ -172,6 +179,16 @@ const BASE: Record<string, string> = {
   // ---- prompt card ----
   "Submit": "提交",
   "Recommended": "推荐",
+  "Agents": "代理",
+  "Check again": "重新检查",
+  "Setup guide": "设置向导",
+  "Could not confirm this browser is paired. Check that cookies are enabled, then try again.": "无法确认此浏览器已配对。请检查是否允许 Cookie，然后重试。",
+  "New code": "新代码",
+  "Paired: {name}.": "已配对：{name}。",
+  "QR code that pairs a phone with code {code}": "使用代码 {code} 配对手机的二维码",
+  "Pairing code": "配对码",
+  "Open this address on your phone": "在手机上打开此地址",
+  "{agent} is ready": "{agent} 已就绪",
 
 
   // ---- composer ----
@@ -298,6 +315,21 @@ const BASE: Record<string, string> = {
   "Terminal line": "终端输入行",
   "Held message": "保留的消息",
   "Held input": "保留的输入",
+  "Other accounts": "其他账号",
+  "Plan limits": "套餐限额",
+  "Auto": "自动",
+  "Hub request failed": "中心请求失败",
+  "On this PC": "本机",
+  "Hub": "中心",
+  "Add account": "添加账号",
+  "Check the hub connection": "请检查中心连接",
+  "Meters show": "计量显示",
+  "Limit shown": "显示的限额",
+  "Show plan limits": "显示套餐限额",
+  "Session": "会话",
+  "Weekly": "每周",
+  "Open terminal": "打开终端",
+  "Sign in to {agent}": "登录 {agent}",
 };
 
 /** The parts ZH is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
@@ -314,6 +346,7 @@ export const ZH_PARTS: Record<string, Record<string, string>> = {
   devices: DEVICES_ZH,
   usage: USAGE_ZH,
   setup: SETUP_ZH,
+  guide: GUIDE_ZH,
   updates: UPDATES_ZH,
   palette: PALETTE_ZH,
 };

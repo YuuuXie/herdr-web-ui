@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { dlopen, FFIType, ptr } from "bun:ffi";
-import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import { Database } from "bun:sqlite";
-import { codexCallFailed, codexHistoryTail, codexHomeInPsLine, codexRolloutPath, interactiveCodexRollout, processCodexHome, forgetHistoryChains, matchCodexFirstExchange, matchCodexTranscript, matchShortCodexAnswers, parseCodexTranscript, codexPeersIn, resumedThread, rolloutInsideStore, sameDirectory, storedCwdCondition, storedCwds, unansweredCodexQuestions, withoutVerbatimPrefix } from "./codex.ts";
+import { codexCallFailed, codexHistoryTail, CodexStoreChanged, openCodexStore, codexHomeInPsLine, codexRolloutPath, interactiveCodexRollout, processCodexHome, forgetHistoryChains, matchCodexFirstExchange, matchCodexTranscript, matchShortCodexAnswers, parseCodexTranscript, codexPeersIn, resumedThread, rolloutInsideStore, sameDirectory, storedCwdCondition, storedCwds, unansweredCodexQuestions, withoutVerbatimPrefix } from "./codex.ts";
 import type { HerdrPane } from "../shared/protocol.ts";
 import { splitTurn } from "../src/lib/workBlocks.ts";
 import rolloutHeaders from "./fixtures/codex-rollout-headers.json";
@@ -757,6 +757,50 @@ describe("Codex rollout resolution", () => {
     expect(matchCodexTranscript("• The report (output/test/REPORT.md)", candidates)).toBeNull();
   });
 
+  it("matches rendered local file links containing spaces without selecting an ambiguous conversation", () => {
+    for (const target of ["/home/user/My Project/Daily notes/report.md", "C:/Users/User/My Project/report.md",
+      "C:\\Users\\User\\My Project\\report.md", "</home/user/My Project/Daily notes/report.md>",
+      "<C:/Users/User/My Project/report.md>", "<C:\\Users\\User\\My Project\\report.md>"]) {
+      const linked = `${answer} [Daily report](${target})`;
+      const candidates = [{ path: "own", text: jsonl(message("assistant", linked, "final_answer")) }];
+      const screen = `• ${answer} Daily report (Daily notes/report.md)`;
+      expect(matchCodexTranscript(screen, candidates)).toBe("own");
+      expect(matchCodexTranscript(screen, [...candidates, { ...candidates[0]!, path: "copy" }])).toBeNull();
+      expect(matchCodexTranscript("• Daily report (Daily notes/report.md)", candidates)).toBeNull();
+    }
+  });
+
+  it("does not select a conversation from only an angle-wrapped file link containing parentheses", () => {
+    const filename = "report (old) with detailed quarterly analysis and supporting documentation for project milestones.md";
+    const linked = `${answer} [Daily report](</home/user/My Project/${filename}>)`;
+    const candidates = [{ path: "own", text: jsonl(message("assistant", linked, "final_answer")) }];
+    expect(matchCodexTranscript(`• Daily report (${filename})`, candidates)).toBeNull();
+    expect(matchCodexTranscript(`• ${answer} Daily report (${filename})`, candidates)).toBe("own");
+  });
+
+  it("keeps local link destinations containing a line break as literal answer text", () => {
+    for (const newline of ["\n", "\r", "\r\n"]) {
+      for (const target of [`/home/user/My Project${newline}Daily notes/report.md`,
+        `</home/user/My Project${newline}Daily notes/report (old).md>`]) {
+        const literal = `${answer} [Daily report](${target})`;
+        const candidates = [{ path: "own", text: jsonl(message("assistant", literal, "final_answer")) }];
+        expect(matchCodexTranscript(`• ${answer} Daily report`, candidates)).toBeNull();
+        // as Codex shows the answer: its second line indented below the bullet
+        expect(matchCodexTranscript(`• ${literal.replace(/\r?\n/g, "\n  ")}`, candidates)).toBe("own");
+      }
+    }
+  });
+
+  it("keeps unclosed local file links as literal answer text", () => {
+    for (const target of ["/home/user/My Project/Daily notes/report.md", "</home/user/My Project/Daily notes/report.md>",
+      "</home/user/My Project/Daily notes/report (old).md)"]) {
+      const literal = `${answer} [Daily report](${target}`;
+      const candidates = [{ path: "own", text: jsonl(message("assistant", literal, "final_answer")) }];
+      expect(matchCodexTranscript(`• ${answer} Daily report`, candidates)).toBeNull();
+      expect(matchCodexTranscript(`• ${literal}`, candidates)).toBe("own");
+    }
+  });
+
   // issue #283: no answer of this session reaches 64 letters and digits (40, 29 and 38)
   const short = [
     "세 사진을 확인하고 한 장으로 합칠게요. 이미지 편집을 위해 imagegen 스킬을 사용할게요.",
@@ -773,8 +817,10 @@ describe("Codex rollout resolution", () => {
     "• 세 화면이 모두 보이도록, 올려주신 순서대로 가로로 나란히 배치할게요.",
     "• imagegen으로 세 사진을 올려주신 순서대로 가로로 합쳤어요.\n\n  합친 이미지 다운로드 (.herdr-web-ui/combined-20261002.png)",
   ];
-  const answered = (...texts: string[]) => jsonl(...texts.map((text) => message("assistant", text)));
-  const bullets = (...texts: string[]) => texts.map((text) => `• ${text}`).join("\n");
+  // answers below the prompt they answered, as Codex shows them: short answers count only there
+  const asked = "Work through the fixture task";
+  const answered = (...texts: string[]) => jsonl(message("user", asked), ...texts.map((text) => message("assistant", text)));
+  const bullets = (...texts: string[]) => [`› ${asked}`, ...texts.map((text) => `• ${text}`)].join("\n");
 
   it("reads a session whose answers are all short by its newest answers shown together, in order", () => {
     const candidates = [
@@ -888,6 +934,26 @@ describe("Codex rollout resolution", () => {
     expect(matchShortCodexAnswers(screen, [{ path: "older", text: answered(...older) }, { path: "live", text: answered(...live, ...Array.from({ length: 220 }, () => "Done.")) }])).toBeNull();
     // a linked answer of another rollout that says something else vetoes nothing
     expect(matchShortCodexAnswers(screen, [{ path: "older", text: answered(...older) }, { path: "else", text: answered("See [the notes](docs/notes.md) for the migration plan.") }])).toBe("older");
+  });
+
+  it("reads no short answers whose prompt is past the top of the read: another conversation may have said them to another", () => {
+    const texts = ["The build finished without errors this time.", "All checks on the feature branch pass again."];
+    expect(matchShortCodexAnswers(bullets(...texts), [{ path: "only", text: answered(...texts) }])).toBe("only");
+    expect(matchShortCodexAnswers(texts.map((text) => `• ${text}`).join("\n"), [{ path: "only", text: answered(...texts) }])).toBeNull();
+    // and none queued to be sent counts as their prompt or as an answer
+    expect(matchShortCodexAnswers(`  ↳ ${asked}\n${texts.map((text) => `• ${text}`).join("\n")}`, [{ path: "only", text: answered(...texts) }])).toBeNull();
+  });
+
+  it("reads no short answers below a prompt that differs from theirs only in punctuation, and reads a prompt wrapped over lines", () => {
+    const replies = ["The condition evaluates to true in this example.", "All checks on the feature branch pass again."];
+    const rollout = (prompt: string) => jsonl(message("user", prompt), ...replies.map((text) => message("assistant", text)));
+    const screen = (...prompt: string[]) => [`› ${prompt[0]}`, ...prompt.slice(1).map((line) => `  ${line}`), ...replies.map((text) => `• ${text}`)].join("\n");
+    for (const [said, shown] of [["Check whether a < b for these inputs", "Check whether a > b for these inputs"], ["Check the branch named feature-one", "Check the branch named feature_one"]] as const) {
+      expect(matchShortCodexAnswers(screen(shown), [{ path: "peer", text: rollout(said) }])).toBeNull();
+      expect(matchShortCodexAnswers(screen(said), [{ path: "peer", text: rollout(said) }])).toBe("peer");
+    }
+    const long = "Check the branch named feature-one, then compare a < b against the release branch";
+    expect(matchShortCodexAnswers(screen("Check the branch named feature-one, then compare", "a < b against the release branch"), [{ path: "own", text: rollout(long) }])).toBe("own");
   });
 
   it("reads no short answers when a rollout was not read whole, the one that shows them included", () => {
@@ -1164,5 +1230,132 @@ describe("incremental Codex records", () => {
     parser.write(final);
     expect(parser.snapshot()).toEqual(parseCodexTranscript(`${first}\n${second}\n${final}`));
     expect(parser.snapshot().at(-1)?.parts.at(-1)).toMatchObject({ phase: "final_answer", text: "Finished" });
+  });
+});
+
+describe("Codex's store, read whether or not a Codex holds it (#2444)", () => {
+  const made = (home: string) => {
+    const writer = new Database(join(home, "state_5.sqlite"));
+    writer.exec("PRAGMA journal_mode = WAL; CREATE TABLE threads (id TEXT, note TEXT); INSERT INTO threads (id) VALUES ('t1');");
+    return writer;
+  };
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("reads a WAL-mode store left with no -wal or -shm, making nothing beside it", () => {
+    const home = mkdtempSync(join(tmpdir(), "ovis-codex-store-"));
+    try {
+      made(home).close();
+      // as Codex leaves it once no Codex holds it: the store alone, which SQLite may not open read-only when
+      // it cannot make the -shm (macOS's SQLite; here a folder it may not write into)
+      expect(readdirSync(home)).toEqual(["state_5.sqlite"]);
+      chmodSync(home, 0o555);
+      expect(() => new Database(join(home, "state_5.sqlite"), { readonly: true, create: false }).query("SELECT id FROM threads").all()).toThrow();
+      const { db, immutable, settled } = openCodexStore(home);
+      try {
+        expect(immutable).toBe(true);
+        expect(db.query("SELECT id FROM threads").all()).toEqual([{ id: "t1" }]);
+        expect(settled).not.toThrow();
+      } finally { db.close(); }
+      expect(readdirSync(home)).toEqual(["state_5.sqlite"]);
+    } finally {
+      chmodSync(home, 0o755);
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses what it read once a Codex opened the store or wrote it meanwhile", () => {
+    const home = mkdtempSync(join(tmpdir(), "ovis-codex-store-"));
+    try {
+      made(home).close();
+      const opened = openCodexStore(home);
+      try {
+        expect(opened.db.query("SELECT id FROM threads").all()).toEqual([{ id: "t1" }]);
+        // a Codex opens the store and writes a thread: its -wal appears beside it
+        const writer = new Database(join(home, "state_5.sqlite"));
+        try {
+          writer.exec("INSERT INTO threads (id) VALUES ('t2')");
+          expect(opened.settled).toThrow(CodexStoreChanged);
+        } finally { writer.close(); }
+      } finally { opened.db.close(); }
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  it("refuses what it read once a Codex wrote the store and closed it again meanwhile", () => {
+    const home = mkdtempSync(join(tmpdir(), "ovis-codex-store-"));
+    try {
+      made(home).close();
+      const opened = openCodexStore(home);
+      try {
+        expect(opened.db.query("SELECT id FROM threads").all()).toEqual([{ id: "t1" }]);
+        // Codex opens the store, writes, checkpoints and closes it: no side file is left, the file itself moved
+        const writer = new Database(join(home, "state_5.sqlite"));
+        // a row larger than a page, so the file surely grows: timestamps alone may not move within one tick
+        writer.query("INSERT INTO threads VALUES ('t2', ?)").run("x".repeat(64 * 1024));
+        writer.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+        writer.close();
+        expect(readdirSync(home)).toEqual(["state_5.sqlite"]);
+        expect(opened.settled).toThrow(CodexStoreChanged);
+      } finally { opened.db.close(); }
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  it.skipIf(process.platform === "win32")("reads a store behind a link as the store a Codex holds, rows not yet checkpointed included", () => {
+    const home = mkdtempSync(join(tmpdir(), "ovis-codex-store-"));
+    const target = mkdtempSync(join(tmpdir(), "ovis-codex-store-target-"));
+    const writer = made(target);
+    try {
+      symlinkSync(join(target, "state_5.sqlite"), join(home, "state_5.sqlite"));
+      writer.exec("PRAGMA wal_autocheckpoint = 0; INSERT INTO threads (id) VALUES ('t2');");
+      // the live -wal lies beside the store, not beside the link to it
+      expect(readdirSync(home)).toEqual(["state_5.sqlite"]);
+      const { db, immutable, settled } = openCodexStore(home);
+      try {
+        expect(immutable).toBe(false);
+        expect(db.query("SELECT id FROM threads ORDER BY id").all()).toEqual([{ id: "t1" }, { id: "t2" }]);
+        expect(settled).not.toThrow();
+      } finally { db.close(); }
+    } finally {
+      writer.close();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(target, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("refuses what it read once the link to the store was pointed at another store", () => {
+    const home = mkdtempSync(join(tmpdir(), "ovis-codex-store-"));
+    const first = mkdtempSync(join(tmpdir(), "ovis-codex-store-a-"));
+    const second = mkdtempSync(join(tmpdir(), "ovis-codex-store-b-"));
+    try {
+      made(first).close();
+      made(second).close();
+      const link = join(home, "state_5.sqlite");
+      symlinkSync(join(first, "state_5.sqlite"), link);
+      const opened = openCodexStore(home);
+      try {
+        expect(opened.db.query("SELECT id FROM threads").all()).toEqual([{ id: "t1" }]);
+        // another store now stands where the pane's Codex keeps its own
+        rmSync(link);
+        symlinkSync(join(second, "state_5.sqlite"), link);
+        expect(opened.settled).toThrow(CodexStoreChanged);
+      } finally { opened.db.close(); }
+    } finally {
+      for (const dir of [home, first, second]) rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads a store a Codex holds open, rows not yet checkpointed included", () => {
+    const home = mkdtempSync(join(tmpdir(), "ovis-codex-store-"));
+    const writer = made(home);
+    try {
+      writer.exec("PRAGMA wal_autocheckpoint = 0; INSERT INTO threads (id) VALUES ('t2');");
+      const { db, immutable, settled } = openCodexStore(home);
+      try {
+        expect(immutable).toBe(false);
+        expect(db.query("SELECT id FROM threads ORDER BY id").all()).toEqual([{ id: "t1" }, { id: "t2" }]);
+        expect(settled).not.toThrow();
+      } finally { db.close(); }
+    } finally {
+      writer.close();
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
