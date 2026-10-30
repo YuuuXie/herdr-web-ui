@@ -57,7 +57,7 @@ if (lifecycle) {
 } else if (!process.argv.includes("--no-proof") && !process.argv.includes("--handoff")) hold(selected);
 let child;
 if (process.argv.includes("--handoff")) {
-  appendFileSync(log, new Date().toISOString() + " [INFO] Registering foreground session: " + selected + "\\n");
+  if (!process.argv.includes("--initial-unregister")) appendFileSync(log, new Date().toISOString() + " [INFO] Registering foreground session: " + selected + "\\n");
   appendFileSync(log, new Date().toISOString() + " [INFO] Unregistering foreground session: " + selected + "\\n");
   child = spawn(process.execPath, [process.argv[1], selected, "--prefer-version", "1.0.104-3", "--session-id", selected, "--handoff-child"], { stdio: "inherit" });
   process.on("exit", () => child.kill());
@@ -105,7 +105,7 @@ afterAll(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-const handoffTest = async () => {
+const handoffTest = async (initialRegistration: boolean) => {
   const handoffId = "12aa83d8-48bc-41f2-a498-7055c5c44a06";
   mkdirSync(join(home, "session-state", handoffId), { recursive: true });
   writeFileSync(file(handoffId), fixture(handoffId, "handoff history"));
@@ -114,7 +114,7 @@ const handoffTest = async () => {
   let child = 0;
   let failed = false;
   try {
-    await startFixture(current, handoffId, `--resume=${handoffId} --handoff`);
+    await startFixture(current, handoffId, `--resume=${handoffId} --handoff${initialRegistration ? "" : " --initial-unregister"}`);
     let parent = 0;
     for (const deadline = Date.now() + 10_000;;) {
       const info = await paneProcessInfo(current);
@@ -608,4 +608,5 @@ it.skipIf(process.platform !== "linux")("never mistakes an explicitly resumed la
   }
 });
 
-it.skipIf(process.platform !== "linux")("binds a direct Copilot handoff only while its parent log, child hold and report agree", handoffTest, 25_000);
+it.skipIf(process.platform !== "linux")("binds a direct Copilot handoff only while its parent log, child hold and report agree", () => handoffTest(true), 25_000);
+it.skipIf(process.platform !== "linux")("binds a direct Copilot handoff whose parent log starts with its unregister", () => handoffTest(false), 25_000);
