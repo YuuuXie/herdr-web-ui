@@ -42,7 +42,7 @@ async function startFixture(pane: string, session: string, flags = "") {
 beforeAll(async () => {
   if (process.platform !== "linux") return;
   for (const session of [id, other]) mkdirSync(join(home, "session-state", session), { recursive: true });
-  writeFileSync(executable, `import { openSync, mkdirSync, writeFileSync, appendFileSync } from "node:fs";
+  writeFileSync(executable, `import { openSync, mkdirSync, writeFileSync, appendFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
@@ -115,7 +115,9 @@ process.stdin.on("data", (chunk) => {
       else if (line === ":api-stable") apiRace = false;
       else if (line === ":api-drop") { for (const socket of sockets) socket.destroy(); }
       else throw new Error("unknown fixture API command");
-      writeFileSync(join(home, \`api-ack-\${process.pid}.json\`), JSON.stringify(++acknowledgements));
+      const ack = join(home, \`api-ack-\${process.pid}.json\`);
+      writeFileSync(ack + ".tmp", JSON.stringify(++acknowledgements));
+      renameSync(ack + ".tmp", ack);
     }
     else if (line.startsWith(":hold ")) hold(line.slice(6));
     else if (line.startsWith(":switch ") && lifecycle) {
