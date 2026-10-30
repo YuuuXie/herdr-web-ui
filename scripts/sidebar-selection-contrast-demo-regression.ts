@@ -1,13 +1,14 @@
 /**
  * Purpose: measure the selected workspace and agent rows of the sidebar in every theme entry of src/styles.css
  * (SUPPORTED_ENTRIES, both modes) on the real demo client, as the browser paints them: selected with the focus
- * elsewhere, selected and hovered, selected and keyboard-focused. A selected row keeps a cue of at least 3:1 against
- * each surface it touches (the row's own fill and the panel around it; a focus ring does not count), and every text
- * in it at least 4.5:1 on what is behind it (issue #1618). Prints one CONTRAST line per entry, row and state, and with
- * UI_EVIDENCE_DIR writes them to measurements.json beside the Codex theme's screenshots at 1280 and 390, dark and light.
+ * elsewhere, selected and hovered, selected and keyboard-focused. In a theme the selection is the row's fill alone,
+ * with no leading stroke (the owner's call after #2352: on a rounded row the stroke read as a bracket); its contrast
+ * on the panel is recorded, not held to 3:1. Every text in the row stays at least 4.5:1 on what is behind it (issue
+ * #1618). Prints one CONTRAST line per entry, row and state, and with UI_EVIDENCE_DIR writes them to
+ * measurements.json beside the Codex theme's screenshots at 1280 and 390, dark and light.
  * Tags: sidebar, theme, contrast, accessibility, browser, regression.
- * The same rows are measured with forced colors (Windows high contrast) active, where the browser drops box
- * shadows and theme colours: the selection must still leave a cue there.
+ * The same rows are measured with forced colors (Windows high contrast) active, where the browser repaints fills
+ * as Canvas and the fill would vanish: there the selection keeps a leading bar of at least 3:1.
  * Usage: bun scripts/sidebar-selection-contrast-demo-regression.ts   (UI_EVIDENCE_DIR=<dir> for the table and shots;
  *   SIDEBAR_SELECTION_CASE=themes|forced runs one half)
  */
@@ -234,14 +235,30 @@ async function measureMode(browser: Browser, url: string, mode: Mode): Promise<v
       for (const kind of ["workspace", "agent"] as const) {
         for (const state of ["selected", "selected+hover", "selected+focus"] as const) {
           const painted = await enter(page, kind, state);
-          const measured = await painted.evaluate(measure, { target: ROW[kind].target, strokeMinPx: STROKE_MIN_PX });
+          // any shown width counts here (measure rounds it to 0.01px): a theme draws no leading stroke at all
+          const measured = await painted.evaluate(measure, { target: ROW[kind].target, strokeMinPx: 0.01 });
           const entry = `${id}/${mode}`;
           rows.push({ entry, row: kind, state, ...measured });
           assert.ok(measured.text.length > 0, `${entry} ${kind} ${state}: the row shows text`);
           const weakest = measured.text.reduce((low, item) => (item.contrast < low.contrast ? item : low));
-          const stroke = measured.stroke ? `stroke ${measured.stroke.exposedPx}/${measured.stroke.widthPx}px shown, ${measured.stroke.againstFill}:1 on the fill, ${measured.stroke.againstPanel}:1 on the panel` : `no stroke of ${STROKE_MIN_PX}px shown`;
-          console.log(`CONTRAST ${entry} ${kind} ${state}: cue ${measured.cue}:1 (fill ${measured.fill}:1 on the panel, ${stroke}), text ${weakest.contrast}:1 ("${weakest.text}")`);
-          if (measured.cue < CUE_MIN) failures.push(`${entry} ${kind} ${state}: selection cue ${measured.cue}:1 < ${CUE_MIN}:1`);
+          const stroke = measured.stroke ? `stroke ${measured.stroke.exposedPx}/${measured.stroke.widthPx}px shown` : "no stroke";
+          console.log(`CONTRAST ${entry} ${kind} ${state}: fill ${measured.fill}:1 on the panel, ${stroke}, text ${weakest.contrast}:1 ("${weakest.text}")`);
+          if (measured.stroke) failures.push(`${entry} ${kind} ${state}: a leading stroke is drawn (${measured.stroke.exposedPx}px shown in ${measured.stroke.color}); the fill alone marks the selection`);
+          // nothing but the fill is painted on the row: no shadow (blurred or not), no border, no drawn pseudo-element
+          const extra = await painted.evaluate((element) => {
+            const css = getComputedStyle(element);
+            const found: string[] = [];
+            if (css.boxShadow !== "none") found.push(`box-shadow ${css.boxShadow}`);
+            for (const side of ["top", "right", "bottom", "left"]) {
+              if (parseFloat(css.getPropertyValue(`border-${side}-width`)) > 0 && css.getPropertyValue(`border-${side}-style`) !== "none") found.push(`border-${side}`);
+            }
+            for (const pseudo of ["::before", "::after"]) {
+              const drawn = getComputedStyle(element, pseudo);
+              if (drawn.content !== "none" && drawn.display !== "none") found.push(`${pseudo} ${drawn.content}`);
+            }
+            return found;
+          });
+          if (extra.length > 0) failures.push(`${entry} ${kind} ${state}: the selected row paints more than its fill (${extra.join("; ")})`);
           for (const item of measured.text) if (item.contrast < TEXT_MIN) failures.push(`${entry} ${kind} ${state}: "${item.text}" ${item.contrast}:1 < ${TEXT_MIN}:1`);
         }
       }
@@ -337,7 +354,7 @@ try {
   const themed = new Set(rows.map((row) => row.entry).filter((entry) => !entry.startsWith("forced-colors/")));
   if (!only || only === "themes") assert.equal(themed.size, SUPPORTED_ENTRIES.length, "every theme entry was measured");
   if (!only || only === "forced") assert.equal(rows.filter((row) => row.entry.startsWith("forced-colors/")).length, 12, "both forced-color modes were measured");
-  assert.deepEqual(failures, [], `selected sidebar rows below WCAG AA:\n${failures.join("\n")}`);
+  assert.deepEqual(failures, [], `selected sidebar rows:\n${failures.join("\n")}`);
   console.log(`PASS sidebar selection contrast: ${themed.size} theme entries and ${rows.length - themed.size * 6} forced-color measurements, workspace and agent rows, ${rows.length} measurements`);
 } finally {
   rmSync(app, { recursive: true, force: true });

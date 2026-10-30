@@ -405,11 +405,8 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
   }
 }
 
-/* the fill alone is under 3:1 on the panel in every theme (#1618): a leading stroke in a text colour marks the
-   selection with or without a pointer or the focus on it (AgentSidebar.css draws the same on an agent row) */
 .workspace-group.is-selected > .workspace-header {
   background: var(--side-selected);
-  box-shadow: inset calc(2 * var(--hairline)) 0 0 var(--text-dim);
 }
 
 /* keyboard focus draws the ring on the whole row and no fill */
@@ -419,17 +416,12 @@ button.sidebar-section-label:focus-visible { outline-offset: calc(var(--ring-off
     outline-offset: calc(var(--ring-offset) * -1);
   }
 
-  /* the ring is drawn over the row's leading edge: the selection's stroke continues inside it */
-  .workspace-group.is-selected > .workspace-header:has(> .workspace-select:focus-visible) {
-    box-shadow: inset calc(var(--ring-offset) + 2 * var(--hairline)) 0 0 var(--text-dim);
-  }
-
   .workspace-select:focus-visible { outline: none; }
 }
 
-/* forced colors (Windows high contrast) drop box shadows and repaint fills as Canvas: the selection keeps a
+/* forced colors (Windows high contrast) repaint fills as Canvas, which would erase the selection: there it keeps a
    leading border in the system's Highlight, pulled into the gutter so the row's content stays put, and as
-   wide as the ring plus the stroke while keyboard focus draws its ring over that edge (#1618) */
+   wide as the ring plus the bar while keyboard focus draws its ring over that edge (#1618) */
 @media (forced-colors: active) {
   .workspace-group.is-selected > .workspace-header {
     margin-inline-start: calc(-2 * var(--hairline));

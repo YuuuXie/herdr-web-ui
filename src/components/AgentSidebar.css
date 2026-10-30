@@ -116,18 +116,9 @@
   .agent-item:has(> .agent-row:enabled):hover { background: var(--side-hover); }
 }
 
-/* as a selected workspace row's (Sidebar.css): its leading stroke, not the fill, is what reads as selected */
-.agent-item.is-selected {
-  background: var(--side-selected);
-  box-shadow: inset calc(2 * var(--hairline)) 0 0 var(--text-dim);
-}
+.agent-item.is-selected { background: var(--side-selected); }
 
-/* as a workspace row's: the selection's stroke continues inside the focus ring that covers the leading edge */
-.agent-item.is-selected:has(> .agent-row:focus-visible) {
-  box-shadow: inset calc(var(--ring-offset) + 2 * var(--hairline)) 0 0 var(--text-dim);
-}
-
-/* as a workspace row's in forced colors (Sidebar.css): a Highlight leading bar instead of the dropped stroke,
+/* as a workspace row's in forced colors (Sidebar.css): a Highlight leading bar instead of the erased fill,
    drawn inside the row, since the list scrolls and would clip anything pulled into its edge; beside the focus
    ring, which the row's button draws over its leading edge, rather than under it */
 @media (forced-colors: active) {

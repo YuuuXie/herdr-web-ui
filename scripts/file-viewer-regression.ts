@@ -206,9 +206,10 @@ try {
   await page.mouse.wheel(0, -10_000);
   for (const alt of ["Chat relative", "Chat absolute", "Chat URI", "Chat encoded"]) {
     const image = page.locator(`.chat-transcript img.markdown-image[alt="${alt}"]`);
-    await image.scrollIntoViewIfNeeded();
     await page.waitForFunction((alt) => {
       const image = document.querySelector<HTMLImageElement>(`.chat-transcript img.markdown-image[alt="${alt}"]`);
+      // A late skill render can replace this node too; start loading on the current incarnation.
+      if (image) image.loading = "eager";
       return image?.complete && image.naturalWidth > 0;
     }, alt, { timeout: 10_000 });
     assert.equal(await image.evaluate((node: HTMLImageElement) => node.naturalWidth), 240);
@@ -520,7 +521,9 @@ try {
   };
   // with Open files at its default, even text opens in the popup; Beside the pane is a choice
   await setFileOpen(null);
-  await notesLink.click();
+  // Reloaded images can move the following transcript between pointer down and up. This checks
+  // presentation/history, not pointer targeting; activate the file by keyboard on its fresh node.
+  await notesLink.press("Enter");
   await textPopup.getByText("File preview history regression", { exact: true }).waitFor();
   assert.equal(await panel.count(), 0, "text starts in the popup at 1280px by default");
   await textPopup.getByRole("button", { name: "Close file", exact: true }).click();
@@ -539,7 +542,7 @@ try {
   await panel.getByRole("button", { name: "Close file", exact: true }).click();
   await panel.waitFor({ state: "detached" });
   assert.deepEqual(await page.evaluate(() => history.state), beforePlacement, "one Close consumes the moved video's entry");
-  await notesLink.click();
+  await notesLink.press("Enter");
   await panel.getByText("File preview history regression", { exact: true }).waitFor();
   const textHistoryLength = await page.evaluate(() => history.length);
   await panel.getByRole("button", { name: "Show as a popup", exact: true }).click();
@@ -565,7 +568,7 @@ try {
   // keeps its clicks, the panel's left edge drags its width (kept on this device across a reload),
   // Escape closes it only from inside it, and Close file takes the panel and its entry away.
   const panelWidth = () => panel.evaluate((element) => element.getBoundingClientRect().width);
-  await notesLink.click();
+  await notesLink.press("Enter");
   await panel.getByText("File preview history regression", { exact: true }).waitFor();
   assert.equal(await page.locator(".modal-scrim, .file-viewer-scrim, .modal.file-viewer, [aria-modal='true']").count(), 0, "a docked file has no scrim and no dialog");
   const paneBox = await page.locator(".app-body > .pane-column").boundingBox();
@@ -588,7 +591,7 @@ try {
   await page.waitForFunction((link) => document.activeElement === link, await notesLink.elementHandle());
   assert.equal(await notesLink.evaluate((link) => document.activeElement === link), true, "Escape in the panel returns the focus to the link that opened the file");
   // the left edge dragged 100px to the left widens the panel by as much, and the width is stored
-  await notesLink.click();
+  await notesLink.press("Enter");
   await panel.getByText("File preview history regression", { exact: true }).waitFor();
   const before = await panelWidth();
   const grip = await panel.locator(".file-panel-resizer").boundingBox();
@@ -673,7 +676,7 @@ try {
   console.log("PASS late metadata corrects extensionless text and a dotted directory; choosing a file inside keeps the presentation");
 
   // Remembered maxima must yield to the pane, both after reload and a viewport reduction.
-  await notesLink.click();
+  await notesLink.press("Enter");
   await panel.getByText("File preview history regression", { exact: true }).waitFor();
   await page.evaluate(() => {
     localStorage.setItem("ovis:sidebar-width", "520");
@@ -729,7 +732,7 @@ try {
   const rowOf = (paneId: string) => page.locator(`.workspace-select[data-pane=${JSON.stringify(paneId)}]`);
   if (await showSidebar.count()) await showSidebar.click();
   await rowOf(otherPane).waitFor();
-  await notesLink.click();
+  await notesLink.press("Enter");
   await panel.getByText("File preview history regression", { exact: true }).waitFor();
   const openLength = await page.evaluate(() => history.length);
   await rowOf(otherPane).click();
@@ -1617,11 +1620,19 @@ try {
   imagePage.setDefaultTimeout(10_000);
   const imageErrors: string[] = [];
   imagePage.on("pageerror", (error) => imageErrors.push(error.message));
+  // This case tests decode failure, not lazy loading. A late transcript/skill render can remount
+  // the image, so activate every incarnation without acting on its transient viewer button.
+  await imagePage.addInitScript(() => {
+    new MutationObserver(() => {
+      for (const image of document.querySelectorAll<HTMLImageElement>('img.markdown-image[alt="Chat broken inline"]')) image.loading = "eager";
+    }).observe(document, { childList: true, subtree: true });
+  });
+  const brokenImage = imagePage.getByRole("button", { name: "Chat broken inline", exact: true }).and(imagePage.locator(".markdown-file"));
+  const brokenFallback = brokenImage.waitFor({ state: "attached", timeout: 10_000 });
   await imagePage.goto(`${origin}/?pane=${encodeURIComponent(pane)}&view=chat`);
+  await brokenFallback;
+  await brokenImage.click({ trial: true });
   // A decode failure must replace the opener, never put a file button inside it.
-  await imagePage.getByRole("button", { name: "Chat broken inline", exact: true }).scrollIntoViewIfNeeded();
-  const brokenImage = imagePage.locator(".chat-transcript .markdown-file").filter({ hasText: "Chat broken inline" });
-  await brokenImage.waitFor();
   assert.equal(await imagePage.locator(".markdown-image-open button, .markdown-image-open a").count(), 0);
   assert.equal(await imagePage.getByRole("button", { name: "Chat broken inline", exact: true }).count(), 1);
   await brokenImage.click();
