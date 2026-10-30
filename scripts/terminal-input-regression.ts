@@ -658,6 +658,14 @@ export async function checkLineImagePaste(browser: Browser, origin: string, pane
   const uploaded = () => page.waitForResponse((response) => new URL(response.url()).pathname === "/api/pane/image")
     .then(async (response) => { assert.equal(response.status(), 200, "the upload is stored"); return ((await response.json()) as { path: string }).path; });
   const quoted = (path: string) => `'${path.replaceAll("'", "'\\''")}' `;
+  // a paste lands in two steps: the path is written, then the next frame puts the caret behind it
+  // (TerminalInput's place). The line's frame was asked for before the path showed, so one frame
+  // asked for after it runs later: past it, the next fill's select-all is not collapsed to the end
+  // (under load the fill then added to the line instead of replacing it)
+  const landed = async (value: string): Promise<void> => {
+    await page.waitForFunction((expected) => document.querySelector<HTMLTextAreaElement>(".terminal-input-text")?.value === expected, value);
+    await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+  };
   const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
   try {
     await page.goto(`${origin}/?pane=${encodeURIComponent(pane)}`);
@@ -695,7 +703,7 @@ export async function checkLineImagePaste(browser: Browser, origin: string, pane
     assert.equal(filePaste, true, "a file-only paste is the line's to handle");
     const firstPath = await first;
     assert.match(firstPath, /\.ovis\/paste-[^/]+\.png$/, "the image is stored beside the pane");
-    await page.waitForFunction((value) => document.querySelector<HTMLTextAreaElement>(".terminal-input-text")?.value === value, `look at ${quoted(firstPath)}`);
+    await landed(`look at ${quoted(firstPath)}`);
     assert.deepEqual(uploads.map((upload) => [upload.pane_id, upload.content_type]), [[pane, "image/png"]], "one upload, for this pane");
     console.log(`PASS input line: a pasted screenshot is uploaded and its path inserted (${firstPath})`);
 
@@ -714,7 +722,7 @@ export async function checkLineImagePaste(browser: Browser, origin: string, pane
       document.dispatchEvent(new Event("selectionchange"));
     }, PNG);
     const rangedPath = await ranged;
-    await page.waitForFunction((value) => document.querySelector<HTMLTextAreaElement>(".terminal-input-text")?.value === value, `look at ${quoted(rangedPath)}`);
+    await landed(`look at ${quoted(rangedPath)}`);
     console.log("PASS input line: a screenshot pasted over a selected word replaces it");
 
     // the key bar's Paste with an image on the clipboard: read with clipboard.read(), the same upload
@@ -730,7 +738,7 @@ export async function checkLineImagePaste(browser: Browser, origin: string, pane
     const second = uploaded();
     await paste.tap();
     const secondPath = await second;
-    await page.waitForFunction((value) => document.querySelector<HTMLTextAreaElement>(".terminal-input-text")?.value === value, quoted(secondPath));
+    await landed(quoted(secondPath));
     assert.equal(uploads.length, 3, "the key bar's Paste uploaded the image once");
     assert.equal(await note.count(), 0, "no note: the image was pasted");
     console.log("PASS key bar Paste: an image read with clipboard.read() is uploaded and its path inserted");

@@ -45,6 +45,7 @@
     "scripts/omp-codex-image-browser-qa.ts",
     "scripts/gjc-status-browser-regression.ts",
     "scripts/sidebar-activity-demo-regression.ts",
+    "scripts/sidebar-selection-contrast-demo-regression.ts",
     "scripts/pane-mute-demo-regression.ts",
     "scripts/file-preview-text-browser-qa.ts",
     "scripts/file-preview-text-fixture.tsx",

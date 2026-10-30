@@ -757,6 +757,50 @@ describe("Codex rollout resolution", () => {
     expect(matchCodexTranscript("• The report (output/test/REPORT.md)", candidates)).toBeNull();
   });
 
+  it("matches rendered local file links containing spaces without selecting an ambiguous conversation", () => {
+    for (const target of ["/home/user/My Project/Daily notes/report.md", "C:/Users/User/My Project/report.md",
+      "C:\\Users\\User\\My Project\\report.md", "</home/user/My Project/Daily notes/report.md>",
+      "<C:/Users/User/My Project/report.md>", "<C:\\Users\\User\\My Project\\report.md>"]) {
+      const linked = `${answer} [Daily report](${target})`;
+      const candidates = [{ path: "own", text: jsonl(message("assistant", linked, "final_answer")) }];
+      const screen = `• ${answer} Daily report (Daily notes/report.md)`;
+      expect(matchCodexTranscript(screen, candidates)).toBe("own");
+      expect(matchCodexTranscript(screen, [...candidates, { ...candidates[0]!, path: "copy" }])).toBeNull();
+      expect(matchCodexTranscript("• Daily report (Daily notes/report.md)", candidates)).toBeNull();
+    }
+  });
+
+  it("does not select a conversation from only an angle-wrapped file link containing parentheses", () => {
+    const filename = "report (old) with detailed quarterly analysis and supporting documentation for project milestones.md";
+    const linked = `${answer} [Daily report](</home/user/My Project/${filename}>)`;
+    const candidates = [{ path: "own", text: jsonl(message("assistant", linked, "final_answer")) }];
+    expect(matchCodexTranscript(`• Daily report (${filename})`, candidates)).toBeNull();
+    expect(matchCodexTranscript(`• ${answer} Daily report (${filename})`, candidates)).toBe("own");
+  });
+
+  it("keeps local link destinations containing a line break as literal answer text", () => {
+    for (const newline of ["\n", "\r", "\r\n"]) {
+      for (const target of [`/home/user/My Project${newline}Daily notes/report.md`,
+        `</home/user/My Project${newline}Daily notes/report (old).md>`]) {
+        const literal = `${answer} [Daily report](${target})`;
+        const candidates = [{ path: "own", text: jsonl(message("assistant", literal, "final_answer")) }];
+        expect(matchCodexTranscript(`• ${answer} Daily report`, candidates)).toBeNull();
+        // as Codex shows the answer: its second line indented below the bullet
+        expect(matchCodexTranscript(`• ${literal.replace(/\r?\n/g, "\n  ")}`, candidates)).toBe("own");
+      }
+    }
+  });
+
+  it("keeps unclosed local file links as literal answer text", () => {
+    for (const target of ["/home/user/My Project/Daily notes/report.md", "</home/user/My Project/Daily notes/report.md>",
+      "</home/user/My Project/Daily notes/report (old).md)"]) {
+      const literal = `${answer} [Daily report](${target}`;
+      const candidates = [{ path: "own", text: jsonl(message("assistant", literal, "final_answer")) }];
+      expect(matchCodexTranscript(`• ${answer} Daily report`, candidates)).toBeNull();
+      expect(matchCodexTranscript(`• ${literal}`, candidates)).toBe("own");
+    }
+  });
+
   // issue #283: no answer of this session reaches 64 letters and digits (40, 29 and 38)
   const short = [
     "세 사진을 확인하고 한 장으로 합칠게요. 이미지 편집을 위해 imagegen 스킬을 사용할게요.",
@@ -773,8 +817,10 @@ describe("Codex rollout resolution", () => {
     "• 세 화면이 모두 보이도록, 올려주신 순서대로 가로로 나란히 배치할게요.",
     "• imagegen으로 세 사진을 올려주신 순서대로 가로로 합쳤어요.\n\n  합친 이미지 다운로드 (.herdr-web-ui/combined-20261002.png)",
   ];
-  const answered = (...texts: string[]) => jsonl(...texts.map((text) => message("assistant", text)));
-  const bullets = (...texts: string[]) => texts.map((text) => `• ${text}`).join("\n");
+  // answers below the prompt they answered, as Codex shows them: short answers count only there
+  const asked = "Work through the fixture task";
+  const answered = (...texts: string[]) => jsonl(message("user", asked), ...texts.map((text) => message("assistant", text)));
+  const bullets = (...texts: string[]) => [`› ${asked}`, ...texts.map((text) => `• ${text}`)].join("\n");
 
   it("reads a session whose answers are all short by its newest answers shown together, in order", () => {
     const candidates = [
@@ -888,6 +934,26 @@ describe("Codex rollout resolution", () => {
     expect(matchShortCodexAnswers(screen, [{ path: "older", text: answered(...older) }, { path: "live", text: answered(...live, ...Array.from({ length: 220 }, () => "Done.")) }])).toBeNull();
     // a linked answer of another rollout that says something else vetoes nothing
     expect(matchShortCodexAnswers(screen, [{ path: "older", text: answered(...older) }, { path: "else", text: answered("See [the notes](docs/notes.md) for the migration plan.") }])).toBe("older");
+  });
+
+  it("reads no short answers whose prompt is past the top of the read: another conversation may have said them to another", () => {
+    const texts = ["The build finished without errors this time.", "All checks on the feature branch pass again."];
+    expect(matchShortCodexAnswers(bullets(...texts), [{ path: "only", text: answered(...texts) }])).toBe("only");
+    expect(matchShortCodexAnswers(texts.map((text) => `• ${text}`).join("\n"), [{ path: "only", text: answered(...texts) }])).toBeNull();
+    // and none queued to be sent counts as their prompt or as an answer
+    expect(matchShortCodexAnswers(`  ↳ ${asked}\n${texts.map((text) => `• ${text}`).join("\n")}`, [{ path: "only", text: answered(...texts) }])).toBeNull();
+  });
+
+  it("reads no short answers below a prompt that differs from theirs only in punctuation, and reads a prompt wrapped over lines", () => {
+    const replies = ["The condition evaluates to true in this example.", "All checks on the feature branch pass again."];
+    const rollout = (prompt: string) => jsonl(message("user", prompt), ...replies.map((text) => message("assistant", text)));
+    const screen = (...prompt: string[]) => [`› ${prompt[0]}`, ...prompt.slice(1).map((line) => `  ${line}`), ...replies.map((text) => `• ${text}`)].join("\n");
+    for (const [said, shown] of [["Check whether a < b for these inputs", "Check whether a > b for these inputs"], ["Check the branch named feature-one", "Check the branch named feature_one"]] as const) {
+      expect(matchShortCodexAnswers(screen(shown), [{ path: "peer", text: rollout(said) }])).toBeNull();
+      expect(matchShortCodexAnswers(screen(said), [{ path: "peer", text: rollout(said) }])).toBe("peer");
+    }
+    const long = "Check the branch named feature-one, then compare a < b against the release branch";
+    expect(matchShortCodexAnswers(screen("Check the branch named feature-one, then compare", "a < b against the release branch"), [{ path: "own", text: rollout(long) }])).toBe("own");
   });
 
   it("reads no short answers when a rollout was not read whole, the one that shows them included", () => {

@@ -9,6 +9,7 @@ import { FILES_KO } from "./i18n/files.ko.ts";
 import { DEVICES_KO } from "./i18n/devices.ko.ts";
 import { USAGE_KO } from "./i18n/usage.ko.ts";
 import { SETUP_KO } from "./i18n/setup.ko.ts";
+import { GUIDE_KO } from "./i18n/guide.ko.ts";
 import { UPDATES_KO } from "./i18n/updates.ko.ts";
 import { PALETTE_KO } from "./i18n/palette.ko.ts";
 
@@ -22,6 +23,7 @@ import { PALETTE_KO } from "./i18n/palette.ko.ts";
  * braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "Save": "저장",
   "Goal": "목표",
   "Waiting for your answer": "답변을 기다리는 중",
   "Back": "뒤로",
@@ -42,7 +44,6 @@ const BASE: Record<string, string> = {
   "Agent default": "에이전트 기본값",
   "Phone & devices": "폰 및 기기",
   "Access token": "접속 토큰",
-  "Install app": "앱 설치",
 
   // ---- shortcuts (lib/shortcuts.ts labels) ----
   "Command palette": "명령 팔레트",
@@ -52,6 +53,10 @@ const BASE: Record<string, string> = {
   "New workspace": "새 워크스페이스",
   "Previous pane": "이전 패널",
   "Next pane": "다음 패널",
+  "Previous tab": "이전 탭",
+  "Next tab": "다음 탭",
+  "Previous workspace": "이전 워크스페이스",
+  "Next workspace": "다음 워크스페이스",
 
   // ---- agent status words (lib/status.ts) ----
   "READY": "대기",
@@ -141,6 +146,8 @@ const BASE: Record<string, string> = {
   "Browse": "찾아보기",
   "Cancel": "취소",
   "Install": "설치",
+  "Installed": "설치됨",
+  "Not installed": "설치되지 않음",
   "Sign in": "로그인",
   "Starting…": "시작 중…",
   "Start": "시작",
@@ -168,6 +175,16 @@ const BASE: Record<string, string> = {
   // ---- prompt card ----
   "Submit": "제출",
   "Recommended": "추천",
+  "Agents": "에이전트",
+  "Check again": "다시 확인",
+  "Setup guide": "설정 안내",
+  "Could not confirm this browser is paired. Check that cookies are enabled, then try again.": "이 브라우저의 페어링을 확인할 수 없습니다. 쿠키가 허용되어 있는지 확인한 뒤 다시 시도하세요.",
+  "New code": "새 코드",
+  "Paired: {name}.": "페어링됨: {name}.",
+  "QR code that pairs a phone with code {code}": "코드 {code}로 폰을 페어링하는 QR 코드",
+  "Pairing code": "페어링 코드",
+  "Open this address on your phone": "폰에서 이 주소를 여세요",
+  "{agent} is ready": "{agent} 준비 완료",
 
 
   // ---- composer ----
@@ -294,6 +311,21 @@ const BASE: Record<string, string> = {
   "Terminal line": "터미널 입력 줄",
   "Held message": "보관한 메시지",
   "Held input": "보관한 입력",
+  "Other accounts": "다른 계정",
+  "Plan limits": "요금제 한도",
+  "Auto": "자동",
+  "Hub request failed": "허브 요청에 실패했어요",
+  "On this PC": "이 PC",
+  "Hub": "허브",
+  "Add account": "계정 추가",
+  "Check the hub connection": "허브 연결을 확인하세요",
+  "Meters show": "미터 표시",
+  "Limit shown": "표시할 한도",
+  "Show plan limits": "요금제 한도 표시",
+  "Session": "세션",
+  "Weekly": "주간",
+  "Open terminal": "터미널 열기",
+  "Sign in to {agent}": "{agent}에 로그인",
 };
 
 /** The parts KO is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
@@ -310,6 +342,7 @@ export const KO_PARTS: Record<string, Record<string, string>> = {
   devices: DEVICES_KO,
   usage: USAGE_KO,
   setup: SETUP_KO,
+  guide: GUIDE_KO,
   updates: UPDATES_KO,
   palette: PALETTE_KO,
 };

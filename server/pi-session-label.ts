@@ -236,6 +236,9 @@ export class PiLabelParser {
     }
   }
 
+  /** A completed header can identify a row before EOF; unfinished labels must stay private. */
+  partial(): PiLabel { return { header: this.label.header, title: null, firstMessage: null }; }
+
   /** Finalize once at EOF: Pi accepts a whole final record without a newline, but not cut UTF-8. */
   finish(): PiLabel {
     if (this.malformedUtf8) return this.label;

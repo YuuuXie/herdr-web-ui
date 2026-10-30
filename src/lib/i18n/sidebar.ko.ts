@@ -17,7 +17,6 @@ export const SIDEBAR_KO: Record<string, string> = {
   "Agent {status}": "에이전트 {status}",
   "Loading agents…": "에이전트 불러오는 중…",
   "Herdr workspaces": "herdr 워크스페이스",
-  "Agents": "에이전트",
   "No agents running": "실행 중인 에이전트가 없습니다",
   "Expand worktrees of {name}": "{name}의 워크트리 펼치기",
   "Collapse worktrees of {name}": "{name}의 워크트리 접기",

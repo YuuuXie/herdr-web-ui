@@ -3,7 +3,6 @@
  * sent to it, the presence beat it sends, and how it ends. Only this module changes a connection's
  * authority, its observe processes and its closing.
  */
-import type { ServerWebSocket } from "bun";
 import type { ClientRole, ServerMessage } from "../../shared/protocol.ts";
 import { OUTPUT_STALLED_CLOSE_CODE } from "../../shared/terminal-flow.ts";
 import type { DeviceStore } from "../devices.ts";
@@ -12,6 +11,7 @@ import type { MachineRelay } from "../machine-relay.ts";
 import { OUTPUT_HARD_BYTES, type OutputWindow } from "../output-window.ts";
 import type { PendingInputs } from "../pending-input.ts";
 import { PaneWatch } from "../watch.ts";
+import type { TelemetryIngress, TelemetrySurface } from "../../shared/telemetry.ts";
 
 export interface SocketData {
   deviceId?: string;
@@ -19,6 +19,12 @@ export interface SocketData {
   relay?: MachineRelay;
   /** another Ovis server reading this PC with its bridge token: it gets snapshots whole and applies its own sidebar rows (#2160) */
   bridge?: boolean;
+  /** the kind of screen the page said it runs on (`?surface=`), for the daily active message; absent when it named none, named
+   * no known kind (server/telemetry.ts visitSurface) or another server reads */
+  surface?: TelemetrySurface;
+  /** how the upgrade request reached this server (shared/telemetry.ts TELEMETRY_INGRESS), for the daily active message; absent
+   * where `surface` named no known kind, or another server reads */
+  ingress?: TelemetryIngress;
   /** this connection's id, told to its page in the first snapshot: a create request names it as its first message's typist */
   connectionId: string;
   /** A fresh claim per attach lifetime; deleting it invalidates queued terminal keys. */
@@ -48,7 +54,7 @@ function stateOf(client: Client): ConnectionState {
 }
 
 /** The data for a connection's upgrade: it starts to interact unless its access is read-only. */
-export function connectionData(fields: { relay?: MachineRelay; deviceId: string | undefined; readOnly: boolean; bridge?: boolean }): SocketData {
+export function connectionData(fields: { relay?: MachineRelay; deviceId: string | undefined; readOnly: boolean; bridge?: boolean; surface?: TelemetrySurface; ingress?: TelemetryIngress }): SocketData {
   const data: SocketData = { connectionId: crypto.randomUUID(), attached: new Map<string, { keepSize: boolean }>(), conversationInterests: new Set<string>(), output: new Map(), ...fields };
   states.set(data, { closing: false, revoked: false, mode: fields.readOnly ? "observe" : "interact", roles: 0, watches: new Map<string, PaneWatch>() });
   return data;
@@ -71,7 +77,15 @@ export function presenceOf(raw: string | Buffer): boolean | null {
   }
 }
 
-export type Client = ServerWebSocket<SocketData>;
+export interface SocketLike {
+  data: SocketData;
+  readonly readyState: number;
+  send(data: string): number;
+  getBufferedAmount(): number;
+  close(code?: number, reason?: string): void;
+}
+
+export type Client = SocketLike;
 
 export function send(client: Client, message: ServerMessage): number {
   if (stateOf(client).closing) return 0;

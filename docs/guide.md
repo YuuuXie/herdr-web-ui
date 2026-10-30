@@ -92,7 +92,7 @@ You need herdr 0.9.0+ and Bun 1.4+, and for attached terminals either the Rust P
 
 </details>
 
-**2. Open it** at **http://127.0.0.1:7317**, the address the installer opened. On a slow link, such as a phone on mobile data, a spinner shows while the app downloads. The installed app belongs to that exact address: `localhost:7317` is another address to the browser, so a tab there still offers **Install**. Every workspace of your herdr session is a row in the sidebar, as in herdr's own, led by its project's icon when its folder keeps one (a favicon in the folder, `public/` or `static/`; else an app icon such as Next.js's `app/icon.*` or Electron's `build/icon.png`; else a logo such as `logo.svg` or `assets/logo.png`; the folder is the worktree checkout, or else the pane's working folder, so a pane that has `cd`'d into `src/` looks there) and a folder glyph otherwise (a repository row with worktrees under it is also its fold button: the folder opens and closes with it, and an icon turns into that folder under the pointer; the worktree rows nested under it have no mark); its tabs are always shown in a strip, and the active tab shows all its split panes together. Pick one, start a new agent with **New workspace**, or add a tab to a workspace with **New tab** (the strip's `+`, a tab's right-click menu, or the command palette on a wider screen or with a keyboard). Right-click a tab to rename or close it; on a phone, tap the selected tab’s **⋯** for a trimmed menu with pane actions, Rename tab and Close tab. A focused tab also opens its menu with Shift+F10, and double-click still renames it.
+**2. Open it** at **http://127.0.0.1:7317**, the address the installer opened. On a slow link, such as a phone on mobile data, a spinner shows while the app downloads. The installed app belongs to that exact address: `localhost:7317` is another address to the browser, so a tab there is not the installed app, and Settings → Phone & devices → Install there still offers to install it (an **Install app** button when the browser can, its steps otherwise). Every workspace of your herdr session is a row in the sidebar, as in herdr's own, led by its project's icon when its folder keeps one (a favicon in the folder, `public/` or `static/`; else an app icon such as Next.js's `app/icon.*` or Electron's `build/icon.png`; else a logo such as `logo.svg` or `assets/logo.png`; the folder is the worktree checkout, or else the pane's working folder, so a pane that has `cd`'d into `src/` looks there) and a folder glyph otherwise (a repository row with worktrees under it is also its fold button: the folder opens and closes with it, and an icon turns into that folder under the pointer; the worktree rows nested under it have no mark); its tabs are always shown in a strip, and the active tab shows all its split panes together. Pick one, start a new agent with **New workspace**, or add a tab to a workspace with **New tab** (the strip's `+`, a tab's right-click menu, or the command palette on a wider screen or with a keyboard). Right-click a tab to rename or close it; on a phone, tap the selected tab’s **⋯** for a trimmed menu with pane actions, Rename tab and Close tab. A focused tab also opens its menu with Shift+F10, and double-click still renames it.
 
 Drag a tab to change its order within the workspace, or choose **Move tab left / right** from
 its menu (also on a phone). Alt+Shift+Left/Right moves a focused tab. Reordering keeps the
@@ -347,7 +347,7 @@ names that account and the reset times. Details stay in the strip beside Setting
 remote panes do not show this compact reference; failed or unavailable limits are omitted.
 
 
-The strip beside the **Settings** gear shows the plan limits of the AI tools signed in on the PC the app's server runs on: for each account its provider's logo and one limit, what is left of its 5-hour session by default, or its week, or the share used, as chosen in Settings (red from 80% used). As many accounts show as the row has room for, the rest as `+N`; hovering the strip also names a limit near its end that a chip does not show. A plan with neither shows its limit closest to running out. Tap it for every limit (5-hour session, week, month, per model where a plan has them) and when each starts over. It is off until you turn it on in **Settings → Subscription usage**: turning it on sends the sign-ins on the server's PC to each provider's usage endpoint.
+The strip beside the **Settings** gear shows the plan limits of the AI tools signed in on the PC the app's server runs on: for each account its provider's logo and one limit, what is left of its 5-hour session by default, or its week, or the share used, as chosen in Settings (red from 80% used). As many accounts show as the row has room for, the rest as `+N`; hovering the strip also names a limit near its end that a chip does not show. A plan with neither shows its limit closest to running out. Tap it for every limit (5-hour session, week, month, per model where a plan has them) and when each starts over. It is off until you turn it on in **Settings → Agents → Plan limits**: turning it on sends the sign-ins on the server's PC to each provider's usage endpoint.
 
 | Provider | Sign-in it reads |
 | --- | --- |
@@ -363,10 +363,25 @@ Only providers with a sign-in are shown; a GitHub account without Copilot is lef
 
 - **Read only.** The server never refreshes a token: Claude, Codex, Cursor and Grok rotate refresh tokens, and a refresh the tool did not make would sign it out. An expired or refused sign-in says so; using the tool once may renew it, and otherwise sign in again. An expired Claude or Codex account (not a hub's) also has **Sign in again**, in Settings and in the usage popover: it opens the official sign-in in a terminal tab for that same account, replacing its expired sign-in instead of adding a new account.
 - **Asked only while someone looks.** Nothing runs in the background. The server asks a provider at most every five minutes, a refresh from the popover at most every 30 seconds, and a provider that answered 429 not before it said to.
-- **Yours to arrange.** Settings → Subscription usage groups accounts by provider, orders accounts within each provider, picks the limit the strip shows (**Weekly** or **Session**), hides any (from the strip and its popover alike), and switches the meters between what is used and what is left. Each account shows whether it comes from **This PC** or **Hub**.
-- **Add an account.** The single **Add account** button lists Claude, Codex, Cursor, GitHub Copilot, Grok, Antigravity and OpenCode, then Hub. Installed CLIs sign in in a new terminal tab; missing ones show an installation hint. Only Claude and Codex offer hub sign-in and a separate `~/.claude-<name>` or `~/.codex-<name>` credential home. Other providers keep their existing home and require **Continue** before replacing a discovered sign-in. Account names use lowercase letters, numbers and hyphens. Codex and Grok use a device code only if their installed help lists it; Cursor prints its URL without opening a server browser. Claude may need a localhost callback. Antigravity gives interactive sign-in guidance rather than guessing a login command. OpenCode plan limits require OpenCode Go/Zen, not an arbitrary provider selected in its CLI. Hub sign-in provides a waiting state and a redirect-paste field.
-- **Connect a hub.** Choose **Hub** (**Import accounts from CLIProxyAPI**) in the same picker to enter its URL and server-saved management key. The connected hub appears as one compact row after the accounts, with **Edit** and **Remove**. Account rows show their source, plan and sign-in status inline.
+- **Yours to arrange.** **Settings → Agents** lists each coding agent on the PC as one row: its version, whether it is signed in (as far as these accounts show; an agent whose sign-in Ovis cannot read says only that it is installed), and, opened, its accounts with their limit and herdr's session resume for it. **New agents** below sets how New workspace starts Claude Code and Codex. Accounts no agent on the PC signs in to (Cursor, or an agent not installed there) are under **Other accounts**, with the hub; a remote PC shown there keeps every account under Other accounts, since they are read on the server's PC. Within each provider you order the accounts and hide any (from the strip and its popover alike); **Plan limits** at the bottom picks the limit the strip shows (**Weekly** or **Session**) and switches the meters between what is used and what is left. Each account shows whether it comes from **This PC** or **Hub**.
+- **Add an account.** **Other accounts → Add account** lists Claude, Codex, Cursor, GitHub Copilot, Grok, Antigravity and OpenCode, then Hub. Installed CLIs sign in in a new terminal tab; missing ones show an installation hint. Claude Code and Codex are followed in the browser: a dialog shows the sign-in page to open (only on the provider's own address), Codex's one-time code to enter there, and a box for the code Claude's page shows, which Ovis types into the login and keeps nowhere; it then says whether a new account signed in. **Open terminal** in the dialog shows the login's tab instead. **Sign in** on an agent's row with no account, and **Sign in to …** in the setup guide, sign in to the agent's own home (`~/.claude`, `~/.codex`), the one its plain command uses; Add account makes a separate home. Only Claude and Codex offer hub sign-in and a separate `~/.claude-<name>` or `~/.codex-<name>` credential home. Other providers keep their existing home and require **Continue** before replacing a discovered sign-in. Account names use lowercase letters, numbers and hyphens. Codex and Grok use a device code only if their installed help lists it; Cursor prints its URL without opening a server browser. Claude may need a localhost callback. Antigravity gives interactive sign-in guidance rather than guessing a login command. OpenCode plan limits require OpenCode Go/Zen, not an arbitrary provider selected in its CLI. Hub sign-in provides a waiting state and a redirect-paste field. An agent's own **Add account**, or **Sign in** on an agent row with no account, starts at its provider's choices.
+- **Connect a hub.** Choose **Hub** (**Import accounts from CLIProxyAPI**) in the same picker to enter its URL and server-saved management key. The connected hub appears as one compact row under Other accounts, with **Edit** and **Remove**. Account rows show their source, plan and sign-in status inline.
 - **The server's PC only.** Remote PCs are not included.
+- **Claude's limits from its own status line.** Where Anthropic's usage endpoint is refused (it
+  answers 403 from some networks, which shows as a sign-in that expired when it has not), Claude Code's
+  status line is still handed the five-hour and weekly limits. Turn on **Read Claude's limits from its
+  status line** in Settings → Agents → Plan limits, or **Read from Claude's status line instead** under
+  such a refused Claude account in the usage popover; nothing turns it on for you. The server's PC then
+  adds only `herdr-statusline/` in Claude's config directory (`CLAUDE_CONFIG_DIR`, else `~/.claude`)
+  and points `statusLine` in that directory's `settings.json` at a wrapper there (creating the file
+  when Claude has none yet). The wrapper runs your status line command unchanged (none where none was
+  set) and keeps only the two windows and the account in `~/.herdr/statusline-last.json`, readable only
+  by you. A reading counts only for the account that drew it and only until its window resets, and an
+  answer from the endpoint newer than it wins. Turning it off puts `settings.json` back as it was and
+  deletes what was added; a file there that it did not write is never replaced or deleted. If you have
+  since changed the status line yourself and it still runs the wrapper, turning it off changes nothing
+  and says so: set the status line yourself first. A watching device sees the switch and cannot turn it. It is not available on
+  Windows.
 - On macOS, a server started outside the logged-in desktop session (over SSH, or by a multiplexer started there) reads the keychain item through a one-shot job in that desktop session. A keychain that still cannot be opened shows as such instead of the numbers.
 
 ## Voice input
@@ -399,7 +414,7 @@ Only devices in your tailnet can open that address. Your own devices get in with
 **Settings → Phone & devices** in the app does this step for you as far as it can: it shows the address Tailscale already serves for this PC as a QR code, or the exact command still to run, and the address it will give.
 
 1. Open the address.
-2. Install the app: in Safari, choose **Share → Add to Home Screen**; in Chrome, choose **Install app**. Each PC installs as an app of its own: set `OVIS_APP_NAME` on each to tell them apart (see [Configuration](#configuration)).
+2. Install the app: in Safari, choose **Share → Add to Home Screen**; in Chrome, open **Settings → Phone & devices** and choose **Install app**; when it shows steps instead of the button, follow them (Chrome's menu has **Install app** or **Add to Home screen**). Each PC installs as an app of its own: set `OVIS_APP_NAME` on each to tell them apart (see [Configuration](#configuration)).
 3. Open the **⋯** menu at the top right and tap **Alerts** to turn on alerts for that device. iPhone needs iOS 16.4+ and the home-screen app.
 
 To check alerts later, choose **Settings → Alerts → Send test**. The result tells you
@@ -563,7 +578,7 @@ The `map` block goes in the `http` section. `proxy_read_timeout` keeps an idle t
 
 Both examples drop a `Tailscale-User-Login` header a visitor sends. That header is how `tailscale serve` names your own login, and on a PC that runs Tailscale the server trusts it from any proxy on this PC, so a public proxy must not pass a visitor's copy on. With a token set the server asks for the token whatever that header says, so a proxy that does pass it on gives a visitor nothing.
 
-**If the proxy already signs people in** (basic auth, Authelia, oauth2-proxy, Cloudflare Access and the like), let it hand the app the token, so nobody signs in twice and Settings stops warning that this address is open. Set `OVIS_TOKEN`, then have the proxy send it on every request it lets through, the terminal's `/ws` connection included. In Caddy, inside `reverse_proxy`:
+**If the proxy already signs people in** (basic auth, Authelia, oauth2-proxy and the like), let it hand the app the token, so nobody signs in twice and Settings stops warning that this address is open. Set `OVIS_TOKEN`, then have the proxy send it on every request it lets through, the terminal's `/ws` connection included. In Caddy, inside `reverse_proxy`:
 
 ```caddyfile
 		header_up Authorization "Bearer {env.OVIS_TOKEN}"
@@ -580,6 +595,25 @@ The proxy's own sign-in is then the only one: anyone it lets through gets in, an
 To check the app's gate, request its `/api/session` directly without a token: it must answer 401.
 If the proxy signs people in, also check that a signed-out visitor cannot reach the app through
 the public address.
+
+[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/) gives this PC a public HTTPS address on a domain in your Cloudflare account, with no port open on this PC. `cloudflared` does all four things with no settings: Cloudflare keeps the public `Host`, sends `X-Forwarded-For` and `X-Forwarded-Proto: https`, and passes the `/ws` upgrade. Keep `HOST=127.0.0.1` and set `OVIS_TOKEN` first, then [create the tunnel and route its hostname](https://developers.cloudflare.com/tunnel/features/locally-managed-tunnels/create-local-tunnel/) (`cloudflared tunnel login`, `cloudflared tunnel create ovis`, `cloudflared tunnel route dns ovis herdr.example.com`) and point that hostname at the app in `~/.cloudflared/config.yml`:
+
+```yaml
+tunnel: <tunnel ID>
+credentials-file: /home/<you>/.cloudflared/<tunnel ID>.json
+ingress:
+  - hostname: herdr.example.com
+    service: http://127.0.0.1:7317
+  - service: http_status:404
+```
+
+`cloudflared tunnel run ovis` then starts it. A tunnel made in the Cloudflare dashboard ignores this file: set its public hostname's service to `http://127.0.0.1:7317` there.
+
+To try it without an account, `cloudflared tunnel --url http://127.0.0.1:7317` prints a random `https://<words>.trycloudflare.com` address. It changes on every run, and cookies and the installed app are tied to the address, so it suits a test, not a phone you keep using. A quick tunnel also carries no [Server-Sent Events](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/), which the sidebar and the PC list update by, so the terminal works through it but those may not update by themselves.
+
+Unlike the Caddy and nginx examples, Cloudflare passes on a `Tailscale-User-Login` header a visitor sends. On a PC that runs Tailscale, the server still does not take it for your login, because Cloudflare adds the visitor's own address to `X-Forwarded-For`, but do not rely on that: with a token set the header gives a visitor nothing. To drop it as well, add a [Request Header Transform Rule](https://developers.cloudflare.com/rules/transform/request-header-modification/) for that hostname that removes it. Do not set `OVIS_TAILSCALE_SERVE_ONLY=1` on a PC a tunnel reaches.
+
+Cloudflare Access can put its sign-in in front of that hostname, but it cannot hand the app the token as Caddy or nginx can: Access adds no `Authorization` header to the requests it lets through. Keep the app's own gate on behind it. Each device signs in to Access, then enters the token once or is paired from **Settings → Phone & devices**, and stays signed in to the app; Access still asks it to sign in again when its own session runs out. A script reaches the app through Access with an Access [service token](https://developers.cloudflare.com/cloudflare-one/access-controls/service-credentials/service-tokens/), allowed by a **Service Auth** policy on that application, in its `CF-Access-Client-Id` and `CF-Access-Client-Secret` headers, plus `Authorization: Bearer <your token>` for the app. The Android app cannot get past the Access sign-in yet ([#2008](https://github.com/devswha/ovis/issues/2008)): open the address in the phone's browser instead.
 
 [Portal](https://github.com/gosuda/portal-tunnel) gives this PC a public HTTPS address with no account and no domain of your own. From v2.6.1, its `--http-route` does all four things and can drop a header a visitor sends; the plain `portal expose 7317` sends no `X-Forwarded-Proto`, so the app's own requests are refused (`invalid_origin`).
 
@@ -617,6 +651,30 @@ notice explicitly takes that pane with `--takeover`: the other web bridge waits 
 standalone `herdr terminal attach` exits. The herdr TUI stays connected (verified on herdr 0.9.3).
 Observe connections cannot take a pane, and a displaced bridge never takes it back automatically.
 
+## Herdr app terminals
+
+The [Herdr desktop app](https://herdr.dev/download/) runs its terminals on herdr-core (`hc`), a
+runtime apart from herdr's TUI server. Start Ovis with `OVIS_RUNTIME=herdr-core` to show those
+terminals instead of the TUI's: this PC's panes are then the app's. An `hc` speaking protocol
+generation 1 (checked with 0.1.14) must be on the `PATH`, or named by `OVIS_HC_BIN`.
+
+`OVIS_RUNTIME=herdr-core` is Linux/macOS only: there is no Windows named pipe support yet.
+Ovis refuses to start with this runtime on Windows; use the default `herdr` runtime there.
+
+- **Sidebar:** each of the app's spaces is a workspace and each of its tabs a tab, in the app's
+  order and names; every terminal block in a tab is a pane. A terminal no tab holds (a worker an
+  agent started, one from `hc run`) has a tab of its own under **Other terminals**.
+- **Status and alerts:** an agent's status is what it reports to herdr-core (OSC 7501), so an
+  agent that reports none shows no status. `error` counts as finished.
+- **Terminal:** the live view is `hc attach`, input and the key bar work as on herdr, and the
+  terminal takes the size of the viewer that last typed in it or resized it: the app's window, or
+  your phone once you type or open it there.
+- **Chat:** screen reads carry no colors, so a grey suggestion Claude Code or Hermes leaves in an
+  empty input box reads as typed text, and a send waits for you to confirm it.
+- **Not on herdr-core:** making, rearranging, renaming or closing workspaces, tabs, splits and
+  panes, which belong to the app's window; search and scrollback selection in a pane; plugins and
+  worktrees. Remote PCs keep running herdr's TUI server.
+
 ## Configuration
 
 Each `OVIS_*` variable was called `HERDR_WEB_*` before Ovis took its name (`OVIS_REF` was `HERDR_WEB_UI_REF`). The old names still work; where both are set, the `OVIS_*` one wins. The state dir moved from `~/.config/herdr-web-ui` to `~/.config/ovis` the first time the new version ran, leaving a link at the old path.
@@ -639,6 +697,8 @@ Each `OVIS_*` variable was called `HERDR_WEB_*` before Ovis took its name (`OVIS
 | `OVIS_PUSH_SUBJECT` | this repository's URL | VAPID contact URL or `mailto:` address |
 | `OVIS_BUNDLE_MANIFEST` | unset | Remote-PC bundle manifest (path or URL) that overrides local and published bundles |
 | `OVIS_HERDR_BIN` | `herdr` | herdr executable used for terminal attach |
+| `OVIS_RUNTIME` | `herdr` | `herdr-core` shows the terminals of [herdr-core](https://herdr.dev/core) (`hc`), the core the Herdr desktop app runs on, instead of herdr's TUI server: see [Herdr app terminals](#herdr-app-terminals) |
+| `OVIS_HC_BIN` | `hc` | hc executable used with `OVIS_RUNTIME=herdr-core`, for its connection and for terminal attach. `HC_SESSION` and `HC_SOCKET` pick the core as for any hc command |
 | `OVIS_SSH` | `ssh` (Git for Windows' on Windows) | OpenSSH client for [remote PCs](#remote-pcs-over-ssh); the `sftp` and `ssh-keygen` beside it are used too |
 | `OVIS_APP_NAME` | unset (`Ovis`) | The name the installed app has on a phone or computer, for example the PC's name. Each PC installs as an app of its own, and without it they are all called `Ovis`. An app already installed takes the new name when the browser next updates it, usually within a day or two, without a reinstall. Keep it short: a home screen cuts a long label |
 | `OVIS_PASTE_DIR` | `<pane cwd>/.ovis` | Where pasted and attached files are saved: an absolute path or `~/…`. Set it to keep them out of your projects; an agent may then ask before reading one. It covers the panes of this server's PC; a remote PC keeps the default |
@@ -676,11 +736,11 @@ This is for Linux and macOS. On Windows, and for a remote PC, update herdr on th
 
 ## Anonymous usage counts
 
-The app tells its maintainer how many installs there are, which versions they run, which countries the messages come from and which app settings people choose. It sends one message when it is first installed and one each time it runs a new version, plus a daily active message described below. The first time you open the app, a line under the header says so, with **What is sent**, which opens **Settings → About** and its switch. Nothing is sent before that line has been shown, and the first message waits ten minutes after it, so turning the switch off there stops it. An install that saw an older notice sees the expanded notice (version 4, which adds the daily active message) once more, and sends nothing until then. An existing choice to turn counts off stays off.
+The app tells its maintainer how many installs there are, which versions they run, which countries the messages come from and which app settings people choose. It sends one message when it is first installed and one each time it runs a new version, plus a daily active message described below. The first time you open the app, a line under the header says so, with **What is sent**, which opens **Settings → About** and its switch. Nothing is sent before that line has been shown, and the first message waits ten minutes after it, so turning the switch off there stops it. An install that saw an older notice sees the expanded notice (version 5, which adds the day's usage to the daily active message) once more, and sends nothing until then. An existing choice to turn counts off stays off.
 
 A message holds the event (`install` or `update`), a random ID made on this PC, the app's version and the version an update replaced, the OS and CPU architecture, how the app was installed (herdr plugin, `bun run start`, or `bun run server`), and an allowlisted `settings` snapshot. The snapshot contains actual choices for appearance, terminal and chat behavior, notifications, language, voice controls, usage-meter display and the file viewer, including defaults. Custom fonts, shortcuts, key-bar layouts, quick replies and the usage meters' account order are represented by customization flags, not their text, key combinations or account names; quick replies and hidden usage accounts also have counts. Account identifiers and the order itself, paths, addresses, credentials, commands, terminal content, conversations and files are not collected.
 
-The daily active message goes out at most once per UTC day on which the app is opened in a browser. It's dated with that day even when it goes out later (for example after the ten-minute wait), and it's sent again the same day only if a new kind of coding agent shows up. It holds the event (`active`), the day, the random ID, the app's version, the OS and CPU architecture, how the app was installed, and `harnesses`: the kinds of coding agents running in herdr panes, taken from a fixed list (such as `claude` or `codex`), with any other agent counted as `other`. Pane names, pane counts, paths and terminal content are never part of it, and a remote PC's panes aren't included.
+The daily active message goes out at most once per UTC day on which the app is opened in a browser. It's dated with that day even when it goes out later (for example after the ten-minute wait), and it's sent again the same day only if a new kind of coding agent shows up (with the usage already sent), or, at most once an hour and only when the app is opened, when the day's usage below changed (a day's last usage goes out with the next day's message). The usage is counted only once the version 5 notice has been shown: nothing of it from before then is kept or sent. It holds the event (`active`), the day, the random ID, the app's version, the OS and CPU architecture, how the app was installed, `harnesses`: the kinds of coding agents running in herdr panes, taken from a fixed list (such as `claude` or `codex`), with any other agent counted as `other`, and `usage`: the kinds of screen the app was opened on that day (the iOS, Android or Mac app, an installed web app or a browser tab, each on a phone or a computer), how those screens reached this PC (from this PC itself, the local network, Tailscale, Funnel or another proxy), and three counts: prompt answers sent from the app, pane alerts that reached a device, and pane alerts tapped. A count made on a day the app is not opened is never sent. Pane names, pane counts, paths, terminal content, which pane or agent an answer or alert was for, and the time of day are never part of it, and a remote PC's panes aren't included.
 
 The snapshot is the last one a browser reported to this server, not a list of devices or a complete picture of a person. Changing a setting updates that local snapshot but does not send another telemetry event. Before a browser reports, `settings` is `null`. The receiver ([`telemetry/`](../telemetry/README.md)) keeps the event fields, the day and the country the message came from (two letters, such as `KR`, worked out by its host from the connection), and never stores your IP address or anything finer than the country. The random install ID and settings can link events from an installation; they do not guarantee anonymity.
 
@@ -793,6 +853,9 @@ A React client talks to a Bun HTTP/WebSocket server.
 
 herdr owns the processes and the scrollback.
 
+With `OVIS_RUNTIME=herdr-core`, the server answers herdr's socket API itself from herdr-core
+(`server/herdr-core/`), through one `hc connect`, and attaches with `hc attach`.
+
 ## FAQ
 
 <details>
@@ -808,7 +871,7 @@ No, but a phone needs two things Tailscale gives at once: a way to reach the PC 
 
 - **An SSH tunnel from the phone** (Termux, Blink): `ssh -L 7317:127.0.0.1:7317 <pc>`, then open `http://localhost:7317` on the phone. Browsers treat localhost as secure, so installing and alerts should work while the tunnel is up (not verified on iOS yet). The phone still has to reach the PC over SSH.
 - **A VPN into your home** (WireGuard, ZeroTier, a router VPN): the LAN address works in the browser, but a plain `http://` address can neither install the app nor receive alerts.
-- **A reverse proxy with a real certificate** on a domain you own, with a token set and the proxy sending `X-Forwarded-For`: [Behind a reverse proxy](#behind-a-reverse-proxy) has Caddy and nginx examples to copy. This exposes the server to the internet, so read [Access and safety](#access-and-safety) first.
+- **A reverse proxy with a real certificate** on a domain you own, with a token set and the proxy sending `X-Forwarded-For`: [Behind a reverse proxy](#behind-a-reverse-proxy) has Caddy, nginx and Cloudflare Tunnel examples to copy. This exposes the server to the internet, so read [Access and safety](#access-and-safety) first.
 - **A public address with Portal**, a tunnel with no account and no domain of your own, with a long random token set: [Behind a reverse proxy](#behind-a-reverse-proxy) has the command, and **Settings → Phone & devices → Portal** runs it for you. This exposes the server to the internet too.
 </details>
 

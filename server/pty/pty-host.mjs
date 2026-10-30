@@ -68,7 +68,19 @@ process.stdout.on("drain", () => {
 });
 
 let exited = false;
+// node-pty creates a session leader on POSIX. A launcher exiting is not proof its helpers ended.
+// Windows' ConPTY close owns the console tree; negative process IDs do not exist there, and node-pty's
+// Windows kill takes no signal (it throws on one, later, where this catch cannot see it).
+function killGroup(signal) {
+  try {
+    if (process.platform === "win32") term.kill();
+    else process.kill(-term.pid, signal);
+  } catch (error) {
+    if (error.code !== "ESRCH") throw error;
+  }
+}
 term.onExit(({ exitCode }) => {
+  if (process.platform !== "win32") killGroup("SIGKILL");
   exited = true;
   // Let the native exit callback unwind and stdout drain before Node exits.
   process.exitCode = exitCode ?? 0;
@@ -122,7 +134,7 @@ const stop = () => {
   if (!exited && !stopping) {
     stopping = true;
     try {
-      term.kill();
+      killGroup("SIGHUP");
       // A paused reader still needs to observe EOF after the parent leaves.
       term.resume();
     } catch {
@@ -130,7 +142,7 @@ const stop = () => {
     }
     // A child can ignore SIGHUP, and a blocked pipe must not pin the sidecar.
     setTimeout(() => {
-      if (!exited) { try { term.kill("SIGKILL"); } catch { /* already gone */ } }
+      if (!exited) { try { killGroup("SIGKILL"); } catch { /* already gone */ } }
       process.exit(0);
     }, 2000).unref();
   }

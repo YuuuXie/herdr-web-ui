@@ -56,7 +56,8 @@ export class PendingMessageStore {
         return [{ id: message.id, request_id: message.request_id, text: message.text, created_at: message.created_at,
           state: message.state === "held" && message.resendInFlight !== true ? "held" as const : "uncertain" as const,
           ...(typeof message.resendGeneration === "number" && Number.isSafeInteger(message.resendGeneration) && message.resendGeneration >= 0 ? { resendGeneration: message.resendGeneration } : {}),
-          ...(message.resendInFlight === true ? { resendInFlight: true as const } : {}), ...(restoredError ? { error: restoredError } : {}), serverOwned: false }];
+          ...(message.resendInFlight === true ? { resendInFlight: true as const } : {}), ...(restoredError ? { error: restoredError } : {}),
+          ...(message.agent_only === true ? { agent_only: true as const } : {}), serverOwned: false }];
       });
     } catch { return []; }
   }
@@ -209,7 +210,7 @@ export class PendingMessageStore {
       const pane = paneStateKey(PREFIX + owner);
       if (pane?.machineId !== machineId) continue;
       const kept = rows.filter((message) => message.serverOwned);
-      if (this.unsaved.has(owner)) for (const message of rows) if (!message.serverOwned) this.lifetimes.keep(machineId, pane.paneId, "pending", message.text);
+      if (this.unsaved.has(owner)) for (const message of rows) if (!message.serverOwned) this.lifetimes.keep(machineId, pane.paneId, "pending", message.text, false, message.agent_only === true);
       // a row storage took on the same herdr (lib/paneLifetime.ts storeMemory) is offered again after a
       // reload, so its recovery copy goes; a row left to recovery has only its record now
       let durable = new Set<string>();

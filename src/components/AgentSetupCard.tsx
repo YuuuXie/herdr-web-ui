@@ -1,15 +1,12 @@
-import { useEffect, useReducer, useState } from "react";
+import { useState } from "react";
 import { Check, ChevronDown, ChevronUp, KeyRound, LoaderCircle, Play, RotateCw, SquareTerminal, TriangleAlert } from "lucide-react";
 
 import type { AgentCatalogRow } from "../../shared/agent-catalog.ts";
-import { fetchAgentCatalog, startAgentInstall, startAgentSignIn } from "../lib/api.ts";
-import { setupProgress, setupStep, type SetupStep } from "../lib/agentSetup.ts";
+import { setupProgress, type SetupStep } from "../lib/agentSetup.ts";
 import { useT } from "../lib/i18n.ts";
+import { useAgentSetup } from "../lib/useAgentSetup.ts";
 import { AgentMark } from "./AgentMark.tsx";
 import "./AgentSetupCard.css";
-
-/** How often the catalog is read again while an install runs in its tab. */
-const DETECT_EVERY_MS = 3000;
 
 export interface AgentSetupCardProps {
   /** the agent, as GET /api/agent-catalog answered it for `machineId` */
@@ -21,35 +18,21 @@ export interface AgentSetupCardProps {
   onOpenTerminal: (paneId: string) => void;
   /** the agent is ready: start it */
   onStart: () => void;
+  /** told each step the card moves to */
+  onStep?: (step: SetupStep) => void;
 }
-
-const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
 /**
  * One agent's setup in two steps, Install then Sign in, on one card: each step runs the PC's own
  * official command in a terminal tab the user can open, and installed is decided by reading the
  * catalog again, never by how the tab ended.
  */
-export function AgentSetupCard({ agent, machineId = "local", initial = { kind: "idle" }, onOpenTerminal, onStart }: AgentSetupCardProps) {
+export function AgentSetupCard({ agent, machineId = "local", initial = { kind: "idle" }, onOpenTerminal, onStart, onStep }: AgentSetupCardProps) {
   const t = useT();
-  const [step, dispatch] = useReducer(setupStep, initial);
+  const { step, dispatch, pending, install, signIn } = useAgentSetup({ agent, machineId, initial, onStep });
   const [details, setDetails] = useState(false);
   const { index, fraction } = setupProgress(step);
   const name = agent.name;
-
-  useEffect(() => {
-    if (step.kind !== "installing") return;
-    const abort = new AbortController();
-    const read = () => void fetchAgentCatalog(machineId, abort.signal)
-      .then((catalog) => { const row = catalog.agents.find((candidate) => candidate.id === agent.id); if (row) dispatch({ type: "detected", row }); })
-      .catch(() => { /* the next read tries again */ });
-    const timer = setInterval(read, DETECT_EVERY_MS);
-    read();
-    return () => { clearInterval(timer); abort.abort(); };
-  }, [step.kind, machineId, agent.id]);
-
-  const install = () => void startAgentInstall(agent.id, machineId).then((tab) => dispatch({ type: "install-started", tab }), (error) => dispatch({ type: "failed", message: message(error) }));
-  const signIn = () => void startAgentSignIn(agent.id, machineId).then((tab) => dispatch({ type: "sign-in-started", tab }), (error) => dispatch({ type: "failed", message: message(error) }));
   const tab = step.kind === "installing" || step.kind === "signing-in" ? step.tab : null;
   const command = tab?.command ?? agent.install?.primary.command ?? null;
 
@@ -81,14 +64,14 @@ export function AgentSetupCard({ agent, machineId = "local", initial = { kind: "
       {details && command !== null && <pre className="agent-setup-command"><code>{command}</code></pre>}
       {details && step.kind === "installed" && !step.onPath && <p className="agent-setup-note">{t("Its folder is on PATH only for terminals opened after the install.")}</p>}
       <div className="agent-setup-actions">
-        {step.kind === "idle" && <button type="button" className="btn btn-primary" disabled={agent.install === null} onClick={install}>{t("Install")}</button>}
-        {step.kind === "installed" && <><button type="button" className="btn btn-primary" onClick={signIn}>{t("Sign in")}</button><button type="button" className="btn btn-ghost" onClick={() => dispatch({ type: "skip-sign-in" })}>{t("Skip")}</button></>}
+        {step.kind === "idle" && <button type="button" className="btn btn-primary" disabled={agent.install === null || pending} onClick={install}>{t("Install")}</button>}
+        {step.kind === "installed" && <><button type="button" className="btn btn-primary" disabled={pending} onClick={() => signIn()}>{t("Sign in")}</button><button type="button" className="btn btn-ghost" disabled={pending} onClick={() => dispatch({ type: "skip-sign-in" })}>{t("Skip")}</button></>}
         {step.kind === "signing-in" && <button type="button" className="btn btn-primary" onClick={() => dispatch({ type: "sign-in-done" })}>{t("I've signed in")}</button>}
         {step.kind === "ready" && <button type="button" className="btn btn-primary" onClick={onStart}><Play aria-hidden="true" />{t("Start {agent}", { agent: name })}</button>}
-        {step.kind === "failed" && <button type="button" className="btn btn-primary" onClick={step.after === "install" ? install : signIn}><RotateCw aria-hidden="true" />{t("Try again")}</button>}
+        {step.kind === "failed" && <button type="button" className="btn btn-primary" disabled={pending} onClick={step.after === "install" ? install : () => signIn()}><RotateCw aria-hidden="true" />{t("Try again")}</button>}
         {(command !== null || step.kind === "installed") && step.kind !== "ready" && <button type="button" className="btn btn-ghost" aria-expanded={details} onClick={() => setDetails((open) => !open)}>{details ? <ChevronUp aria-hidden="true" /> : <ChevronDown aria-hidden="true" />}{details ? t("Hide details") : t("Show details")}</button>}
         {tab !== null && <button type="button" className="btn btn-ghost" onClick={() => onOpenTerminal(tab.pane_id)}><SquareTerminal aria-hidden="true" />{t("Open terminal")}</button>}
-        {(step.kind === "installing" || step.kind === "signing-in" || step.kind === "failed") && <button type="button" className="btn agent-setup-cancel" onClick={() => dispatch({ type: "cancel" })}>{t("Cancel")}</button>}
+        {(step.kind === "installing" || step.kind === "signing-in" || step.kind === "failed") && <button type="button" className="btn agent-setup-cancel" disabled={pending} onClick={() => dispatch({ type: "cancel" })}>{t("Cancel")}</button>}
       </div>
     </section>
   );

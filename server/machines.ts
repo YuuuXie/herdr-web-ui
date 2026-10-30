@@ -254,6 +254,7 @@ export class MachineManager {
   private localBusy = false;
   private localRefreshQueued = false;
   private localRevision = 0;
+  private localTimeouts = 0;
   /** each local pane's agent as herdr last named it to the status collector */
   private heardAgents = new AgentNews();
   private localTimer: ReturnType<typeof setInterval>;
@@ -504,6 +505,7 @@ export class MachineManager {
         try {
           const snapshot = await this.readLocal();
           if (this.stopped) break;
+          this.localTimeouts = 0;
           // A newer event already patched the roster. Never publish this older load.
           if (revision !== this.localRevision) { this.localRefreshQueued = true; continue; }
           this.localDiagnostics.recovered(LOCAL_MACHINE, { operation: "snapshot", elapsed_ms: performance.now() - started });
@@ -521,7 +523,12 @@ export class MachineManager {
           if (revision !== this.localRevision) { this.localRefreshQueued = true; continue; }
           const code = e instanceof HerdrError ? transportFailureCode(e.code) : null;
           this.localDiagnostics.failed(LOCAL_MACHINE, code ?? "refresh_failed", { operation: "snapshot", elapsed_ms: performance.now() - started });
-          this.local.state = "error"; this.local.error = String(e instanceof Error ? e.message : e);
+          this.localTimeouts = e instanceof HerdrError && e.code === "timeout" ? this.localTimeouts + 1 : 0;
+          // One slow read is not proof that a previously connected herdr is gone. Keep the
+          // last roster for one timeout, but report startup and definite transport failures now.
+          if (this.local.state !== "connected" || this.local.snapshot === null || this.localTimeouts !== 1) {
+            this.local.state = "error"; this.local.error = String(e instanceof Error ? e.message : e);
+          }
         }
         this.emit();
       } while (this.localRefreshQueued && !this.stopped);

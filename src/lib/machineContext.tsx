@@ -28,6 +28,7 @@ export function useMachineApi() {
     fetchPaneOmoActivity: (pane: string) => api.fetchPaneOmoActivity(pane, id),
     fetchPaneBackgroundAgent: (pane: string, agent: string) => api.fetchPaneBackgroundAgent(pane, agent, id),
     fetchPanePlan: (pane: string) => api.fetchPanePlan(pane, id),
+    fetchPaneArtifacts: (pane: string) => api.fetchPaneArtifacts(pane, id),
     closePane: (pane: string) => api.closePane(pane, id),
     focusPane: (pane: string) => api.focusPane(pane, id),
     closeWorkspace: (workspace: string, closeGroup = false) => api.closeWorkspace(workspace, id, closeGroup),

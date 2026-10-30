@@ -40,9 +40,11 @@ export type SessionResumeResponse =
   | { action: "created"; workspace_id: string; pane_id: string; agent_started: boolean; error?: { code: string; message: string } };
 
 /**
- * A Pi scan past its deadline, a busy reader or a transcript changing during the scan answers the
- * ordinary API error envelope with 503 `session_history_busy`, Retry-After: 1 and Cache-Control:
- * no-store, NOT incomplete sessions. Every listing reads fresh metadata; retries start over.
+ * Pi establishes all rows with bounded header reads before scanning labels. A label deadline keeps
+ * every established row, with null unfinished labels or unchanged cached labels, even on label read
+ * failures or file changes. Later listings resume unchanged files and unfinished headers. Header
+ * expiry/failure with no checked rows, a full header queue or reader shutdown answers 503
+ * `session_history_busy` with Retry-After: 1. Both responses carry Cache-Control: no-store.
  */
 export interface SessionHistoryResponse {
   workspace_id: string;

@@ -552,6 +552,8 @@
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
   text-align: left;
+  /* a long path wraps on a phone (`.btn` keeps one line): its end tells the choices apart */
+  white-space: normal;
   overflow-wrap: anywhere;
 }
 

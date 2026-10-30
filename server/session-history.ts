@@ -35,7 +35,8 @@ import { directoryKey, interactiveCodexRollout, storedCwds, withoutVerbatimPrefi
 import { hermesHome } from "./hermes-home.ts";
 import { opencodeDatabasePath } from "./opencode.ts";
 import { environmentHome } from "./user-home.ts";
-import { defaultPiSessionReader, PI_READ_DEADLINE_MS, type PiSessionReader } from "./pi-session-metadata.ts";
+import { defaultPiSessionReader, PI_CACHE_ENTRIES, PI_HEADER_DEADLINE_MS, PiMetadataBusy, PiMetadataDeadline, type PiSessionReader } from "./pi-session-metadata.ts";
+import type { PiLabel } from "./pi-session-label.ts";
 
 /** At most this much of any one non-Pi file is read. */
 export const HEAD_BYTES = 64 * 1024;
@@ -221,14 +222,19 @@ function openChecked(budget: Budget, file: { real: string; dev: bigint; ino: big
 const defaultFstat = (fd: number, bigint?: boolean): Stats | BigIntStats => bigint ? fstatSync(fd, { bigint: true }) : fstatSync(fd);
 
 /** Pi opens and checks asynchronously too; custom fstat seams stay on the test's calling thread. */
-async function openPiChecked(budget: Budget, file: Found, checkActive: () => void): Promise<number> {
-  const fd = await new Promise<number>((done, fail) => open(file.real, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0), (error, fd) => error ? fail(error) : done(fd)));
+async function openPiChecked(budget: Budget, file: Found, checkActive: () => void): Promise<number | null> {
+  const fd = await new Promise<number | null>((done, fail) => open(file.real, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOFOLLOW ?? 0), (error, fd) => {
+    if (error?.code === "ELOOP") done(null);
+    else if (error) fail(error);
+    else done(fd);
+  }));
+  if (fd === null) return null;
   try {
     checkActive();
     const opened = budget.fstatOf !== defaultFstat ? budget.fstatOf(fd, true)
       : await new Promise<BigIntStats>((done, fail) => fstat(fd, { bigint: true }, (error, stat) => error ? fail(error) : done(stat)));
     checkActive();
-    if (!opened.isFile() || bigintOf(opened.dev) !== file.dev || bigintOf(opened.ino) !== file.ino) throw new Error("not the file that was checked");
+    if (!opened.isFile() || bigintOf(opened.dev) !== file.dev || bigintOf(opened.ino) !== file.ino) { closeSync(fd); return null; }
     return fd;
   } catch (error) { closeSync(fd); throw error; }
 }
@@ -500,14 +506,60 @@ async function piSessions(sessions: string, folders: readonly string[], cwds: re
   const scope = JSON.stringify(directories.map((directory) => resolve(directory)));
   reader.retain(scope, files.map((file) => file.real));
   if (scan === null) return [];
-  const deadline = performance.now() + PI_READ_DEADLINE_MS;
+  const deadline = performance.now() + reader.listingDeadlineMs;
+  const headerDeadline = performance.now() + Math.max(PI_HEADER_DEADLINE_MS, reader.listingDeadlineMs);
   const rows: Row[] = [];
+  const selected: Array<{ file: Found; header: NonNullable<PiLabel["header"]> }> = [];
+  let incomplete = false;
+  let unfinishedHeaders = 0;
+  let cacheTouches = 0;
+  const headerCacheLimit = Math.floor(PI_CACHE_ENTRIES * 3 / 4);
+  // Establish rows before a large transcript can consume the label budget. Header work has
+  // both byte and elapsed-time bounds; an unknown header must never imply an empty store.
   for (const file of files) {
+    // Every retained entry touch counts, with a quarter of the cache capacity left in reserve.
+    // Label scans revisit this same set, so one traversal cannot evict its own checkpoints.
     if (rows.length >= MAX_ROWS) break;
-    const label = await reader.read((checkActive) => openPiChecked(budget, file, checkActive), deadline, { path: file.real, scope });
-    const header = label?.header;
-    if (!header || !PI_VERSIONS.has(header.version) || header.id === "" || header.cwd === "" || !cwdMatches(budget, header.cwd, cwds)) continue;
-    rows.push(row("pi", header.id, { title: label!.title, firstMessage: label!.firstMessage, startedAt: iso(header.timestamp), updatedAt: new Date(file.mtimeMs).toISOString() }));
+    if (unfinishedHeaders >= MAX_ROWS || cacheTouches >= headerCacheLimit) { incomplete = true; break; }
+    let rejected = false;
+    let retainedHeaderless = false;
+    try {
+      const label = await reader.read((checkActive) => openPiChecked(budget, file, checkActive), headerDeadline, {
+        path: file.real, scope,
+        headerless: () => { retainedHeaderless = true; },
+        // Reject ineligible headers before caching them, and spend folder-identity checks once.
+        acceptHeader: (header) => {
+          rejected = !PI_VERSIONS.has(header.version) || header.id === "" || header.cwd === "" || !cwdMatches(budget, header.cwd, cwds);
+          return !rejected;
+        },
+      }, "header");
+      const header = label?.header;
+      if (label && header) {
+        rows.push(row("pi", header.id, { title: label.title, firstMessage: label.firstMessage, startedAt: iso(header.timestamp), updatedAt: new Date(file.mtimeMs).toISOString() }));
+        selected.push({ file, header });
+      } else if (label) { incomplete = true; unfinishedHeaders++; }
+      else rejected = !retainedHeaderless;
+    } catch (error) {
+      if (!(error instanceof PiMetadataBusy) || error.reason === "stopped" || error.reason === "queue") throw error;
+      incomplete = true;
+    } finally {
+      // Only rejected and single-chunk headerless files are uncached and free.
+      if (!rejected) cacheTouches++;
+    }
+  }
+  if (rows.length === 0 && incomplete) throw new PiMetadataBusy();
+  for (const [index, { file, header: checked }] of selected.entries()) {
+    try {
+      const label = await reader.read((checkActive) => openPiChecked(budget, file, checkActive), deadline, { path: file.real, scope });
+      const header = label?.header;
+      // The header pass already proved eligibility, even if it spent the last identity checks.
+      // A changed identity must not replace that established row during this listing.
+      if (!label || !header || header.id !== checked.id || header.cwd !== checked.cwd || header.version !== checked.version) continue;
+      rows[index] = row("pi", header.id, { title: label.title, firstMessage: label.firstMessage, startedAt: iso(header.timestamp), updatedAt: new Date(file.mtimeMs).toISOString() });
+    } catch (error) {
+      if (!(error instanceof PiMetadataBusy) || error.reason === "stopped") throw error;
+      if (error instanceof PiMetadataDeadline || error.reason === "queue") break;
+    }
   }
   return rows;
 }

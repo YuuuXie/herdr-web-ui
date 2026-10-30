@@ -9,6 +9,7 @@ import { FILES_JA } from "./i18n/files.ja.ts";
 import { DEVICES_JA } from "./i18n/devices.ja.ts";
 import { USAGE_JA } from "./i18n/usage.ja.ts";
 import { SETUP_JA } from "./i18n/setup.ja.ts";
+import { GUIDE_JA } from "./i18n/guide.ja.ts";
 import { UPDATES_JA } from "./i18n/updates.ja.ts";
 import { PALETTE_JA } from "./i18n/palette.ja.ts";
 
@@ -24,6 +25,7 @@ import { PALETTE_JA } from "./i18n/palette.ja.ts";
  * in English. Placeholders in braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "Save": "保存",
   "Goal": "目標",
   "Waiting for your answer": "回答待ち",
   "Back": "戻る",
@@ -44,7 +46,6 @@ const BASE: Record<string, string> = {
   "Agent default": "エージェントの既定",
   "Phone & devices": "スマートフォンとデバイス",
   "Access token": "アクセストークン",
-  "Install app": "アプリをインストール",
 
   // ---- shortcuts (lib/shortcuts.ts labels) ----
   "Command palette": "コマンドパレット",
@@ -54,6 +55,10 @@ const BASE: Record<string, string> = {
   "New workspace": "新しいワークスペース",
   "Previous pane": "前のペイン",
   "Next pane": "次のペイン",
+  "Previous tab": "前のタブ",
+  "Next tab": "次のタブ",
+  "Previous workspace": "前のワークスペース",
+  "Next workspace": "次のワークスペース",
 
   // ---- agent status words (lib/status.ts) ----
   "READY": "待機",
@@ -143,6 +148,8 @@ const BASE: Record<string, string> = {
   "Browse": "参照",
   "Cancel": "キャンセル",
   "Install": "インストール",
+  "Installed": "インストール済み",
+  "Not installed": "未インストール",
   "Sign in": "ログイン",
   "Starting…": "起動しています…",
   "Start": "開始",
@@ -170,6 +177,16 @@ const BASE: Record<string, string> = {
   // ---- prompt card ----
   "Submit": "送信",
   "Recommended": "推奨",
+  "Agents": "エージェント",
+  "Check again": "再確認",
+  "Setup guide": "セットアップガイド",
+  "Could not confirm this browser is paired. Check that cookies are enabled, then try again.": "このブラウザーがペアリング済みであることを確認できませんでした。Cookie が有効か確認して、もう一度お試しください。",
+  "New code": "新しいコード",
+  "Paired: {name}.": "ペアリングしました: {name}。",
+  "QR code that pairs a phone with code {code}": "コード {code} でスマートフォンをペアリングする QR コード",
+  "Pairing code": "ペアリングコード",
+  "Open this address on your phone": "スマートフォンでこのアドレスを開いてください",
+  "{agent} is ready": "{agent} の準備ができました",
 
 
   // ---- composer ----
@@ -296,6 +313,21 @@ const BASE: Record<string, string> = {
   "Terminal line": "ターミナルの入力行",
   "Held message": "保留中のメッセージ",
   "Held input": "保持した入力",
+  "Other accounts": "その他のアカウント",
+  "Plan limits": "プランの上限",
+  "Auto": "自動",
+  "Hub request failed": "ハブのリクエストに失敗しました",
+  "On this PC": "このPC",
+  "Hub": "ハブ",
+  "Add account": "アカウントを追加",
+  "Check the hub connection": "ハブの接続を確認してください",
+  "Meters show": "メーターの表示",
+  "Limit shown": "表示する上限",
+  "Show plan limits": "プランの上限を表示",
+  "Session": "セッション",
+  "Weekly": "週次",
+  "Open terminal": "ターミナルを開く",
+  "Sign in to {agent}": "{agent} にサインイン",
 };
 
 /** The parts JA is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */
@@ -312,6 +344,7 @@ export const JA_PARTS: Record<string, Record<string, string>> = {
   devices: DEVICES_JA,
   usage: USAGE_JA,
   setup: SETUP_JA,
+  guide: GUIDE_JA,
   updates: UPDATES_JA,
   palette: PALETTE_JA,
 };

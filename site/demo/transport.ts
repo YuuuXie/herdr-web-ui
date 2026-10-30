@@ -14,6 +14,7 @@
  * a chat gets a demo answer.
  * What does not: files, images, push and remote PCs, which need a real machine.
  */
+import { NO_AGENT_MESSAGE } from "../../shared/submit-outcome.ts";
 import type { AgentIntegration, AgentStatus, CommandForm, CommandOutcome, ConversationTurn, DevicePairedEvent, DevicesRevokedAll, HealthAuth, IntegrationsResponse, Machine, MachineEvent, OmoActivity, OmoTask, PairedDevice, PairingCode, PaneBackgroundAgentDetail, PaneDirection, PaneFindMatch, PaneFindRequest, PanePlan, PaneResized, PaneSplit, PaneSwapped, PaneZoomed, PendingMessage, PlanStep, PluginActionResult, PluginActions, PluginActionsResponse, PortalStatus, SecuritySummary, ServerMessage, SessionSnapshot, SlashCommand, TabMoved, TabMovedToWorkspace, UsageReport, WorkspaceCreated, WorkspaceInfo, WorktreeEntry, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../../shared/protocol.ts";
 import type { PushSubscriptionStatus, RepoBranchComparison, RepoDiffFile, RepoDiffFileList, RepoDiffFilePatch, RepoDiffRefs, RepoDiffRepository, RepoDiffScope, SessionHistoryAgent, SessionHistoryResponse, SessionResumeResponse } from "../../shared/protocol.ts";
 import { normalizeThemeChange, sharedPreferencesBody, type SharedPreferences } from "../../shared/preferences.ts";
@@ -70,7 +71,7 @@ const CHAT_ANSWER_MS = 2400;
 const OUTCOME_PREVIEW_MS = 600;
 /** the recording's gaps, capped so the replay stays brisk */
 const MAX_FRAME_GAP_MS = 500;
-/** Settings → Agent integrations: one of each state, in herdr's order */
+/** Settings → Agents' session resume: one of each state, in herdr's order */
 const integrationsFixture: AgentIntegration[] = [
   ["pi", "pi", true, "not_installed"], ["omp", "omp", false, "not_installed"], ["claude", "claude", true, "current"],
   ["codex", "codex", true, "outdated"], ["copilot", "copilot", false, "not_installed"], ["opencode", "opencode", true, "not_installed"],
@@ -1004,7 +1005,25 @@ const DEMO_BRANCH_DIFF: { file: RepoDiffFile; patch: string | null }[] = [
   ].join("\n") },
 ].sort((left, right) => (left.file.path < right.file.path ? -1 : 1));
 
-/** Settings → Subscription usage on the demo: plans as the workstation's CLIs might report them, resets counted from now. */
+/**
+ * Settings → Agents' "Read Claude's limits from its status line" on the demo: off until
+ * turned on. `?demo_usage=refused` starts Claude refused as a blocked network refuses it (a 403 to a
+ * token that has not expired), offering the status line until it is turned on.
+ */
+let demoStatusline = false;
+const USAGE_STATE = new URLSearchParams(location.search).get("demo_usage");
+
+/** Settings → Agents' accounts on the demo: plans as the workstation's CLIs might report them, resets counted from now. */
+/**
+ * `?demo_sign_in=1`: the in-browser sign-in plays the flows recorded from Claude Code 2.1.312 and
+ * codex-cli 0.163.0 (server/fixtures/usage-login): Claude starts with no account, so its row offers
+ * Sign in; its page wants a code pasted back, and a sent code signs it in. Codex shows its device page
+ * and code, and signs in after a few reads. Without the switch the demo runs no login.
+ */
+const SIGN_IN_DEMO = new URLSearchParams(location.search).get("demo_sign_in") === "1";
+const signInDemo = { panes: new Map<string, { provider: "claude" | "codex"; reads: number; code: boolean }>(), signedIn: new Set<string>(), next: 1 };
+const CLAUDE_SIGN_IN_URL = "https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=user%3Ainference&code_challenge=demo&code_challenge_method=S256&state=demo";
+
 function usageReport(): UsageReport {
   const now = Date.now();
   const at = (hours: number) => new Date(now + hours * 3_600_000).toISOString();
@@ -1012,12 +1031,14 @@ function usageReport(): UsageReport {
   const session = (hours: number) => ({ resets_at: at(hours), starts_at: at(hours - 5) });
   const week = (hours: number) => ({ resets_at: at(hours), starts_at: at(hours - 168) });
   const checked = new Date(now).toISOString();
-  return { providers: [
-    { id: "claude", key: "claude:demo-claude", account: "sam@example.com", plan: "max", problem: null, checked_at: checked, windows: [
-      { kind: "session", scope: null, used_percent: 38, ...session(2.4) },
-      { kind: "week", scope: null, used_percent: 61, ...week(78) },
-      { kind: "week", scope: "Sonnet", used_percent: 12, ...week(78) },
-    ] },
+  const report: UsageReport = { providers: [
+    USAGE_STATE === "refused" && !demoStatusline
+      ? { id: "claude", key: "claude:demo-claude", account: "sam@example.com", plan: "max", problem: "expired", checked_at: null, windows: [], statusline_offer: true }
+      : { id: "claude", key: "claude:demo-claude", account: "sam@example.com", plan: "max", problem: null, checked_at: checked, windows: [
+        { kind: "session", scope: null, used_percent: 38, ...session(2.4) },
+        { kind: "week", scope: null, used_percent: 61, ...week(78) },
+        ...(demoStatusline ? [] : [{ kind: "week" as const, scope: "Sonnet", used_percent: 12, ...week(78) }]),
+      ] },
     { id: "codex", key: "codex:demo-codex-work", account: "sam@work.example", plan: "pro", problem: null, checked_at: checked, windows: [
       { kind: "session", scope: null, used_percent: 22, ...session(1.2) },
       { kind: "week", scope: null, used_percent: 84, ...week(97) },
@@ -1037,6 +1058,8 @@ function usageReport(): UsageReport {
       { kind: "month", scope: null, used_percent: 15, resets_at: at(520), starts_at: null },
     ] },
   ] };
+  // with `demo_usage=refused` Claude keeps its expired account, so its row offers Sign in again instead
+  return SIGN_IN_DEMO && USAGE_STATE !== "refused" && !signInDemo.signedIn.has("claude") ? { providers: report.providers.filter((usage) => usage.id !== "claude") } : report;
 }
 
 // ---- paired devices (Settings → Phone & devices) ----------------------------------------------
@@ -1205,8 +1228,53 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
   if (path === "/api/herdr-ui") return json({ copy_on_select: true }, 200, { "cache-control": "no-store" });
   if (path === "/api/access") return json({ port: 7317, tailscale: { state: "running", dns_name: "workstation.example.ts.net", serving_url: "https://workstation.example.ts.net", serve_command: null, serve_url: null } });
   if (path === "/api/usage") return json(usageReport(), 200, { "cache-control": "no-store" });
+  if (path === "/api/usage/statusline") {
+    if (method === "POST") {
+      let raw: unknown;
+      try { raw = init?.body ? JSON.parse(String(init.body)) : undefined; } catch { return error("invalid_json", "The body is not JSON", 400); }
+      if (typeof raw !== "object" || raw === null || typeof (raw as { enabled?: unknown }).enabled !== "boolean") return error("invalid_body", "Send { \"enabled\": true } or { \"enabled\": false }", 400);
+      demoStatusline = (raw as { enabled: boolean }).enabled;
+    }
+    return json({ installed: demoStatusline, supported: true }, 200, { "cache-control": "no-store" });
+  }
+  if (SIGN_IN_DEMO && path === "/api/usage/login/prompt") {
+    const login = signInDemo.panes.get(url.searchParams.get("login") ?? "");
+    if (login === undefined) return error("login_not_found", "No sign-in this server started runs in that pane", 404);
+    login.reads += 1;
+    const ended = login.provider === "claude" ? login.code : login.reads > 3;
+    if (ended) signInDemo.signedIn.add(login.provider);
+    if (ended) return json({ provider: login.provider, url: null, user_code: null, wants_code: false, ended: true }, 200, { "cache-control": "no-store" });
+    return json(login.provider === "claude"
+      ? { provider: "claude", url: CLAUDE_SIGN_IN_URL, user_code: null, wants_code: true, ended: false }
+      : { provider: "codex", url: "https://auth.openai.com/codex/device", user_code: "PDLB-SLDUA", wants_code: false, ended: false }, 200, { "cache-control": "no-store" });
+  }
+  if (SIGN_IN_DEMO && path === "/api/usage/login/code" && method === "POST") {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { login?: string; code?: string };
+    const login = signInDemo.panes.get(body.login ?? "");
+    if (login === undefined) return error("login_not_found", "This sign-in has ended. Start it again.", 404);
+    if (!/^[A-Za-z0-9._~#-]{1,2048}$/.test((body.code ?? "").trim())) return error("invalid_code", "Paste the code the sign-in page showed, as it is", 400);
+    login.code = true;
+    return new Response(null, { status: 204 });
+  }
+  if (SIGN_IN_DEMO && path === "/api/usage/login/cancel" && method === "POST") {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { login?: string };
+    signInDemo.panes.delete(body.login ?? "");
+    return new Response(null, { status: 204 });
+  }
   if (path === "/api/usage/login") {
+    if (SIGN_IN_DEMO && method === "POST") {
+      const body = JSON.parse(String(init?.body ?? "{}")) as { provider?: string; follow?: boolean };
+      if (!body.follow || (body.provider !== "claude" && body.provider !== "codex")) return error("demo", "This demo follows Claude Code and Codex only.", 409);
+      const login = `demo-login-${signInDemo.next++}`;
+      signInDemo.panes.set(login, { provider: body.provider, reads: 0, code: false });
+      return json({ login_id: login, device_auth: body.provider === "codex" });
+    }
     if (method === "GET") {
+      const asked = url.searchParams.get("provider");
+      if (SIGN_IN_DEMO && (asked === "claude" || asked === "codex")) {
+        const had = asked === "codex" ? ["sam@work.example", "sam@example.com"] : [];
+        return json({ accounts: signInDemo.signedIn.has(asked) ? [...had, asked === "claude" ? "me@example.test" : "codex@example.test"] : had });
+      }
       if (url.searchParams.has("provider")) return json({ accounts: url.searchParams.get("provider") === "cursor" ? ["cursor@example.test"] : [] });
       return json({ providers: [
         { id: "claude", cli: "claude", installed: true, local: true, separate_home: true },
@@ -1407,6 +1475,8 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     if (request.jump !== false && result.match) redrawHistory(target);
     return json(result);
   }
+  // the demo's sessions publish no pages: the artifacts chip stays away
+  if (path === "/api/pane/artifacts") return json({ artifacts: [] });
   if (path === "/api/pane/omo-tasks") return json({ tasks: keyOfPane.get(paneId) === "flaky" ? BACKGROUND_TASKS : [], runs: [], server_time: new Date().toISOString() } satisfies OmoActivity);
   if (path === "/api/pane/background-agent") {
     if (method !== "GET") return error("method_not_allowed", "use GET", 400);
@@ -2066,7 +2136,7 @@ class DemoSocket extends EventTarget {
       const open = new Event("open");
       this.onopen?.(open);
       this.dispatchEvent(open);
-      this.push({ type: "snapshot", snapshot: readSnapshot(local)!, features: ["submit", "pending-input", "pending-hold", "secret-input", "input-ready", "conversation-watch", "ping", "terminal-insert"], connection: this.connection });
+      this.push({ type: "snapshot", snapshot: readSnapshot(local)!, features: ["submit", "pending-input", "pending-hold", "secret-input", "input-ready", "conversation-watch", "ping", "terminal-insert", "agent-only"], connection: this.connection });
     }, 20);
     this.timers.add(opening);
   }
@@ -2099,10 +2169,10 @@ class DemoSocket extends EventTarget {
 
   send(raw: string): void {
     if (this.readyState !== 1) return;
-    let message: { type: string; pane_id?: string; cols?: number; rows?: number; text?: string; payload?: string; keys?: string[]; id?: number; mode?: string; typed?: unknown; delivery?: unknown; clear_draft?: unknown; send_anyway?: unknown; resend_id?: unknown; resend_generation?: unknown; pending_id?: string; action?: unknown; enabled?: boolean; stop?: unknown; keep_size?: boolean };
+    let message: { type: string; pane_id?: string; cols?: number; rows?: number; text?: string; payload?: string; keys?: string[]; id?: number; mode?: string; typed?: unknown; delivery?: unknown; clear_draft?: unknown; send_anyway?: unknown; resend_id?: unknown; resend_generation?: unknown; agent_only?: unknown; pending_id?: string; action?: unknown; enabled?: boolean; stop?: unknown; keep_size?: boolean };
     try { message = JSON.parse(raw); } catch { return; }
     if ((message.type === "submit" || message.type === "pending-action") && Number.isSafeInteger(message.id)) {
-      const signature = JSON.stringify({ type: message.type, pane_id: message.pane_id, text: message.text, payload: message.payload, typed: message.typed, delivery: message.delivery, clear_draft: message.clear_draft, send_anyway: message.send_anyway, resend_id: message.resend_id, resend_generation: message.resend_generation, pending_id: message.pending_id, action: message.action });
+      const signature = JSON.stringify({ type: message.type, pane_id: message.pane_id, text: message.text, payload: message.payload, typed: message.typed, delivery: message.delivery, clear_draft: message.clear_draft, send_anyway: message.send_anyway, resend_id: message.resend_id, resend_generation: message.resend_generation, agent_only: message.agent_only, pending_id: message.pending_id, action: message.action });
       const previous = this.requests.get(message.id!);
       if (previous) {
         if (previous.signature !== signature) {
@@ -2248,7 +2318,10 @@ class DemoSocket extends EventTarget {
             || queued || (message.typed !== undefined && message.typed !== false))) code = "invalid_delivery";
           else if (message.send_anyway !== undefined && (message.send_anyway !== true || queued || message.clear_draft !== undefined
             || (message.typed !== undefined && message.typed !== false))) code = "invalid_delivery";
+          else if (message.agent_only !== undefined && (message.agent_only !== true || message.typed === true)) code = "invalid_delivery";
           else if (this.mode === "observe") code = "read_only";
+          // a message for an agent alone (#511), as the bridge refuses it: nothing typed where no agent is
+          else if (message.agent_only === true && !paneOf(message.pane_id)?.agent) code = "agent_not_ready";
           // the demo agent never refuses over its input box, so there is nothing to clear or send over
           else if (message.clear_draft !== undefined || message.send_anyway !== undefined) code = "unsupported";
           else if (message.resend_id !== undefined && (typeof message.resend_id !== "string" || !message.resend_id || message.resend_id.length > 128 || queued || message.typed === true)) code = "invalid_delivery";
@@ -2260,13 +2333,13 @@ class DemoSocket extends EventTarget {
           if (code) {
             const framingRefused = badFraming && code === "invalid_submit_text";
             const reply: Extract<ServerMessage, { type: "submit-result" }> = { type: "submit-result", id: message.id, pane_id: message.pane_id, ok: false, code,
-              message: framingRefused ? `A message must be at most ${framingLimit} characters, without terminal control characters or paste markers, and sent as the composer shapes it; nothing was typed` : "The demo agent cannot take this submission." };
+              message: framingRefused ? `A message must be at most ${framingLimit} characters, without terminal control characters or paste markers, and sent as the composer shapes it; nothing was typed` : code === "agent_not_ready" ? NO_AGENT_MESSAGE : "The demo agent cannot take this submission." };
             if (resendKey !== null && this.mode !== "observe" && code !== "pending_limit" && !framingRefused && !previous) heldCopyResends.set(resendKey, { text, reply, at: Date.now() });
             this.completeRequest(reply);
             break;
           }
           if (queued && (message.delivery === "hold" || paneOf(message.pane_id)?.agent_status === "working")) {
-            const pending: PendingMessage = { id: `demo-pending-${nextPending++}`, request_id: message.id, text, state: message.delivery === "hold" ? "held" : "queued", created_at: now() };
+            const pending: PendingMessage = { id: `demo-pending-${nextPending++}`, request_id: message.id, text, state: message.delivery === "hold" ? "held" : "queued", created_at: now(), ...(message.agent_only === true ? { agent_only: true as const } : {}) };
             this.pending.set(message.pane_id, [...(this.pending.get(message.pane_id) ?? []), pending]);
             const reply: ServerMessage = { type: "submit-result", id: message.id, pane_id: message.pane_id, ok: true, pending: structuredClone(pending) };
             this.rememberRequest(reply);
