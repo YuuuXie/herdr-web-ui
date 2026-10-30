@@ -26,6 +26,18 @@ bundle builds. Logs and verification receipts live under
 `~/.local/share/ovis-personal/`. Browser prerequisites are configured there.
 An existing receipt is reusable only while source and recorded artifacts match.
 
+For an explicitly approved partial rollout, `prepare <sha> --exclude-machine <id>`
+and `deploy <sha> --exclude-machine <id>` leave that enabled SSH PC untouched.
+Repeat the flag for multiple PCs. Exclusions must name existing enabled SSH PCs;
+the local PC cannot be excluded. Preparation receipts and recovery journals retain
+the exact exclusions, and promotion refuses a different scope. All selected PCs
+still require connectivity, authenticated bundle deployment and preservation checks.
+This does not disable or remove the excluded PC from Ovis. Until this controller
+version is published, invoke `python3 <candidate>/personal/production.py` directly
+for both scoped commands rather than the older installed launcher.
+Exclusions apply to this controller rollout, not the app's existing automatic
+bridge-update preference when a PC later reconnects.
+
 Remote deployment reuses upstream's strict SSH, authenticated bridge identity,
 checksum verification and immutable runtime installation. It explicitly refreshes
 the bundle by content even when the upstream bundle version is unchanged: the

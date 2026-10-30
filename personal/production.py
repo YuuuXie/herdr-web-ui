@@ -53,8 +53,9 @@ def verified_report(report, revision):
 
 
 class Production:
-    def __init__(self, config):
+    def __init__(self, config, excluded_machines=()):
         self.config = config
+        self.excluded_machines = sorted(set(excluded_machines))
         self.repo = Path(config["repository"]).resolve()
         self.data = Path(config["data_dir"]).resolve()
         self.releases = Path(config["releases_dir"]).resolve()
@@ -79,11 +80,19 @@ class Production:
         with urllib.request.urlopen(f"http://127.0.0.1:{self.config['port']}{path}", timeout=timeout) as response:
             return json.load(response)
 
-    def machines(self):
+    def rollout_roster(self):
         roster = self.json_get("/api/machines")["machines"]
-        if any(m["state"] != "connected" for m in roster if m.get("enabled")):
-            raise RuntimeError("Reconnect every enabled PC before deployment")
-        return [{"id": m["id"], "target": m["target"]} for m in roster if m.get("enabled") and m["kind"] == "ssh"]
+        for machine_id in self.excluded_machines:
+            machine = next((m for m in roster if m["id"] == machine_id), None)
+            if machine is None or machine["kind"] != "ssh" or not machine.get("enabled"):
+                raise RuntimeError("An excluded machine must identify an enabled SSH PC")
+        return [m for m in roster if m.get("enabled") and m["id"] not in self.excluded_machines]
+
+    def machines(self):
+        roster = self.rollout_roster()
+        if any(m["state"] != "connected" for m in roster):
+            raise RuntimeError("Reconnect every selected PC before deployment")
+        return [{"id": m["id"], "target": m["target"]} for m in roster if m["kind"] == "ssh"]
 
     def remote(self, release, mode, machines):
         request = {"stateDir": self.config["state_dir"], "machines": machines}
@@ -129,7 +138,9 @@ class Production:
         release = self.releases / revision
         saved = self.data / "verified" / f"{revision}.json"
         if saved.exists():
-            self.receipt(release)
+            receipt = self.receipt(release)
+            if receipt.get("excluded_machines", []) != self.excluded_machines:
+                raise RuntimeError("Verified release has a different rollout scope")
             return release
         if not release.exists():
             self.run(["git", "worktree", "add", "--detach", release, revision])
@@ -177,10 +188,11 @@ class Production:
         for filename in files:
             if filename.is_file():
                 artifacts[str(filename.relative_to(release))] = digest(filename)
-        atomic_json(saved, {"revision": revision, "report": str(report), "artifacts": artifacts})
+        atomic_json(saved, {"revision": revision, "report": str(report), "artifacts": artifacts,
+                            "excluded_machines": self.excluded_machines})
         return release
 
-    def wait_healthy(self, revision, before):
+    def wait_healthy(self, revision, before, excluded_machines=()):
         deadline = time.monotonic() + 90
         last = "not ready"
         while time.monotonic() < deadline:
@@ -188,16 +200,17 @@ class Production:
                 health = self.json_get("/api/health", timeout=5)
                 roster = self.json_get("/api/machines", timeout=5)["machines"]
                 if health.get("ok") and health.get("web_ui", {}).get("revision") == revision:
-                    if all(m["state"] == "connected" for m in roster if m.get("enabled")):
+                    if all(m["state"] == "connected" for m in roster
+                           if m.get("enabled") and m["id"] not in excluded_machines):
                         for old in before:
                             now = next((m for m in roster if m["id"] == old["id"]), None)
-                            if now is None:
-                                raise RuntimeError("A pre-existing PC is missing after promotion")
+                            if now is None or not now.get("enabled") or now["state"] != "connected":
+                                raise RuntimeError("A selected PC is missing, disabled or disconnected after promotion")
                             old_ids = {p["pane_id"] for p in old["snapshot"]["panes"]}
                             if not old_ids.issubset(p["pane_id"] for p in now["snapshot"]["panes"]):
                                 raise RuntimeError("A pre-existing pane is missing after promotion")
                         return
-                last = "waiting for the pinned revision and every enabled PC"
+                last = "waiting for the pinned revision and every selected PC"
             except (OSError, ValueError, urllib.error.URLError) as error:
                 last = str(error)
             time.sleep(1)
@@ -232,7 +245,8 @@ class Production:
             except (RuntimeError, OSError, ValueError, subprocess.CalledProcessError) as error:
                 errors.append(f"PC {machine['id']} restoration failed: {error}")
         try:
-            self.wait_healthy(self.git("rev-parse", "HEAD", cwd=old), saved["before"])
+            self.wait_healthy(self.git("rev-parse", "HEAD", cwd=old), saved["before"],
+                              saved.get("excluded_machines", []))
         except (RuntimeError, OSError, ValueError, KeyError) as error:
             errors.append(f"Restored production health: {error}")
         if errors:
@@ -249,19 +263,22 @@ class Production:
 
     def deploy(self, release):
         release = Path(release).resolve()
-        self.receipt(release)
+        receipt = self.receipt(release)
+        if receipt.get("excluded_machines", []) != self.excluded_machines:
+            raise RuntimeError("Verified release has a different rollout scope")
         current = self.data / "current"
         old = current.resolve() if current.is_symlink() else Path(self.config["fallback_release"]).resolve()
         if old == release:
             print("The verified release is already current; rollback target unchanged", flush=True)
             return
         self.check_release(old)
-        roster = self.json_get("/api/machines")["machines"]
-        before = [{"id": m["id"], "snapshot": {"panes": [{"pane_id": p["pane_id"]} for p in m["snapshot"]["panes"]]}} for m in roster if m.get("enabled")]
+        roster = self.rollout_roster()
+        before = [{"id": m["id"], "snapshot": {"panes": [{"pane_id": p["pane_id"]} for p in m["snapshot"]["panes"]]}} for m in roster]
         machines = self.remote(release, "inspect", self.machines())["machines"]
         transaction = self.data / "transaction.json"
         saved = {"previous": str(old), "candidate": str(release), "helper": str(release),
-                 "machines": machines, "before": before, "local_stopped": False}
+                 "machines": machines, "before": before, "local_stopped": False,
+                 "excluded_machines": self.excluded_machines}
         # The upstream installer swaps the remote alias while staging, so recovery must already exist.
         atomic_json(transaction, saved)
         try:
@@ -274,7 +291,7 @@ class Production:
                 self.remote(release, "activate", [machine])
             switch_link(current, release)
             self.run(["systemctl", "--user", "start", self.config["service"]])
-            self.wait_healthy(self.git("rev-parse", "HEAD", cwd=release), before)
+            self.wait_healthy(self.git("rev-parse", "HEAD", cwd=release), before, self.excluded_machines)
         except (RuntimeError, OSError, ValueError, KeyError, subprocess.CalledProcessError) as error:
             print(f"Promotion failed: {error}; restoring {old}", file=sys.stderr, flush=True)
             self.restore(saved)
@@ -338,9 +355,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["prepare", "deploy", "update", "rollback", "serve", "status"])
     parser.add_argument("revision", nargs="?")
+    parser.add_argument("--exclude-machine", action="append", default=[], metavar="ID",
+                        help="leave an enabled SSH PC untouched during this prepare/deploy")
     args = parser.parse_args()
+    if args.exclude_machine and args.command not in ("prepare", "deploy"):
+        parser.error("--exclude-machine is only supported for prepare and deploy")
     config = json.loads((Path.home() / ".config/ovis-personal/config.json").read_text())
-    app = Production(config)
+    app = Production(config, args.exclude_machine)
     if args.command == "serve":
         app.serve()
         return

@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from production import Production, atomic_json, digest, switch_link, verified_report
 
@@ -35,13 +35,92 @@ class ProductionTests(unittest.TestCase):
         }
 
     def deployment_mocks(self):
-        self.app.receipt = Mock()
+        self.app.receipt = Mock(return_value={})
         self.app.json_get = Mock(return_value={"machines": []})
         self.app.machines = Mock(return_value=[])
         self.app.remote = Mock(return_value={"machines": []})
         self.app.run = Mock()
         self.app.git = Mock(side_effect=lambda *args, cwd=None: Path(cwd).name)
         self.app.wait_healthy = Mock()
+
+    def test_rollout_scope_excludes_only_explicit_enabled_ssh_pcs(self):
+        roster = [
+            {"id": "local", "kind": "local", "enabled": True, "state": "connected"},
+            {"id": "selected", "kind": "ssh", "enabled": True, "state": "connected", "target": {}},
+            {"id": "offline", "kind": "ssh", "enabled": True, "state": "reconnecting", "target": {}},
+            {"id": "disabled", "kind": "ssh", "enabled": False, "state": "disconnected", "target": {}},
+        ]
+        self.app.json_get = Mock(return_value={"machines": roster})
+        with self.assertRaisesRegex(RuntimeError, "Reconnect every selected PC"):
+            self.app.machines()
+        self.app.excluded_machines = ["offline"]
+        self.assertEqual(self.app.machines(), [{"id": "selected", "target": {}}])
+        self.assertTrue(roster[2]["enabled"])
+        for invalid in ["missing", "local", "disabled"]:
+            self.app.excluded_machines = [invalid]
+            with self.assertRaisesRegex(RuntimeError, "enabled SSH PC"):
+                self.app.machines()
+        self.app.excluded_machines = ["selected"]
+        with self.assertRaisesRegex(RuntimeError, "Reconnect every selected PC"):
+            self.app.machines()
+
+    def test_prepared_scope_cannot_be_changed_at_promotion_or_reuse(self):
+        self.deployment_mocks()
+        self.app.receipt.return_value = {"excluded_machines": ["offline"]}
+        with self.assertRaisesRegex(RuntimeError, "different rollout scope"):
+            self.app.deploy(self.new)
+        self.app.run.assert_not_called()
+        self.app.remote.assert_not_called()
+        atomic_json(self.app.data / "verified" / f"{self.new.name}.json", {})
+        self.app.git.return_value = self.new.name
+        self.app.git.side_effect = None
+        with self.assertRaisesRegex(RuntimeError, "different rollout scope"):
+            self.app.prepare(self.new.name)
+
+    def test_scoped_promotion_and_recovery_retain_exact_exclusions(self):
+        self.deployment_mocks()
+        self.app.excluded_machines = ["offline"]
+        self.app.receipt.return_value = {"excluded_machines": ["offline"]}
+        selected = {"id": "local", "kind": "local", "enabled": True,
+                    "state": "connected", "snapshot": {"panes": [{"pane_id": "kept"}]}}
+        self.app.json_get.return_value = {"machines": [
+            selected, {"id": "offline", "kind": "ssh", "enabled": True, "state": "reconnecting"},
+        ]}
+        self.app.deploy(self.new)
+        before = [{"id": "local", "snapshot": {"panes": [{"pane_id": "kept"}]}}]
+        self.app.wait_healthy.assert_called_once_with(self.new.name, before, ["offline"])
+        saved = json.loads((self.app.data / "previous-deployment.json").read_text())
+        self.assertEqual(saved["excluded_machines"], ["offline"])
+        self.assertEqual(saved["before"], before)
+        self.app.excluded_machines = []
+        self.app.wait_healthy.reset_mock()
+        self.app.rollback()
+        self.app.wait_healthy.assert_called_once_with(self.old.name, before, ["offline"])
+
+    def test_scoped_health_still_requires_selected_connection_and_panes(self):
+        local = {"id": "local", "enabled": True, "state": "connected",
+                 "snapshot": {"panes": [{"pane_id": "kept"}]}}
+        offline = {"id": "offline", "enabled": True, "state": "reconnecting"}
+        self.app.json_get = Mock(side_effect=[
+            {"ok": True, "web_ui": {"revision": self.new.name}},
+            {"machines": [local, offline]},
+        ])
+        before = [{"id": "local", "snapshot": {"panes": [{"pane_id": "kept"}]}}]
+        self.app.wait_healthy(self.new.name, before, ["offline"])
+        for roster, excluded, message in [
+            ([local, offline], [], "health check failed"),
+            ([{**local, "state": "disconnected"}, offline], ["offline"], "health check failed"),
+            ([], ["offline"], "selected PC is missing"),
+            ([{**local, "enabled": False}, offline], ["offline"], "selected PC is missing"),
+            ([{**local, "snapshot": {"panes": []}}, offline], ["offline"], "pane is missing"),
+        ]:
+            self.app.json_get = Mock(side_effect=lambda path, timeout=5: (
+                {"ok": True, "web_ui": {"revision": self.new.name}} if path == "/api/health"
+                else {"machines": roster}
+            ))
+            with patch("production.time.monotonic", side_effect=[0, 0, 100]), patch("production.time.sleep"):
+                with self.assertRaisesRegex(RuntimeError, message):
+                    self.app.wait_healthy(self.new.name, before, excluded)
 
     def test_report_requires_success_and_clean_unchanged_exact_revision(self):
         self.assertTrue(verified_report(self.report, self.new.name))
