@@ -1044,6 +1044,12 @@ describe("terminal attach capability", () => {
     expect(attachableIdentity(mirrored, false)).toEqual(mirrored);
   });
 
+  it("attaches on herdr-core without a PTY host: its stream runs on the server's own hc connection", () => {
+    const declared = { version: "0.1.14", protocol: 22, terminal_attach: true };
+    expect(attachableIdentity(declared, false, true)).toEqual(declared);
+    expect(attachableIdentity(declared, false, false)).toEqual({ ...declared, terminal_attach: false, terminal_mirror: true });
+  });
+
   it("counts the sidecar as runnable only with both node and node-pty", () => {
     expect(sidecarAvailable({ node: () => true, pty: () => true })).toBe(true);
     expect(sidecarAvailable({ node: () => false, pty: () => true })).toBe(false);

@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, spyOn } from "bun:test";
 import { dlopen, FFIType, ptr } from "bun:ffi";
-import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix, win32 } from "node:path";
 import { Database } from "bun:sqlite";
-import { codexCallFailed, codexHistoryTail, codexHomeInPsLine, codexRolloutPath, interactiveCodexRollout, processCodexHome, forgetHistoryChains, matchCodexFirstExchange, matchCodexTranscript, matchShortCodexAnswers, parseCodexTranscript, codexPeersIn, resumedThread, rolloutInsideStore, sameDirectory, storedCwdCondition, storedCwds, unansweredCodexQuestions, withoutVerbatimPrefix } from "./codex.ts";
+import { codexCallFailed, codexHistoryTail, CodexStoreChanged, openCodexStore, codexHomeInPsLine, codexRolloutPath, interactiveCodexRollout, processCodexHome, forgetHistoryChains, matchCodexFirstExchange, matchCodexTranscript, matchShortCodexAnswers, parseCodexTranscript, codexPeersIn, resumedThread, rolloutInsideStore, sameDirectory, storedCwdCondition, storedCwds, unansweredCodexQuestions, withoutVerbatimPrefix } from "./codex.ts";
 import type { HerdrPane } from "../shared/protocol.ts";
 import { splitTurn } from "../src/lib/workBlocks.ts";
 import rolloutHeaders from "./fixtures/codex-rollout-headers.json";
@@ -1230,5 +1230,132 @@ describe("incremental Codex records", () => {
     parser.write(final);
     expect(parser.snapshot()).toEqual(parseCodexTranscript(`${first}\n${second}\n${final}`));
     expect(parser.snapshot().at(-1)?.parts.at(-1)).toMatchObject({ phase: "final_answer", text: "Finished" });
+  });
+});
+
+describe("Codex's store, read whether or not a Codex holds it (#2444)", () => {
+  const made = (home: string) => {
+    const writer = new Database(join(home, "state_5.sqlite"));
+    writer.exec("PRAGMA journal_mode = WAL; CREATE TABLE threads (id TEXT, note TEXT); INSERT INTO threads (id) VALUES ('t1');");
+    return writer;
+  };
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("reads a WAL-mode store left with no -wal or -shm, making nothing beside it", () => {
+    const home = mkdtempSync(join(tmpdir(), "ovis-codex-store-"));
+    try {
+      made(home).close();
+      // as Codex leaves it once no Codex holds it: the store alone, which SQLite may not open read-only when
+      // it cannot make the -shm (macOS's SQLite; here a folder it may not write into)
+      expect(readdirSync(home)).toEqual(["state_5.sqlite"]);
+      chmodSync(home, 0o555);
+      expect(() => new Database(join(home, "state_5.sqlite"), { readonly: true, create: false }).query("SELECT id FROM threads").all()).toThrow();
+      const { db, immutable, settled } = openCodexStore(home);
+      try {
+        expect(immutable).toBe(true);
+        expect(db.query("SELECT id FROM threads").all()).toEqual([{ id: "t1" }]);
+        expect(settled).not.toThrow();
+      } finally { db.close(); }
+      expect(readdirSync(home)).toEqual(["state_5.sqlite"]);
+    } finally {
+      chmodSync(home, 0o755);
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses what it read once a Codex opened the store or wrote it meanwhile", () => {
+    const home = mkdtempSync(join(tmpdir(), "ovis-codex-store-"));
+    try {
+      made(home).close();
+      const opened = openCodexStore(home);
+      try {
+        expect(opened.db.query("SELECT id FROM threads").all()).toEqual([{ id: "t1" }]);
+        // a Codex opens the store and writes a thread: its -wal appears beside it
+        const writer = new Database(join(home, "state_5.sqlite"));
+        try {
+          writer.exec("INSERT INTO threads (id) VALUES ('t2')");
+          expect(opened.settled).toThrow(CodexStoreChanged);
+        } finally { writer.close(); }
+      } finally { opened.db.close(); }
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  it("refuses what it read once a Codex wrote the store and closed it again meanwhile", () => {
+    const home = mkdtempSync(join(tmpdir(), "ovis-codex-store-"));
+    try {
+      made(home).close();
+      const opened = openCodexStore(home);
+      try {
+        expect(opened.db.query("SELECT id FROM threads").all()).toEqual([{ id: "t1" }]);
+        // Codex opens the store, writes, checkpoints and closes it: no side file is left, the file itself moved
+        const writer = new Database(join(home, "state_5.sqlite"));
+        // a row larger than a page, so the file surely grows: timestamps alone may not move within one tick
+        writer.query("INSERT INTO threads VALUES ('t2', ?)").run("x".repeat(64 * 1024));
+        writer.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+        writer.close();
+        expect(readdirSync(home)).toEqual(["state_5.sqlite"]);
+        expect(opened.settled).toThrow(CodexStoreChanged);
+      } finally { opened.db.close(); }
+    } finally { rmSync(home, { recursive: true, force: true }); }
+  });
+
+  it.skipIf(process.platform === "win32")("reads a store behind a link as the store a Codex holds, rows not yet checkpointed included", () => {
+    const home = mkdtempSync(join(tmpdir(), "ovis-codex-store-"));
+    const target = mkdtempSync(join(tmpdir(), "ovis-codex-store-target-"));
+    const writer = made(target);
+    try {
+      symlinkSync(join(target, "state_5.sqlite"), join(home, "state_5.sqlite"));
+      writer.exec("PRAGMA wal_autocheckpoint = 0; INSERT INTO threads (id) VALUES ('t2');");
+      // the live -wal lies beside the store, not beside the link to it
+      expect(readdirSync(home)).toEqual(["state_5.sqlite"]);
+      const { db, immutable, settled } = openCodexStore(home);
+      try {
+        expect(immutable).toBe(false);
+        expect(db.query("SELECT id FROM threads ORDER BY id").all()).toEqual([{ id: "t1" }, { id: "t2" }]);
+        expect(settled).not.toThrow();
+      } finally { db.close(); }
+    } finally {
+      writer.close();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(target, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("refuses what it read once the link to the store was pointed at another store", () => {
+    const home = mkdtempSync(join(tmpdir(), "ovis-codex-store-"));
+    const first = mkdtempSync(join(tmpdir(), "ovis-codex-store-a-"));
+    const second = mkdtempSync(join(tmpdir(), "ovis-codex-store-b-"));
+    try {
+      made(first).close();
+      made(second).close();
+      const link = join(home, "state_5.sqlite");
+      symlinkSync(join(first, "state_5.sqlite"), link);
+      const opened = openCodexStore(home);
+      try {
+        expect(opened.db.query("SELECT id FROM threads").all()).toEqual([{ id: "t1" }]);
+        // another store now stands where the pane's Codex keeps its own
+        rmSync(link);
+        symlinkSync(join(second, "state_5.sqlite"), link);
+        expect(opened.settled).toThrow(CodexStoreChanged);
+      } finally { opened.db.close(); }
+    } finally {
+      for (const dir of [home, first, second]) rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads a store a Codex holds open, rows not yet checkpointed included", () => {
+    const home = mkdtempSync(join(tmpdir(), "ovis-codex-store-"));
+    const writer = made(home);
+    try {
+      writer.exec("PRAGMA wal_autocheckpoint = 0; INSERT INTO threads (id) VALUES ('t2');");
+      const { db, immutable, settled } = openCodexStore(home);
+      try {
+        expect(immutable).toBe(false);
+        expect(db.query("SELECT id FROM threads ORDER BY id").all()).toEqual([{ id: "t1" }, { id: "t2" }]);
+        expect(settled).not.toThrow();
+      } finally { db.close(); }
+    } finally {
+      writer.close();
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

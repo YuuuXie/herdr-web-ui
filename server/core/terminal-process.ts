@@ -6,10 +6,11 @@
 import type { HerdrPane, ServerMessage } from "../../shared/protocol.ts";
 import { AttachOutputTail, AttachStartupProbes, isTakeoverExit } from "../attach-output.ts";
 import { HerdrError, herdrSocketPath, paneRead, paneSendText, sessionSnapshot } from "../herdr/client.ts";
-import { hcBin, runtime } from "../herdr-core/runtime.ts";
+import { CoreAttachSession } from "../herdr-core/attach-session.ts";
+import { coreConnection, hcBin, runtime } from "../herdr-core/runtime.ts";
 import { MirrorSession } from "../mirror.ts";
 import { ReplayBuffer } from "../output-window.ts";
-import { PtySession } from "../pty/session.ts";
+import { PtySession, type PtySessionOptions } from "../pty/session.ts";
 import { type Client, connectionOf } from "./connections.ts";
 
 const MAX_REPLAY_BYTES = 128 * 1024;
@@ -193,7 +194,7 @@ interface AttachmentState {
 export interface PtyAttachment extends AttachmentState {
   readonly kind: "pty";
   /** the attach the latest start made: each retry, take-over or handoff's new terminal replaces it */
-  process: PtySession;
+  process: PtySession | CoreAttachSession;
   /** a held terminal's next try takes the slot from the other bridge for this client (`take-over`) */
   takeOver?: (client: Client) => void;
   /** how many times the pty took a new grid: an attach tells from it that it was resized since it started */
@@ -355,7 +356,7 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
     /** One budget persists across consecutive exits during recovery. Starting an attach never renews it. */
     let recoveryDeadline: number | null = null;
     let recoveryRetries = 0;
-    const start = (): PtySession => {
+    const start = (): PtySession | CoreAttachSession => {
       const onCore = runtime() === "herdr-core";
       let takingOver = mayTakeOver(takeover) ? takeover : null;
       takeover = null;
@@ -663,18 +664,14 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
         }
         took();
       };
-      const session = new PtySession({
+      const options: PtySessionOptions = {
         command,
         // --takeover goes after the id: before it, herdr reads the id as an unknown option
-        args: onCore ? ["attach", attachedTerminal] : ["terminal", "attach", attachedTerminal, ...(takingOver ? ["--takeover"] : [])],
+        args: ["terminal", "attach", attachedTerminal, ...(takingOver ? ["--takeover"] : [])],
         // herdr's CLI reads HERDR_SOCKET_PATH, not HERDR_SOCKET: the stream must reach
         // the same session the RPCs talk to, or a named session's terminals are
         // looked up on the default socket and the attach dies.
-        ...(onCore ? {
-          // hc inherits HC_SOCKET / HC_SESSION, never herdr's CLI socket override.
-          inheritEnv: false,
-          env: Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[0] !== "HERDR_SOCKET_PATH" && entry[1] !== undefined)),
-        } : { env: { HERDR_SOCKET_PATH: herdrSocketPath() } }),
+        env: { HERDR_SOCKET_PATH: herdrSocketPath() },
         cols: attachment.cols,
         rows: attachment.rows,
         onData: (data) => {
@@ -726,7 +723,11 @@ export function createSpawnAttachment({ attachments, retiringAttachments, termin
           }
         },
         onExit: ended,
-      });
+      };
+      // on herdr-core the stream is a channel on the server's own hc connection: no `hc attach`, no PTY host
+      const session: PtySession | CoreAttachSession = onCore
+        ? new CoreAttachSession({ hc: coreConnection(), terminal: attachedTerminal, cols: options.cols, rows: options.rows, onData: options.onData, onExit: ended })
+        : new PtySession(options);
       return session;
     };
     attachment.takeOver = (client) => {

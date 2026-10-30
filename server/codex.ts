@@ -1,10 +1,11 @@
 /** Native Codex rollouts contain both display events and model context. Only
  * conversation records belong in chat; developer prompts and terminal chrome do not. */
-import { Database } from "bun:sqlite";
-import { closeSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
+import { constants as sqliteConstants, Database } from "bun:sqlite";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, statSync } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import nodePath, { isAbsolute, join, type PlatformPath } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { ConversationPart, ConversationTurn, HerdrPane } from "../shared/protocol.ts";
 import { patchFiles, patchText } from "../shared/patch.ts";
 import { processStartedAt, processStartLowerBound, processStartUpperBound } from "./process-start.ts";
@@ -358,6 +359,59 @@ export function parseCodexTranscript(text: string, maxTurns = 100): Conversation
   parser.write(text);
   return parser.snapshot().slice(-maxTurns);
 }
+
+/** Codex's store changed while it was read immutable (openCodexStore): what was read is not used. */
+export class CodexStoreChanged extends Error {}
+
+/**
+ * Codex's store (state_5.sqlite), read-only and never written. With a side file beside it (-wal, -shm or
+ * -journal) a Codex holds it, and it opens read-only as before. Without one, a WAL-mode store may not open
+ * read-only at all (macOS's SQLite will not make the -shm it asks for, #2444), but every row is in the file
+ * then: it opens immutable, so SQLite reads it without side files or locks. Such a read holds only while no
+ * Codex writes: `settled`, called after the last query and before anything read is used, throws
+ * CodexStoreChanged when the file changed (its identity, size, modification or change time) or a side file
+ * appeared, and the caller falls back. Coarse timestamps can hide a same-size rewrite within one tick: the
+ * limit, as for the session stores (server/session-history.ts).
+ */
+export function openCodexStore(home: string): { db: Database; immutable: boolean; settled: () => void } {
+  const named = join(home, "state_5.sqlite");
+  // the store itself, links resolved: its side files lie beside it, not beside a link to it, and it is
+  // opened by that path. One that will not resolve is opened read-only by its name, as before (never immutable)
+  let store: string;
+  try { store = realpathSync(named); } catch { return { db: new Database(named, { readonly: true, create: false }), immutable: false, settled: () => {} }; }
+  const before = statSync(store, { bigint: true });
+  // still the store read: a link re-pointed since it was resolved names another store now
+  const same = () => {
+    let now: string;
+    try { now = realpathSync(named); } catch { return false; }
+    const stat = statSync(now, { bigint: true, throwIfNoEntry: false });
+    return now === store && stat !== undefined && stat.dev === before.dev && stat.ino === before.ino;
+  };
+  const held = () => ["-wal", "-shm", "-journal"].some((suffix) => existsSync(store + suffix));
+  if (held()) {
+    return {
+      db: new Database(store, { readonly: true, create: false }),
+      immutable: false,
+      settled: () => { if (!same()) throw new CodexStoreChanged("Codex's store was moved while it was read"); },
+    };
+  }
+  const db = new Database(`${pathToFileURL(store).href}?immutable=1`, sqliteConstants.SQLITE_OPEN_READONLY | sqliteConstants.SQLITE_OPEN_URI);
+  return {
+    db,
+    immutable: true,
+    settled: () => {
+      const now = statSync(store, { bigint: true, throwIfNoEntry: false });
+      if (now === undefined || !same() || held() || now.size !== before.size
+        || now.mtimeNs !== before.mtimeNs || now.ctimeNs !== before.ctimeNs) throw new CodexStoreChanged("Codex's store changed while it was read");
+    },
+  };
+}
+
+/** Whether a store read that failed may be taken as failed, not torn: a Codex wrote no immutable read under it. */
+const storeUnchanged = (opened: ReturnType<typeof openCodexStore> | undefined): boolean => {
+  if (opened?.immutable !== true) return true;
+  try { opened.settled(); return true; } catch { return false; }
+};
 
 export const defaultCodexHome = (): string => process.env["CODEX_HOME"] || join(homedir(), ".codex");
 
@@ -1525,7 +1579,8 @@ export async function codexFreshSession(paneId: string, cwds: readonly string[],
   try {
     // a store Codex has not made yet holds no thread
     if (statSync(store, { throwIfNoEntry: false }) !== undefined) {
-      db = new Database(store, { readonly: true, create: false });
+      const opened = openCodexStore(home);
+      db = opened.db;
       // each folder the pane names (its shell's, its foreground process's), as given and as it
       // resolves: Codex may have stored any of them
       const named = cwds.filter((cwd) => cwd.length > 0);
@@ -1537,6 +1592,7 @@ export async function codexFreshSession(paneId: string, cwds: readonly string[],
       const begun = db.query<unknown, (string | number)[]>(
         `SELECT 1 FROM threads WHERE (${folders.map((folder) => folder.where).join(" OR ")}) AND archived = 0 AND agent_role IS NULL${interactive(db)}${said} AND max(COALESCE(created_at, 0), COALESCE(updated_at, 0)) >= ? LIMIT 1`,
       ).get(...folders.flatMap((folder) => folder.params), since);
+      opened.settled();
       if (begun !== null) return null;
     }
   } catch { return null; }
@@ -1714,11 +1770,13 @@ async function loadedRollouts(home: string): Promise<Map<string, LoadedThread> |
   if (ids.size === 0) return loaded;
   let db: Database | undefined;
   try {
-    db = new Database(join(home, "state_5.sqlite"), { readonly: true, create: false });
+    const opened = openCodexStore(home);
+    db = opened.db;
     const list = [...ids.keys()];
     const rows = db.query<{ id: string; rollout_path: string; offered: number }, string[]>(
       `SELECT id, rollout_path, (archived = 0 AND agent_role IS NULL${interactive(db)}) AS offered FROM threads WHERE lower(id) IN (${list.map(() => "?").join(", ")})`,
     ).all(...list);
+    opened.settled();
     if (new Set(rows.map((row) => row.id.toLowerCase())).size !== ids.size) return null;
     for (const row of rows) {
       const path = storeRolloutPath(row.rollout_path, home);
@@ -2413,7 +2471,8 @@ async function shortThreadFromProcess(
     const peers = panes ?? (await sessionSnapshot()).panes;
     if (peers.some((pane) => pane.pane_id !== paneId
       && resolveAgent(pane).agent === "codex" && pane.cwd == null)) return null;
-    db = new Database(join(home, "state_5.sqlite"), { readonly: true, create: false });
+    const opened = openCodexStore(home);
+    db = opened.db;
     const columns = new Set(db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('threads')").all().map((column) => column.name));
     if (!columns.has("first_user_message") || !columns.has("source")) return null;
     // a time in whole seconds as the last millisecond of that second: compared with the start's
@@ -2425,6 +2484,7 @@ async function shortThreadFromProcess(
       `SELECT rollout_path AS rolloutPath, first_user_message AS firstUserMessage, ${created} AS createdAtMs
        FROM threads WHERE ${where} AND archived = 0 AND agent_role IS NULL${interactive(db)} LIMIT 33`,
     ).all(...params);
+    opened.settled();
     if (rows.length > SHORT_THREAD_LIMIT || rows.some((row) => !Number.isFinite(row.createdAtMs))) return null;
     // Only a thread created after this process's start bound may be its new first exchange, and
     // not one another pane holds by stronger evidence: after A's /new, B's one word still tells
@@ -2475,8 +2535,10 @@ function reportedRollout(session: AgentInfo["agent_session"], home: string): str
   if (!UUID.test(session.value)) return null;
   let db: Database | undefined;
   try {
-    db = new Database(join(home, "state_5.sqlite"), { readonly: true, create: false });
+    const opened = openCodexStore(home);
+    db = opened.db;
     const row = db.query<{ rollout_path: string }, [string]>("SELECT rollout_path FROM threads WHERE id = ?").get(session.value);
+    opened.settled();
     return row ? codexRolloutPath(row.rollout_path, home) : null;
   } catch { return null; }
   finally { db?.close(); }
@@ -2508,7 +2570,8 @@ async function freshReportedThread(
   if (theirs([reported], paneId).length !== 1) return false;
   let db: Database | undefined;
   try {
-    db = new Database(join(home, "state_5.sqlite"), { readonly: true, create: false });
+    const opened = openCodexStore(home);
+    db = opened.db;
     const columns = new Set(db.query<{ name: string }, []>("SELECT name FROM pragma_table_info('threads')").all().map((column) => column.name));
     // a time in whole seconds as its first millisecond to be begun since this pane's start for certain,
     // and as its last to be begun before another pane's start for certain
@@ -2519,6 +2582,7 @@ async function freshReportedThread(
     const rows = db.query<{ id: string; rolloutPath: string; createdAtMs: number; createdLatestMs: number }, string[]>(
       `SELECT id, rollout_path AS rolloutPath, ${earliest} AS createdAtMs, ${latest} AS createdLatestMs FROM threads WHERE ${where} AND archived = 0 AND agent_role IS NULL${interactive(db)}`,
     ).all(...params);
+    opened.settled();
     const row = rows.find((candidate) => (codexRolloutPath(candidate.rolloutPath, home) ?? candidate.rolloutPath) === reported);
     if (row === undefined || !Number.isFinite(row.createdAtMs) || row.createdAtMs < notBefore) return false;
     // another thread of the cwd begun since (a /new) may be what the pane shows now
@@ -2594,11 +2658,19 @@ export async function codexOpenRollout(paneId: string, cwd: string | null | unde
   const bound = boundRollouts.get(paneId);
   if (bound === undefined || bound.processes !== processes || processes === "" || !cwd || codexRolloutPath(bound.path, home) === null) return null;
   let db: Database | undefined;
+  let opened: ReturnType<typeof openCodexStore> | undefined;
   try {
-    db = new Database(join(home, "state_5.sqlite"), { readonly: true, create: false });
-    if (bound.titled === true && titledCandidate(agent, codexProcesses, db, home) !== bound.path) return null;
-    return newerThreads(db, cwd, Math.floor(bound.at / 1000), null, paneId, home).length === 0 ? bound.path : null;
-  } catch {
+    opened = openCodexStore(home);
+    db = opened.db;
+    const titledAway = bound.titled === true && titledCandidate(agent, codexProcesses, db, home) !== bound.path;
+    const newer = titledAway ? [] : newerThreads(db, cwd, Math.floor(bound.at / 1000), null, paneId, home);
+    opened.settled();
+    if (titledAway) return null;
+    return newer.length === 0 ? bound.path : null;
+  } catch (error) {
+    // a store that changed while it was read tells nothing, and keeps no binding. An immutable read that
+    // failed on a store that did not change failed as any read would (an older store's tables)
+    if (error instanceof CodexStoreChanged || !storeUnchanged(opened)) return null;
     // no store to ask, as codexTranscriptPath then keeps its binding too; one the title made cannot be checked
     return bound.titled === true ? null : bound.path;
   } finally { db?.close(); }
@@ -2652,8 +2724,10 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
   let listed = false;
   /** the conversation only the title offers (titledCandidate), from another folder */
   let titledElsewhere: string | null = null;
+  let opened: ReturnType<typeof openCodexStore> | undefined;
   try {
-    db = new Database(join(home, "state_5.sqlite"), { readonly: true, create: false });
+    opened = openCodexStore(home);
+    db = opened.db;
     if (resumed !== null) {
       const row = db.query<{ rollout_path: string }, [string]>("SELECT rollout_path FROM threads WHERE id = ?").get(resumed);
       // After /new the command line still names the resumed thread. Trust it only while
@@ -2684,7 +2758,14 @@ export async function codexTranscriptPath(paneId: string, cwd: string, home = de
     paths = [...new Set([...paths, ...(reported !== null ? [reported] : []), ...rollouts.filter((path): path is string => path !== null)])];
     const titled = titledCandidate(agent, codexProcesses, db, home);
     if (titled !== null && !paths.includes(titled)) { titledElsewhere = titled; paths.push(titled); }
-  } catch { /* Older installations can still resolve their open descriptors. */ }
+    opened.settled();
+  } catch (error) {
+    // a store that changed while it was read tells nothing, and what was read of it is dropped: the terminal
+    // stands in until the next read. An immutable read that failed on a store that did not change failed as
+    // any read would (an older store's tables), and the open descriptors still tell below
+    if (error instanceof CodexStoreChanged || !storeUnchanged(opened)) return null;
+    /* Older installations can still resolve their open descriptors. */
+  }
   finally { db?.close(); }
   if (reported !== null && !paths.includes(reported)) paths.push(reported);
   // a binding the title made holds only while the title still names that thread
