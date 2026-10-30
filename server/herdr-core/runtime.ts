@@ -22,6 +22,20 @@ export function hcBin(): string {
   return process.env["OVIS_HC_BIN"] || "hc";
 }
 
+let connection: HcConnection | null = null;
+/** whether this process serves herdr-core (startRuntime ran): a remote bridge inheriting OVIS_RUNTIME does not */
+let serving = false;
+
+export function servingCore(): boolean {
+  return serving;
+}
+
+/** The server's one line to hc, which the adapter answers through and live terminals stream on. */
+export function coreConnection(): HcConnection {
+  connection ??= new HcConnection(() => spawnHcConnect(hcBin()));
+  return connection;
+}
+
 /**
  * On herdr-core, the adapter that answers herdr's API from hc (server/herdr-core/adapter.ts),
  * listening in the state folder, and HERDR_SOCKET pointed at it before anything reads it; on
@@ -36,15 +50,18 @@ export async function startRuntime(stateDir: string): Promise<HerdrCoreAdapter |
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
   if (statSync(stateDir).uid !== process.geteuid?.()) throw new Error("the herdr-core state directory is not owned by this user");
   chmodSync(stateDir, 0o700);
-  const hc = new HcConnection(() => spawnHcConnect(hcBin()));
+  const hc = coreConnection();
   const adapter = await startHerdrCoreAdapter(hc, join(stateDir, "herdr-core.sock"));
   chmodSync(adapter.socketPath, 0o600);
   process.env["HERDR_SOCKET"] = adapter.socketPath;
+  serving = true;
   return {
     socketPath: adapter.socketPath,
     stop: () => {
       adapter.stop();
       hc.close();
+      connection = null;
+      serving = false;
     },
   };
 }

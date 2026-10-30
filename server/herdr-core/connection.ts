@@ -23,6 +23,8 @@ export const FRAME_DATA = 0;
 export const FRAME_CREDIT = 1;
 export const FRAME_CLOSE = 2;
 export const FRAME_RESIZE = 3;
+export const FRAME_FOCUS = 4;
+export const FRAME_FACTS = 5;
 
 export class HcError extends Error {
   /** hc's stable `data.kind` (`not_found`, `blocked`, `unavailable`, …), or this side's own */
@@ -87,6 +89,8 @@ export interface ChannelHandlers {
   onData: (payload: Uint8Array) => void;
   /** the stream is over: hc's JSON reason when it sent one, or this side's when the line went */
   onClose: (reason: Record<string, unknown> | null) => void;
+  /** "manual": the owner credits what it consumed (`Channel.credit`), so it can hold a stream back */
+  credit?: "auto" | "manual";
 }
 
 export interface Channel {
@@ -94,6 +98,12 @@ export interface Channel {
   write: (payload: Uint8Array | string) => void;
   /** the viewer's grid; hc takes it as the terminal's size, this being the last active viewer */
   resize: (cols: number, rows: number) => void;
+  /** bytes of the stream consumed, for a channel opened with manual credit */
+  credit: (bytes: number) => void;
+  /** the viewer gained or lost focus: gaining it makes this viewer the active one */
+  focus: (focused: boolean) => void;
+  /** what the viewer's own terminal looks like (hc's `Display`: `fg`, `bg`, `cursor` as `#rrggbb`, `cell` in pixels) */
+  facts: (display: Record<string, unknown>) => void;
   /** Detaches; settles once hc answered with its own CLOSE (what was written before has gone in) or the line ended. */
   close: () => Promise<void>;
 }
@@ -150,6 +160,10 @@ interface Line {
   hello: Promise<HelloInfo>;
   pending: Map<number, PendingCall>;
   channels: Map<number, OpenChannel>;
+  /** frames on a channel whose call has not been answered yet: hc may send a stream's first frames before its reply */
+  early: Map<number, Frame[]>;
+  /** channels this side gave up on (a late answer, an unanswered detach): their frames are dropped, not kept */
+  abandoned: Set<number>;
   /** when hc last sent anything: a call that times out on a line silent since it was sent ends the line */
   heardAt: number;
   dead: boolean;
@@ -204,6 +218,15 @@ export class HcConnection {
           view.setUint16(2, rows, true);
           line.transport.write(encodeFrame(id, FRAME_RESIZE, grid));
         },
+        credit: (bytes) => {
+          if (bytes > 0 && live()) line.transport.write(encodeFrame(id, FRAME_CREDIT, credit(bytes)));
+        },
+        focus: (focused) => {
+          if (live()) line.transport.write(encodeFrame(id, FRAME_FOCUS, new Uint8Array([focused ? 1 : 0])));
+        },
+        facts: (display) => {
+          if (live()) line.transport.write(encodeFrame(id, FRAME_FACTS, JSON.stringify(display)));
+        },
         close: () => {
           const open = line.channels.get(id);
           if (line.dead || !open) return Promise.resolve();
@@ -218,6 +241,7 @@ export class HcConnection {
           const timer = setTimeout(() => {
             if (line.channels.get(id) !== open) return;
             line.channels.delete(id);
+            line.abandoned.add(id);
             open.closing?.();
           }, DEFAULT_TIMEOUT_MS);
           open.closing = () => { clearTimeout(timer); resolve(); };
@@ -271,7 +295,7 @@ export class HcConnection {
     const { promise: hello, resolve: helloDone, reject: helloFailed } = Promise.withResolvers<HelloInfo>();
     // a hello nobody awaited yet must not surface as an unhandled rejection
     hello.catch(() => {});
-    const line: Line = { transport, hello, pending: new Map(), channels: new Map(), heardAt: performance.now(), dead: false };
+    const line: Line = { transport, hello, pending: new Map(), channels: new Map(), early: new Map(), abandoned: new Set(), heardAt: performance.now(), dead: false };
     this.line = line;
     const fail = (kind: string, message: string) => {
       helloFailed(new HcError(kind, message));
@@ -319,16 +343,25 @@ export class HcConnection {
       return;
     }
     const open = line.channels.get(frame.channel);
+    if (!open) {
+      if (line.abandoned.has(frame.channel)) {
+        if (frame.kind === FRAME_CLOSE) line.abandoned.delete(frame.channel);
+        return;
+      }
+      // not ours yet: kept for the call whose answer names this channel (hc stops sending past its credit window)
+      line.early.set(frame.channel, [...(line.early.get(frame.channel) ?? []), frame]);
+      return;
+    }
     if (frame.kind === FRAME_DATA) {
       // credit back what was taken: hc holds a stream at 256 KiB unacknowledged
-      if (open && !open.closing) {
-        line.transport.write(encodeFrame(frame.channel, FRAME_CREDIT, credit(frame.payload.length)));
+      if (!open.closing) {
+        if (open.handlers.credit !== "manual") line.transport.write(encodeFrame(frame.channel, FRAME_CREDIT, credit(frame.payload.length)));
         open.handlers.onData(frame.payload);
       }
     } else if (frame.kind === FRAME_CLOSE) {
       line.channels.delete(frame.channel);
-      open?.closing?.();
-      open?.handlers.onClose(parseReason(frame.payload));
+      open.closing?.();
+      open.handlers.onClose(parseReason(frame.payload));
     }
   }
 
@@ -342,7 +375,16 @@ export class HcConnection {
     }
     if (typeof message !== "object" || message === null || !("id" in message) || typeof message.id !== "number") return;
     const call = line.pending.get(message.id);
-    if (!call) return;
+    const answered = "result" in message && typeof message.result === "object" && message.result !== null && "channel" in message.result ? message.result.channel : undefined;
+    if (!call) {
+      // a stream whose call gave up waiting: nobody reads it, so hc is told to end it
+      if (typeof answered === "number") {
+        line.early.delete(answered);
+        line.abandoned.add(answered);
+        line.transport.write(encodeFrame(answered, FRAME_CLOSE, new Uint8Array(0)));
+      }
+      return;
+    }
     line.pending.delete(message.id);
     clearTimeout(call.timer);
     if ("error" in message && typeof message.error === "object" && message.error !== null) {
@@ -354,7 +396,12 @@ export class HcConnection {
     }
     const result = "result" in message ? message.result : null;
     const channel = typeof result === "object" && result !== null && "channel" in result ? result.channel : undefined;
-    if (call.channel && typeof channel === "number") line.channels.set(channel, { handlers: call.channel });
+    if (call.channel && typeof channel === "number") {
+      line.channels.set(channel, { handlers: call.channel });
+      const early = line.early.get(channel) ?? [];
+      line.early.delete(channel);
+      for (const frame of early) this.onFrame(line, frame);
+    }
     call.resolve(result);
   }
 
@@ -367,6 +414,8 @@ export class HcConnection {
       call.reject(new HcError(kind, message));
     }
     line.pending.clear();
+    line.early.clear();
+    line.abandoned.clear();
     const channels = [...line.channels.values()];
     line.channels.clear();
     for (const open of channels) {
