@@ -35,6 +35,9 @@ export async function agentLaunch(paneId: string, agent: AgentPayload, launched?
   try {
     const kind = agent.kind as string;
     const args = agent.args as string[] | undefined;
+    if (kind === "copilot" && args?.includes("--ui-server") && (options.platform ?? process.platform) !== "linux") {
+      return { agent_started: false, error: { code: "copilot_api_unsupported_platform", message: "Ovis Copilot API identity requires Linux. Turn off Copilot API in Settings > Agents to launch without it." } };
+    }
     if (isShellAgentKind(kind)) {
       const pid = await startShellAgent(kind, paneId, args, locator ? { locator } : {});
       if (pid !== null) launched?.(pid);

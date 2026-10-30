@@ -56,4 +56,18 @@ describe("agentLaunch", () => {
     expect((await launch("codex", codex, { platform: "win32", settingsDir: dir })).args).toBe(codex);
     expect(existsSync(dir)).toBe(false);
   });
+
+  it("passes the opted-in Copilot API arguments unchanged on Linux", async () => {
+    const args = ["--ui-server", "--port", "0"];
+    expect((await launch("copilot", args, { platform: "linux", settingsDir: settingsDir() })).args).toEqual(args);
+  });
+
+  it.each(["darwin", "win32"])("refuses API-enabled launches on %s before starting a process", async (platform) => {
+    const start = spyOn(herdr, "agentStart").mockImplementation(async (params) => { starts.push(params); return {}; });
+    try {
+      expect(await agentLaunch(PANE, { kind: "copilot", args: ["--ui-server", "--port", "0"] }, undefined, undefined, { platform }))
+        .toMatchObject({ agent_started: false, error: { code: "copilot_api_unsupported_platform" } });
+      expect(starts).toHaveLength(0);
+    } finally { start.mockRestore(); }
+  });
 });

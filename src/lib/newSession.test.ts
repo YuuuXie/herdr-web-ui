@@ -6,6 +6,16 @@ import { inFlightGuard } from "./sessionHistory.ts";
 const plain = { claudeLaunchMode: "default", codexLaunchMode: "default" } as const;
 
 describe("newSessionLaunch", () => {
+  it("carries the Copilot API default into workspace and tab requests, keeping the first prompt queued", () => {
+    const launch = dialogLaunch({ agent: "copilot", model: "", effort: "", prompt: " Fix it " }, { ...plain, copilotApiEnabled: true });
+    if ("fault" in launch) throw new Error(launch.fault);
+    const agent = { kind: "copilot", args: ["--ui-server", "--port", "0"] };
+    expect(createRequest({ tab: null, directory: "/work", name: "" }, launch, "c1"))
+      .toEqual({ cwd: "/work", label: null, agent, first_message: "Fix it", first_message_connection: "c1" });
+    expect(createRequest({ tab: { workspaceId: "w1", cwd: null }, directory: "", name: "" }, launch, "c1"))
+      .toEqual({ workspace_id: "w1", cwd: null, label: null, agent, first_message: "Fix it", first_message_connection: "c1" });
+  });
+
   it("passes Codex's prompt behind the separator and queues nothing for it", () => {
     const launch = newSessionLaunch({ agent: "codex", model: "", effort: "", prompt: " $review-pr the branch " }, plain);
     expect(launch).toEqual({ agent: { kind: "codex", args: ["--", "$review-pr the branch"] }, prompt: { text: "$review-pr the branch", via: "positional" } });
