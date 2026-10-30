@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { observeCopilotForeground } from "./copilot-foreground-prototype.ts";
 import * as processOwner from "../server/process-owner.ts";
+import { forgetCopilotForeground, readCopilotForeground } from "../server/copilot-foreground.ts";
 
 const first = "12aa83d8-48bc-41f2-a498-7055c5c44a01";
 const second = "12aa83d8-48bc-41f2-a498-7055c5c44a02";
@@ -20,13 +21,23 @@ async function fixture(mode = "stable", flags = ["--ui-server"]) {
     const net = require("node:net"), fs = require("node:fs");
     const control = process.argv[2];
     const first = ${JSON.stringify(first)}, second = ${JSON.stringify(second)};
+    const sockets = new Set();
+    const frame = (value) => {
+      const body = Buffer.from(JSON.stringify(value));
+      return Buffer.concat([Buffer.from("Content-Length: " + body.length + "\\r\\n\\r\\n"), body]);
+    };
+    require("node:readline").createInterface({ input: process.stdin }).on("line", (type) => {
+      for (const socket of sockets) {
+        if (type === "drop") socket.destroy();
+        else socket.write(frame({ jsonrpc: "2.0", method: "session.lifecycle", params: { type, sessionId: first } }));
+      }
+      console.log("ack");
+    });
     const server = net.createServer((socket) => {
+      sockets.add(socket);
+      socket.on("close", () => sockets.delete(socket));
       let bytes = Buffer.alloc(0), selections = 0;
       socket.on("error", (error) => { if (error.code !== "ECONNRESET") throw error; });
-      const frame = (value) => {
-        const body = Buffer.from(JSON.stringify(value));
-        return Buffer.concat([Buffer.from("Content-Length: " + body.length + "\\r\\n\\r\\n"), body]);
-      };
       const send = (value) => socket.write(frame(value));
       socket.on("data", (chunk) => {
         bytes = Buffer.concat([bytes, chunk]);
@@ -49,12 +60,12 @@ async function fixture(mode = "stable", flags = ["--ui-server"]) {
           } else {
             selections++;
             if (config.mode === "close") { socket.end(); continue; }
-            if (config.mode === "event") send({ jsonrpc: "2.0", method: "session.foreground", params: { sessionId: second } });
+            if (config.mode === "event") send({ jsonrpc: "2.0", method: "session.lifecycle", params: { type: "session.foreground", sessionId: second } });
             const sessionId = config.mode === "switch" ? selections === 1 ? first : second
               : config.mode === "malformed" ? "../not-a-session" : config.mode === "empty" ? null : config.session;
             const response = { jsonrpc: "2.0", id: config.mode === "wrong-id" ? "wrong" : message.id, result: { sessionId } };
             if (config.mode === "event-after-final" && selections === 2) {
-              socket.write(Buffer.concat([frame(response), frame({ jsonrpc: "2.0", method: "session.foreground", params: { sessionId: second } })]));
+              socket.write(Buffer.concat([frame(response), frame({ jsonrpc: "2.0", method: "session.lifecycle", params: { type: "session.foreground", sessionId: second } })]));
             } else send(response);
           }
         }
@@ -68,9 +79,10 @@ async function fixture(mode = "stable", flags = ["--ui-server"]) {
   `);
   const child = Bun.spawn([process.execPath, script, control, ...flags], {
     env: { ...process.env, HOME: join(root, "home"), COPILOT_CONNECTION_TOKEN: "fixture-not-a-real-secret" },
-    stdin: "ignore", stdout: "pipe", stderr: "inherit",
+    stdin: "pipe", stdout: "pipe", stderr: "inherit",
   });
   const close = async () => {
+    forgetCopilotForeground();
     child.kill();
     await child.exited;
     rmSync(root, { recursive: true, force: true });
@@ -80,7 +92,13 @@ async function fixture(mode = "stable", flags = ["--ui-server"]) {
     expect(new TextDecoder().decode((await reader.read()).value)).toContain("ready");
     reader.releaseLock();
   } catch (error) { await close(); throw error; }
-  return { pid: child.pid, select, close };
+  const notify = async (type: string) => {
+    child.stdin.write(`${type}\n`);
+    const reader = child.stdout.getReader();
+    try { expect(new TextDecoder().decode((await reader.read()).value)).toContain("ack"); }
+    finally { reader.releaseLock(); }
+  };
+  return { pid: child.pid, select, close, notify };
 }
 
 linux("requeries the current foreground across warm switches without a native report or cached ID", async () => {
@@ -102,6 +120,39 @@ linux("never retains the last ID after a failed observation or protected-endpoin
     expect(await observeCopilotForeground(test.pid)).toEqual({ state: "unavailable", diagnostic: "rpc_rejected" });
     test.select(second);
     expect(await observeCopilotForeground(test.pid)).toMatchObject({ state: "observed", sessionId: second });
+  } finally { await test.close(); }
+});
+
+linux("keeps a binding while unchanged but invalidates it after an unqueried switch-away-and-back", async () => {
+  const test = await fixture();
+  try {
+    const original = await readCopilotForeground(test.pid);
+    expect(original.state).toBe("selected");
+    expect(await readCopilotForeground(test.pid)).toEqual(original);
+    await test.notify("session.background");
+    await test.notify("session.foreground");
+    const returned = await readCopilotForeground(test.pid);
+    expect(returned).toMatchObject({ state: "selected", sessionId: first });
+    expect(returned).not.toEqual(original);
+    expect(await readCopilotForeground(test.pid)).toEqual(returned);
+    await test.notify("session.updated");
+    expect(await readCopilotForeground(test.pid)).toEqual(returned);
+    await test.notify("session.future-selection-event");
+    expect(await readCopilotForeground(test.pid)).not.toEqual(returned);
+  } finally { await test.close(); }
+});
+
+linux("never reuses a binding after a transport gap or explicit reader cleanup", async () => {
+  const test = await fixture();
+  try {
+    const original = await readCopilotForeground(test.pid);
+    await test.notify("drop");
+    let returned = await readCopilotForeground(test.pid);
+    if (returned.state === "unavailable") returned = await readCopilotForeground(test.pid);
+    expect(returned).toMatchObject({ state: "selected", sessionId: first });
+    expect(returned).not.toEqual(original);
+    forgetCopilotForeground();
+    expect(await readCopilotForeground(test.pid)).not.toEqual(returned);
   } finally { await test.close(); }
 });
 
