@@ -139,6 +139,52 @@ it.skipIf(process.platform !== "linux")("never reuses cached handoff unregister 
   } finally { await fixture.close(); }
 });
 
+for (const observed of [false, true]) {
+  it.skipIf(process.platform !== "linux")(`records legacy unregister proof from ${observed ? "continuous" : "initial"} log evidence without authorizing parent history`, async () => {
+    const fixture = await logFixture([session]);
+    const { environment, log, pid } = fixture;
+    const ended = () => copilotProcessSession(environment, ["copilot"], pid, "unregistered");
+    try {
+      appendFileSync(log, "CLI started\n");
+      if (observed) expect(copilotProcessSession(environment, ["copilot"], pid)?.logged).toBe(false);
+      appendFileSync(log, register(session, "Unregistering").trimEnd());
+      expect(ended()).toBeNull();
+      expect(copilotProcessSession(environment, ["copilot"], pid)).toBeNull();
+      appendFileSync(log, "\n");
+      const released = ended();
+      expect(released).toMatchObject({ sessionId: session, logged: true });
+      if (!released?.logged) throw new Error("Fixture unregister proof missing");
+      expect(ended()).toEqual(released);
+      expect(copilotProcessSession(environment, ["copilot"], pid)).toBeNull();
+      appendFileSync(log, register(session, "Unregistering"));
+      expect(ended()).toBeNull();
+      appendFileSync(log, register(other));
+      expect(ended()).toBeNull();
+      expect(copilotProcessSession(environment, ["copilot"], pid)?.sessionId).toBe(other);
+      appendFileSync(log, register(session, "Unregistering"));
+      expect(ended()).toBeNull();
+    } finally { await fixture.close(); }
+  });
+}
+
+for (const loss of ["rewrite", "descriptor gap"] as const) {
+  it.skipIf(process.platform !== "linux")(`does not bootstrap legacy unregister proof after a log ${loss}`, async () => {
+    const fixture = await logFixture([session]);
+    const { environment, log, pid } = fixture;
+    try {
+      appendFileSync(log, "CLI started with an ordinary complete log\n");
+      expect(copilotProcessSession(environment, ["copilot"], pid)?.logged).toBe(false);
+      if (loss === "rewrite") writeFileSync(log, "replacement\n");
+      else await fixture.command("close");
+      expect(copilotProcessSession(environment, ["copilot"], pid)).toBeNull();
+      if (loss === "descriptor gap") await fixture.command("open");
+      appendFileSync(log, register(session, "Unregistering"));
+      expect(copilotProcessSession(environment, ["copilot"], pid, "unregistered")).toBeNull();
+      expect(copilotProcessSession(environment, ["copilot"], pid)).toBeNull();
+    } finally { await fixture.close(); }
+  });
+}
+
 it("parses persisted Copilot messages and tool rounds once, with failures and recorded metadata", () => {
   const text = start + prompt("Visible prompt")
     + line("assistant.message", { content: "Checking.", phase: "commentary", toolRequests: [{ toolCallId: "call-1", name: "shell", arguments: { command: "pwd" }, toolTitle: "Check directory" }], model: "fixture-model" })
