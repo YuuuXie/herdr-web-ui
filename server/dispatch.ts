@@ -34,13 +34,15 @@ import { attachableIdentity } from "./pty/sidecar.ts";
 import { handleUpdateRequest } from "./update-api.ts";
 import { handleHerdrUpdateRequest } from "./herdr-update.ts";
 import { handlePortalRequest } from "./portal.ts";
+import { handleRelayRequest } from "./relay/routes.ts";
+import type { RelayService } from "./relay/service.ts";
 import { handleTelemetryRequest, visitSurface } from "./telemetry.ts";
 import type { TelemetryIngress } from "../shared/telemetry.ts";
 import { handleStatuslineRequest, handleUsageRequest } from "./usage.ts";
 import { handleVoiceRequest } from "./voice.ts";
 import { BRIDGE_PROTOCOL } from "../shared/machines.ts";
 import { bridgeIdentity } from "./bridge.ts";
-import { handleMachineRequest, nonCanonicalPath, slowMachinePath } from "./machine-api.ts";
+import { handleMachineRequest, nonCanonicalPath, slowMachinePath, type EventStreamBudget } from "./machine-api.ts";
 import { handleSessionHistoryRequest, handleSessionResumeRequest, SESSION_HISTORY_PATH, SESSION_RESUME_PATH } from "./session-history-routes.ts";
 import type { PiSessionReader } from "./pi-session-metadata.ts";
 import type { HerdrSidebarConfig } from "./herdr-sidebar.ts";
@@ -59,6 +61,7 @@ type PortalStartup = { ok: true } | { ok: false; error: unknown };
 
 /** Per-server services shared by socket requests and other dispatch callers. */
 export interface RequestServices {
+  readonly relay: RelayService;
   readonly options: NonNullable<Parameters<typeof createServer>[0]>;
   readonly hostname: string;
   readonly token: string;
@@ -96,8 +99,9 @@ export interface ServerContext {
   timeout(request: Request, seconds: number): void;
   upgrade(request: Request, options: { headers?: HeadersInit; data: SocketData }): boolean;
   readonly port: number | undefined;
-  readonly peer: { kind: "socket" };
+  readonly peer: { kind: "socket" } | { kind: "relay"; device: DeviceMatch; sessionId: string };
   readonly services: RequestServices;
+  readonly relayBodyBudget?: EventStreamBudget;
 }
 
 export async function handleRequest(request: Request, ctx: ServerContext): Promise<Response | undefined> {
@@ -113,7 +117,8 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   return compressResponse(request, await (async (): Promise<Response | undefined> => {
   const url = new URL(request.url);
   let { pathname } = url;
-  const bridgeAuthorized = isAuthenticated(request, bridgeToken);
+  const relayPeer = ctx.peer.kind === "relay" ? ctx.peer.device : undefined;
+  const bridgeAuthorized = relayPeer === undefined && isAuthenticated(request, bridgeToken);
   // the connection server that reaches this one as its PC reads its update status and asks for the
   // update on offer: an Ovis run on this PC by itself is updated through its own updater, never
   // replaced (server/machines.ts ownOffer). An install still names the offered revision and the
@@ -121,16 +126,16 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   // requests, each by its own method and with no query: the token opens nothing else of these routes (#2054)
   const bridgeUpdatePath = url.search === "" && (pathname === "/api/updates" ? request.method === "GET" : pathname === "/api/updates/install" && request.method === "POST");
   const bridgePath = pathname === "/api/bridge" || pathname === "/api/session" || pathname === SESSION_HISTORY_PATH || pathname === SESSION_RESUME_PATH || pathname === "/api/agents" || pathname === "/api/agent-catalog" || pathname === INSTALL_PATH || pathname === SIGN_IN_PATH || pathname === "/api/agent/rename" || pathname === "/api/agent/commands" || pathname === "/api/integrations" || pathname === "/api/usage/statusline" || pathname === "/api/plugins/actions" || pathname === "/api/plugin/action" || pathname.startsWith("/api/pane/") || pathname.startsWith("/api/workspace/") || pathname.startsWith("/api/worktree/") || pathname.startsWith("/api/tab/") || pathname === "/api/layout/ratio" || pathname.startsWith("/api/fs/") || pathname === "/ws" || bridgeUpdatePath;
-  const ip = ctx.requestIP(request);
+  const ip = relayPeer === undefined ? ctx.requestIP(request) : null;
   const loopback = ip !== null && isLoopbackAddress(ip.address);
-  const forwarded = cameThroughProxy(request.headers);
-  const funnel = request.headers.has("tailscale-funnel-request");
-  const tailscaleLogin = request.headers.get("tailscale-user-login");
-  const forwardedFor = request.headers.get("x-forwarded-for");
+  const forwarded = relayPeer === undefined && cameThroughProxy(request.headers);
+  const funnel = relayPeer === undefined && request.headers.has("tailscale-funnel-request");
+  const tailscaleLogin = relayPeer === undefined ? request.headers.get("tailscale-user-login") : null;
+  const forwardedFor = relayPeer === undefined ? request.headers.get("x-forwarded-for") : null;
   const requestHost = request.headers.get("host");
   // the guessing budget of the address that asks (auth.ts): a token presented while it waits is not compared
-  const client = authClient(ip?.address ?? null, request.headers);
-  const presented = presentedToken(request, token, client);
+  const client = relayPeer === undefined ? authClient(ip?.address ?? null, request.headers) : `relay:${relayPeer.id}`;
+  const presented = relayPeer === undefined ? presentedToken(request, token, client) : null;
   // counted at once, before any await below lets a concurrent guess pass the same check. Every
   // wrong token counts, a paired watch device's too (a right one would upgrade it to drive);
   // the connection server's own bridge token does not
@@ -138,14 +143,18 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   const tokenMatched = presented === "match";
   let pairedDevice: DeviceMatch | null;
   try {
-    pairedDevice = devices.match(deviceCookieValue(parseCookies(request.headers.get("cookie"))));
+    pairedDevice = relayPeer ?? devices.match(deviceCookieValue(parseCookies(request.headers.get("cookie"))));
   } catch (error) {
     // First-cookie confirmation is an authorization write, not best-effort telemetry.
     return errorResponse(error);
   }
   const requestShape = { loopback, forwarded, funnel, tailscaleLogin, forwardedFor, serveOnly };
-  const identity = await identityOf(token === "" && pairedDevice === null && isServeOwnerRequest(requestShape) && (pathname === "/ws" || pathname.startsWith("/api/")), requestHost);
+  const identity = relayPeer === undefined
+    ? await identityOf(token === "" && pairedDevice === null && isServeOwnerRequest(requestShape) && (pathname === "/ws" || pathname.startsWith("/api/")), requestHost)
+    : { owner: null, tagged: false, soleLogin: null, dnsName: null, tailnetIp: null };
+  const portalProven = relayPeer === undefined && (options.portal?.vouches(request.headers.get("x-portal-proof") ?? null) ?? false);
   const access = decideAccess({
+    relayPeer,
     ...requestShape,
     host: requestHost,
     tokenMatched,
@@ -153,6 +162,12 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     ...identity,
     tokenConfigured: token !== "",
     gated: devices.gated,
+    portal: {
+      proven: portalProven,
+      user: portalProven ? request.headers.get("x-portal-user") : null,
+      auth: portalProven ? request.headers.get("x-portal-auth") : null,
+      role: portalProven ? options.portal?.roleFor(request.headers.get("x-portal-user"), request.headers.get("x-portal-auth")) ?? "watch" : "watch",
+    },
   });
   const authenticated = access.level === "full" || (bridgePath && bridgeAuthorized);
 
@@ -210,6 +225,23 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     setRequestRoute("watch-refusal");
     return jsonResponse({ error: { code: "read_only", message: "this device can only watch" } }, 403);
   }
+  // Portal visitors use the same watch checks above as paired watch devices. Even a Portal
+  // identity explicitly given drive in local state cannot use these controls to leave access
+  // behind: device changes (including redeeming a pairing code), relay controls (a relay offer
+  // carries a pairing code), push subscriptions and their status, and Portal controls require
+  // the owner's app credential.
+  const standingAccess = mutating && (
+    pathname.startsWith("/api/portal/")
+    || pathname.startsWith("/api/devices/")
+    || pathname === "/api/relay" || pathname.startsWith("/api/relay/")
+    || (request.method === "POST" && (pathname === "/api/push/subscribe" || pathname === "/api/push/status"))
+  );
+  // and what it keeps open is closed after a while, so it comes through Portal's sign-in again (portal.ts recheckMs)
+  const portalRecheckMs = access.level === "full" && access.via === "portal" ? options.portal?.recheckMs : undefined;
+  if (access.level === "full" && access.via === "portal" && standingAccess) {
+    setRequestRoute("owner-refusal");
+    return jsonResponse({ error: { code: "owner_only", message: "A visitor signed in through Portal cannot pair devices, subscribe to alerts or control Portal or the relay here. Use the access token or a paired device." } }, 403);
+  }
 
   // API reads can chain several bounded 10 s Herdr RPCs. Give the handler time to return
   // its JSON result or timeout instead of Bun closing the socket at its default 10 s idle
@@ -249,7 +281,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       // that closed the gate, so whoever holds it has no access left by the time there is news
       const openAccess = access.level === "full" && access.via === "open";
       const pairings = { subscribe: (listener: (event: DevicePairedEvent) => void) => devices.onPaired((event, origin) => { if (!openAccess && event.device_id !== deviceId && !sameBrowser(origin, keys)) listener(event); }) };
-      const response = await handleMachineRequest(request, machines, deviceId ? (close) => devices.onRevoke(deviceId, close) : undefined, preferences, readOnly, herdrSidebar, seen, pairings);
+      const response = await handleMachineRequest(request, machines, deviceId ? (close) => devices.onRevoke(deviceId, close) : portalRecheckMs !== undefined ? (close) => { const timer = setTimeout(close, portalRecheckMs); return () => clearTimeout(timer); } : undefined, preferences, readOnly, herdrSidebar, seen, pairings, ctx.relayBodyBudget);
       response.headers.set("cache-control", "no-store");
       if (issuedKey !== null && response.ok) response.headers.append("set-cookie", streamCookie(issuedKey, isSecureRequest(request)));
       return response;
@@ -259,6 +291,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     setRequestRoute(pathname);
     if (!sameOrigin(request)) return new Response("invalid origin", { status: 403 });
     const deviceId = access.level === "full" ? access.device?.id : undefined;
+    const recheck = portalRecheckMs === undefined ? {} : { recheckMs: portalRecheckMs };
     const machineId = url.searchParams.get("machine_id");
     if (machineId && machineId !== "local") {
       if (access.level === "none") return unauthorizedJson(access.reason);
@@ -267,7 +300,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       try {
         relay = new MachineRelay(machines, machineId, readOnly, browserSnapshot);
         await relay.ready;
-        const upgraded = ctx.upgrade(request, { headers, data: connectionData({ relay, deviceId, readOnly }) });
+        const upgraded = ctx.upgrade(request, { headers, data: connectionData({ relay, deviceId, readOnly, ...recheck }) });
         if (upgraded) return undefined;
         relay.close();
       } catch { relay?.close(); return new Response("remote websocket unavailable", { status: 502 }); }
@@ -278,13 +311,14 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
     const observed = observedIngress({ ...requestShape, ...identity, peerKnown: ip !== null, forwardingHeaders: forwardingHeaders(request.headers) });
     const surface = bridgeAuthorized ? false : visitSurface(url.searchParams.get("surface"));
     const ingress: TelemetryIngress = observed === "direct" ? (loopback ? "local" : "lan") : observed;
-    const upgraded = ctx.upgrade(request, { headers, data: connectionData({ deviceId, readOnly, bridge: bridgeAuthorized, ...(surface ? { surface } : {}), ...(surface === false ? {} : { ingress }) }) });
+    const upgraded = ctx.upgrade(request, { headers, data: connectionData({ deviceId, readOnly, bridge: bridgeAuthorized, ...(surface ? { surface } : {}), ...(surface === false ? {} : { ingress }), ...recheck }) });
     if (upgraded) return undefined;
     return new Response("websocket upgrade required", { status: 426 });
   }
 
   if (pathname === "/api/auth") {
     setRequestRoute(pathname);
+    if (relayPeer !== undefined) return jsonResponse({ error: { code: "device_key_required", message: "Relay access uses a paired device key" } }, 403);
     // signing out also ends the page media this browser was given (by its device, else by its address)
     // a browser can hold the token and a device cookie at once, and its renders are then the
     // client's: signing out ends both kinds
@@ -321,6 +355,9 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   if (pathname === "/api/herdr/update") { setRequestRoute(pathname); return handleHerdrUpdateRequest(request, options.herdrUpdate); }
   if (pathname === "/api/portal" || pathname.startsWith("/api/portal/")) {
     return handlePortalRequest(request, pathname, options.portal, { port: ctx.port ?? DEFAULT_PORT, ...portalGuards() });
+  }
+  if (pathname === "/api/relay" || pathname.startsWith("/api/relay/")) {
+    return handleRelayRequest(request, pathname, ctx);
   }
   if (pathname === "/api/connection-diagnostics") { setRequestRoute(pathname); return clientConnectionLog.handle(request, client ?? "unknown"); }
   if (pathname === "/api/telemetry") { setRequestRoute(pathname); return handleTelemetryRequest(request, options.telemetry); }
@@ -360,7 +397,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   if (pathname === "/api/health") {
     setRequestRoute(pathname);
     const auth: HealthAuth = access.level === "full"
-      ? { required: false, authenticated: true, via: access.via, role: access.role, ...(access.via === "token" && bearerMatches(request, token) ? { bearer: true as const } : {}) }
+      ? { required: false, authenticated: true, via: access.via, role: access.role, ...(access.via === "token" && bearerMatches(request, token) ? { bearer: true as const } : {}), ...(access.portal ? { portal: access.portal } : {}) }
       : { required: true, authenticated, ...(authenticated ? {} : { reason: access.reason }) };
     // this server is open to the network with no token and nothing paired, told to a client
     // that got in and to nobody else: naming it to an anonymous caller would be
@@ -369,7 +406,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       ? { host: hostname } : undefined;
     // what protects this server, for a client that got in (a watching one too) and nobody else;
     // per request, so never stored. The ingress is this request's, proven or `unknown`.
-    const ingress = observedIngress({ ...requestShape, ...identity, peerKnown: ip !== null, forwardingHeaders: forwardingHeaders(request.headers) });
+    const ingress = relayPeer === undefined ? observedIngress({ ...requestShape, ...identity, peerKnown: ip !== null, forwardingHeaders: forwardingHeaders(request.headers) }) : "relay";
     const security: SecuritySummary | undefined = access.level === "full" ? {
       token_configured: token !== "",
       pairing_gate: devices.error !== null ? "unavailable" : devices.gated ? "closed" : "open",
@@ -378,12 +415,13 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
       public_exposure: ingress === "funnel" ? "observed" : "unknown",
     } : undefined;
     const securityHeaders: Record<string, string> = security ? { "cache-control": "no-store" } : {};
-    if (url.searchParams.get("scope") === "bridge") return jsonResponse({ ok: true, auth, bridge_protocol: BRIDGE_PROTOCOL, ...(security ? { security } : {}) }, 200, securityHeaders);
+    const relay = access.level === "full" ? { relay: ctx.services.relay.status() } : {};
+    if (url.searchParams.get("scope") === "bridge") return jsonResponse({ ok: true, auth, bridge_protocol: BRIDGE_PROTOCOL, ...relay, ...(security ? { security } : {}) }, 200, securityHeaders);
     try {
       const info = await ping();
       // a forced answer (tests) and a runtime without the PTY sidecar are told the way a Windows herdr's own would be
       const herdr = attachableIdentity(info, sidecar);
-      return jsonResponse({ ok: true, herdr, auth, ...(lan_exposure ? { lan_exposure } : {}), ...(security ? { security } : {}),
+      return jsonResponse({ ok: true, herdr, auth, ...relay, ...(lan_exposure ? { lan_exposure } : {}), ...(security ? { security } : {}),
         web_ui: { boot_id: bootId, revision: process.env["OVIS_REVISION"] ?? null } }, 200, securityHeaders);
     } catch (error) {
       return errorResponse(error);
@@ -398,7 +436,7 @@ export async function handleRequest(request: Request, ctx: ServerContext): Promi
   if (pathname === "/api/access") {
     setRequestRoute(pathname);
     if (request.method !== "GET") return badRequest("method_not_allowed", "use GET");
-    return jsonResponse(await remoteAccess(ctx.port ?? DEFAULT_PORT), 200, { "cache-control": "no-store" });
+    return jsonResponse({ ...await remoteAccess(ctx.port ?? DEFAULT_PORT), relay: ctx.services.relay.status() }, 200, { "cache-control": "no-store" });
   }
 
   if (pathname === "/api/session") {

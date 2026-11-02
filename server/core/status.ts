@@ -10,6 +10,7 @@ import { ClaudeSubagentStatus } from "../claude-subagents.ts";
 import { codexOpenRollout, paneCodexHome } from "../codex.ts";
 import { startStatusCollector } from "../collector.ts";
 import { CompletionTracker, type OmoRest } from "../completion.ts";
+import { servingCore } from "../herdr-core/runtime.ts";
 import { Finishes, herdrLifetime } from "../finishes.ts";
 import { claudePanePid, claudePaneSession, forgetPaneTranscriptState } from "../conversation.ts";
 import { openCodeNativeState, openCodeVerificationCheckpoint, releaseOpenCodePane, trackVerifiedOpenCodePanes } from "../opencode-native.ts";
@@ -93,7 +94,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   const stopMutes = preferences.subscribe(() => push.mutesChanged());
 
   /** `done` for agents herdr loses track of (server/completion.ts), kept across restarts */
-  const completions = new CompletionTracker(join(options.stateDir ?? defaultStateDir(), "completions.json"));
+  // on herdr-core every status is the program's own report (completion.ts reportedOnly)
+  const completions = new CompletionTracker(join(options.stateDir ?? defaultStateDir(), "completions.json"), undefined, servingCore);
   const finishes = new Finishes(options.herdrIdentity);
   /** the herdr identity that answered the lifecycle subscription, bound to that connection; null while it is closed (currentHerdrLifetime) */
   let liveHerdr: string | null = null;

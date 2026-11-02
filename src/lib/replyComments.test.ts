@@ -62,4 +62,13 @@ describe("reply comments", () => {
     map.set("k", "{not json");
     expect(store.read("k")).toEqual([]);
   });
+
+  it("keeps a diff line's note marked as one, and drops an entry marked as anything else", () => {
+    const { map, storage } = memoryStorage();
+    const store = new ReplyCommentStore(() => storage, () => "d1");
+    expect(store.add("k", "Diff note on a.ts", "rename it", "diff")).toBe(true);
+    expect(store.read("k")).toEqual([{ id: "d1", quote: "Diff note on a.ts", comment: "rename it", source: "diff" }]);
+    map.set("k", JSON.stringify([{ id: "x", quote: "q", comment: "c", source: "diff" }, { id: "y", quote: "q", comment: "c", source: "shell" }]));
+    expect(store.read("k").map((item) => item.id)).toEqual(["x"]);
+  });
 });

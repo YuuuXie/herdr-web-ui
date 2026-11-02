@@ -8,7 +8,7 @@ import { agentManifests } from "./herdr/client.ts";
 import { badRequest, errorResponse, jsonResponse, setRequestRoute } from "./http.ts";
 import { SHELL_AGENTS, type ShellAgentLocator } from "./shell-agent.ts";
 
-const AGENT_LABELS: Record<string, string> = {
+export const AGENT_LABELS: Record<string, string> = {
   claude: "Claude Code",
   codex: "Codex",
   omp: "Oh My Pi",
@@ -27,6 +27,7 @@ const AGENT_LABELS: Record<string, string> = {
   devin: "Devin",
   cmd: "Command Code",
   letta: "Letta Code",
+  "dsh-tui": "DeepSeek Harness",
 };
 
 /**

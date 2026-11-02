@@ -35,7 +35,7 @@ function sends(pane: string, answer: SubmitResult, shown: string[], extra: Parti
       socketRef: { current: { connected: true } as HerdrSocket }, sessionRef: { current: null }, pendingScopeRef: { current: "scope" },
       heldRef: { current: false }, secretRef: { current: null }, observeRef: { current: false }, draftHeldForRef: { current: null },
       stillOpenRef: { current: null }, stillOpenNotedRef: { current: false }, chatNavigation: { current: 0 }, setChatLocalSend: () => {},
-      ended: false, heldByOpenQueue: false, answering: null, pendingAnswer: null, settings: { autoSendQueued: false },
+      ended: false, heldByOpenQueue: false, answering: null, answerPending: false, pendingAnswer: null, settings: { autoSendQueued: false },
       knownOutcomes: () => [], inputRowNow: () => "ready", showSentCommand: (_pane, text) => { shown.push(text); },
       submitComposerMessage: () => Promise.resolve(answer),
       ...extra,
@@ -50,6 +50,27 @@ function sends(pane: string, answer: SubmitResult, shown: string[], extra: Parti
 const waiting = "Waiting for 2 background agents to finish";
 const idleBox = ["─".repeat(40), "❯", "─".repeat(40)];
 const closedClaude = readFileSync(new URL("../../server/fixtures/claude-rewind-2.1.304-closed-40.txt", import.meta.url), "utf8");
+
+it("refuses composer choices and confirmation while the answered card waits for its next read", async () => {
+  const prompt: InteractivePrompt = {
+    id: "answered", agent: "claude", kind: "question", title: "Question", question: "Which store?",
+    body: null, options: [{ label: "Redis", description: null }], multi_select: false, custom_option_index: null,
+  };
+  const answers: unknown[] = [], picks: unknown[] = [], messages: string[] = [];
+  const actions = sends("answered-pane", { ok: true }, [], {
+    answering: prompt, answerPending: true,
+    pendingAnswer: { pane: "answered-pane", promptId: prompt.id, answer: { option_index: 0 } },
+    answerPanePrompt: async (answer) => { answers.push(answer); },
+    setPendingAnswer: (pick) => { picks.push(pick); },
+    submitComposerMessage: (text) => { messages.push(text); return Promise.resolve({ ok: true }); },
+    t: (key) => key,
+  });
+  expect(await actions.composerSend("1")).not.toBe(true);
+  expect(actions.waitingAnswer).toBeNull();
+  expect(answers).toEqual([]);
+  expect(picks).toEqual([]);
+  expect(messages).toEqual([]);
+});
 
 for (const autoSendQueued of [false, true]) {
   it.each([
@@ -122,10 +143,11 @@ it.each([
 
 it.each([
   ["unconfirmed", { ok: true, unconfirmed: true } as const],
-  ["confirmed", { ok: true } as const],
+  ["confirmed", { ok: true, typedNow: true } as const],
+  ["replayed", { ok: true } as const],
 ])("Send now of a held copy the bridge answered %s removes its recovery row only on a receipt", async (kind, answer) => {
   const saved = savedStorage();
-  const pane = `legacy-held-${kind}`, owner = paneStorageId("local", pane), shown: string[] = [];
+  const pane = `legacy-held-${kind}`, owner = paneStorageId("local", pane), key = waitingKey("local", pane), shown: string[] = [];
   const message = { id: `held-${kind}`, request_id: 1, text: "held follow-up", state: "held" as const, created_at: "2026-10-28T00:00:00Z" };
   try {
     // a copy kept since a connection that held it: this one sends it again by its id
@@ -136,11 +158,17 @@ it.each([
       expect(pendingMessages.read(owner)).toMatchObject([{ id: message.id, text: "held follow-up", state: "uncertain", error: { code: "submit_unconfirmed" } }]);
       expect(new PendingMessageStore(() => saved.storage).read(owner)).toMatchObject([{ id: message.id, state: "uncertain" }]);
       expect(shown).toEqual([]);
+      expect(currentWaitingSends(key)).toEqual([]);
     } else {
       expect(pendingMessages.read(owner)).toEqual([]);
       expect(shown).toEqual(["held follow-up"]);
+      // the row went: the chat shows the message as waiting until its turn is read; a replay of a
+      // send another connection made typed nothing now, and its turn may be read already
+      if (kind === "confirmed") expect(currentWaitingSends(key)).toMatchObject([{ text: "held follow-up" }]);
+      else expect(currentWaitingSends(key)).toEqual([]);
     }
   } finally {
+    forgetWaitingSends(key);
     pendingMessages.removeCopy(owner, message.id);
     saved.restore();
   }
@@ -172,6 +200,40 @@ it("records a confirmed send for its original pane after navigation without foll
     expect(await result).toBe(true);
     expect(currentWaitingSends(key)).toMatchObject([{ text: "from original pane" }]);
     expect(follow).toBe(0);
+  } finally { forgetWaitingSends(key); }
+});
+
+// the bridge types a queued follow-up at once when the turn ended before it arrived: its receipt
+// names no pending row, and the box lets the message go as for a send at once
+it("a queued follow-up the bridge typed at once waits in the chat and follows it, as a send at once", async () => {
+  const pane = "queued-typed-at-once", key = waitingKey("local", pane), shown: string[] = [];
+  let follows = 0;
+  const actions = sends(pane, { ok: true, typedNow: true }, shown, {
+    agentStatus: "working", inputAtRest: () => false, settings: { autoSendQueued: true },
+    setChatLocalSend: () => { follows++; },
+    submitComposerMessage: (_text, delivery) => { expect(delivery).toBe("queue"); return Promise.resolve({ ok: true, typedNow: true }); },
+  });
+  try {
+    expect(await actions.composerSend("then list the tests")).toBe(true);
+    expect(currentWaitingSends(key)).toMatchObject([{ text: "then list the tests" }]);
+    expect(follows).toBe(1);
+    expect(shown).toEqual(["then list the tests"]);
+  } finally { forgetWaitingSends(key); }
+});
+
+// an ok with no row also answers a replayed id, or a row sent or discarded since: nothing was typed now
+it("a queued follow-up answered ok with no row and no typed-now mark is no waiting message", async () => {
+  const pane = "queued-replayed", key = waitingKey("local", pane), shown: string[] = [];
+  let follows = 0;
+  const actions = sends(pane, { ok: true }, shown, {
+    agentStatus: "working", inputAtRest: () => false, settings: { autoSendQueued: true },
+    setChatLocalSend: () => { follows++; },
+  });
+  try {
+    expect(await actions.composerSend("discarded follow-up")).toBe(true);
+    expect(currentWaitingSends(key)).toEqual([]);
+    expect(follows).toBe(0);
+    expect(shown).toEqual([]);
   } finally { forgetWaitingSends(key); }
 });
 

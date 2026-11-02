@@ -14,6 +14,8 @@ export interface ReplyComment {
   /** the reply's words as the reader selected them, as a copy carries them */
   quote: string;
   comment: string;
+  /** `diff`: a note on a line of a file's diff (#1603, lib/diffLineNotes.ts), its quote the line and where it is */
+  source?: "diff";
 }
 
 type CommentStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
@@ -29,7 +31,7 @@ function parse(raw: string | null): readonly ReplyComment[] {
     if (!Array.isArray(value)) return NONE;
     const list = value.filter((item): item is ReplyComment => typeof item === "object" && item !== null
       && typeof item.id === "string" && typeof item.quote === "string" && typeof item.comment === "string"
-      && item.quote.trim() !== "" && item.comment.trim() !== "");
+      && item.quote.trim() !== "" && item.comment.trim() !== "" && (item.source === undefined || item.source === "diff"));
     return list.length > 0 ? list : NONE;
   } catch {
     return NONE;
@@ -72,9 +74,9 @@ export class ReplyCommentStore {
     return true;
   }
   /** false: an empty quote or comment, or storage refused it */
-  add(key: string, quote: string, comment: string): boolean {
+  add(key: string, quote: string, comment: string, source?: "diff"): boolean {
     if (quote.trim() === "" || comment.trim() === "") return false;
-    return this.write(key, [...this.read(key), { id: this.newId(), quote, comment: comment.trim() }]);
+    return this.write(key, [...this.read(key), { id: this.newId(), quote, comment: comment.trim(), ...(source === undefined ? {} : { source }) }]);
   }
   remove(key: string, id: string): void {
     const list = this.read(key);

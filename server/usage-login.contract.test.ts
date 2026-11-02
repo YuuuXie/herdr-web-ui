@@ -26,7 +26,7 @@ const missedExit = Promise.withResolvers<string>();
 const ctx: UsageContext = {
   home: root, env: {}, platform: "linux", now: Date.now,
   fetch: async () => Response.json({ five_hour: { utilization: 20 }, plan_type: "plus", rate_limit: {} }),
-  run: async () => null, keychain: async () => ({ status: "missing" }),
+  run: async () => null, has: () => true, keychain: async () => ({ status: "missing" }),
 };
 beforeAll(async () => {
   mkdirSync(bin);

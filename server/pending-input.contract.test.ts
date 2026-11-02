@@ -216,6 +216,46 @@ async function setup(label: string, agent = "claude", screen = "› Message\n", 
   return { screenFile, pane, port: server.port, server, socket, bytes, waitBytes, state, showScreen, queue, removed, another, replacementLog };
 }
 
+describe("resumable follow-up receipts (#2421)", () => {
+  it.each(["sent", "discarded"] as const)("replays a Codex follow-up's exact %s receipt to its returning browser without typing again", async (outcome) => {
+    const f = await setup(`codex-resume-${outcome}`, "codex");
+    const token = crypto.randomUUID(), from = f.socket.seen.length;
+    f.socket.send({ type: "attach", pane_id: f.pane, cols: 100, rows: 30, receipt_resume_id: token });
+    await f.socket.wait((frame) => frame.type === "input-ready" && frame.pane_id === f.pane, from);
+    const row = await f.queue(980, "follow-up");
+    if (outcome === "sent") { await f.state("idle"); await f.waitBytes(`${paste(row.text)}\r`); }
+    else {
+      f.socket.send({ type: "pending-action", id: 981, pane_id: f.pane, pending_id: row.id, action: "discard" });
+      expect((await f.socket.action(981)).ok).toBe(true);
+    }
+    await f.removed(row.id, outcome);
+    const bytes = f.bytes();
+    await f.socket.disconnect();
+    const resumed = await f.another(false);
+    await resumed.attach(f.pane, false, token);
+    const replay = await f.removed(row.id, outcome, resumed);
+    expect(replay.removed).toContainEqual({ id: row.id, outcome, resumed: true });
+    expect(f.bytes()).toBe(bytes);
+  }, 20_000);
+
+  it("gives no receipt to a browser that attaches with another resume id", async () => {
+    const f = await setup("codex-resume-other", "codex");
+    const from = f.socket.seen.length;
+    f.socket.send({ type: "attach", pane_id: f.pane, cols: 100, rows: 30, receipt_resume_id: crypto.randomUUID() });
+    await f.socket.wait((frame) => frame.type === "input-ready" && frame.pane_id === f.pane, from);
+    const row = await f.queue(983, "follow-up");
+    await f.state("idle"); await f.waitBytes(`${paste(row.text)}\r`);
+    await f.removed(row.id, "sent");
+    await f.socket.disconnect();
+    const other = await f.another(false);
+    await other.attach(f.pane, false, crypto.randomUUID());
+    // frames arrive in order: a receipt sent on this attach would come before the pong
+    other.send({ type: "ping", id: 984 });
+    await other.wait((frame) => frame.type === "pong" && frame.id === 984);
+    expect(other.seen.some((frame) => frame.type === "pending-messages" && frame.removed?.some((item: { id: string }) => item.id === row.id))).toBe(false);
+  }, 20_000);
+});
+
 describe("Ovis-origin Pi transcript receipts", () => {
   const piLine = (id: string, parentId: string | null, role: string, text: string, stamp = Date.now()) => JSON.stringify({
     type: "message", id, parentId, timestamp: new Date().toISOString(), message: { role, content: [{ type: "text", text }], timestamp: stamp },
@@ -466,7 +506,7 @@ describe("Ovis-origin Pi transcript receipts", () => {
     await f.socket.wait((frame) => frame.type === "pending-messages" && frame.removed?.some((item: any) => item.id === receipt.id && item.outcome === "consumed"));
   }, 20_000);
 
-  it("tracks a maximum-length message with the space closing its file mention", async () => {
+  it("tracks a maximum-length message whose closing space Pi trims off its file mention", async () => {
     const transcript = piFile("pi-best-effort");
     const f = await setup("pi-best-effort", "pi", "› Message\n", {}, false, transcript);
     f.socket.send({ type: "conversation-watch", pane_id: f.pane, enabled: true });
@@ -478,11 +518,11 @@ describe("Ovis-origin Pi transcript receipts", () => {
     const receipt = sent.messages.find((item) => item.request_id === 914)!;
     expect(receipt.text).toBe(`${text} `);
     const consumed = f.socket.event((frame) => frame.removed?.some((item) => item.id === receipt.id && item.outcome === "consumed") === true);
-    appendFileSync(transcript, piLine("u1", "a0", "user", `${text} `));
+    appendFileSync(transcript, piLine("u1", "a0", "user", text));
     await consumed;
   }, 20_000);
 
-  it("matches the exact Pi-facing text after closing a trailing file mention", async () => {
+  it("matches Pi's trimmed record after closing a trailing file mention (#2454)", async () => {
     const transcript = piFile("pi-facing-text");
     const f = await setup("pi-facing-text", "pi", "› Message\n", {}, false, transcript);
     f.socket.send({ type: "conversation-watch", pane_id: f.pane, enabled: true });
@@ -491,8 +531,31 @@ describe("Ovis-origin Pi transcript receipts", () => {
     const sent = await f.socket.wait((frame) => frame.type === "pending-messages" && frame.messages.some((item: PendingMessage) => item.request_id === 915));
     const receipt = sent.messages.find((item: PendingMessage) => item.request_id === 915);
     expect(receipt.text).toBe("inspect @file ");
-    appendFileSync(transcript, piLine("u1", "a0", "user", "inspect @file "));
+    appendFileSync(transcript, piLine("u1", "a0", "user", "inspect @file"));
     await f.socket.wait((frame) => frame.type === "pending-messages" && frame.removed?.some((item: any) => item.id === receipt.id && item.outcome === "consumed"));
+  }, 20_000);
+
+  it("confirms a message Pi records trimmed, and the send queued behind it (#2454)", async () => {
+    const transcript = piFile("pi-trimmed");
+    const f = await setup("pi-trimmed", "pi", "› Message\n", {}, false, transcript);
+    f.socket.send({ type: "conversation-watch", pane_id: f.pane, enabled: true });
+    // Pi's editor expands a pasted tab to four spaces, and it trims what it records
+    const padded = " \tdictated\tmessage \t";
+    f.socket.send({ type: "submit", id: 916, pane_id: f.pane, text: padded, payload: padded, delivery: "immediate" });
+    expect((await f.socket.result(916)).ok).toBe(true);
+    f.socket.send({ type: "submit", id: 917, pane_id: f.pane, text: "next", payload: "next", delivery: "immediate" });
+    expect((await f.socket.result(917)).ok).toBe(true);
+    const sent = await f.socket.wait((frame) => frame.type === "pending-messages" && [916, 917].every((id) => frame.messages.some((item: PendingMessage) => item.request_id === id)));
+    expect(sent.messages.find((item: PendingMessage) => item.request_id === 916).text).toBe(padded);
+    const ids = [916, 917].map((id) => sent.messages.find((item: PendingMessage) => item.request_id === id).id);
+    const consumed = new Set<string>();
+    const both = f.socket.event((frame) => {
+      for (const item of frame.removed ?? []) if (item.outcome === "consumed") consumed.add(item.id);
+      return ids.every((id) => consumed.has(id));
+    });
+    appendFileSync(transcript, piLine("u1", "a0", "user", "dictated    message"));
+    appendFileSync(transcript, piLine("u2", "u1", "user", "next"));
+    await both;
   }, 20_000);
 });
 
@@ -768,7 +831,10 @@ describe("connection-owned pending input", () => {
     const original = () => f.socket.send({ type: "pending-action", id: 3, pane_id: f.pane, pending_id: answer.pending.id, action: "steer" });
     if (copyFirst) { copy(); expect(await other.result(2)).toMatchObject({ ok: true }); original(); }
     else { original(); expect(await f.socket.action(3)).toMatchObject({ ok: true }); copy(); }
-    expect(await other.result(2)).toMatchObject({ ok: true });
+    const copied = await other.result(2);
+    expect(copied).toMatchObject({ ok: true });
+    // only the send that typed it is typed now: a copy answered for the row's own Send now typed nothing
+    expect(copied.typed_now).toBe(copyFirst ? true : undefined);
     expect(await f.socket.action(3)).toMatchObject({ ok: true });
     other.send({ type: "submit", id: 4, pane_id: f.pane, text: "barrier", payload: "barrier", typed: true });
     expect(await other.result(4)).toMatchObject({ ok: true });
@@ -1151,6 +1217,76 @@ describe("connection-owned pending input", () => {
     expect(await f.socket.action(10)).toMatchObject({ ok: true });
     await f.removed(message.id);
     await f.waitBytes(`${paste("queued message")}\r`);
+  }, 30_000);
+
+  it("holds a queued message rather than clearing the stopped chat message Claude put back in its box", async () => {
+    const f = await setup("restored");
+    const rule = "\u2500".repeat(60);
+    const footer = "[Haiku 4.5] \u2502 project";
+    // the chat's own message, typed at a turn's end: what a copy in Claude's box is compared against
+    const sent = await f.queue(1, "write a story about a gardener");
+    await f.state("idle"); await f.removed(sent.id);
+    await f.waitBytes(`${paste("write a story about a gardener")}\r`);
+    await f.state("working");
+    const message = await f.queue(2, "then reply PONG");
+    // Stop before Claude answered: Claude drops that turn and puts the message back in its box, typed
+    await f.showScreen(`  \u273b Cooked for 1s\n${rule}\n\u276f write a story about a gardener\n${rule}\n  ${footer}\n`, footer);
+    const before = f.bytes();
+    await f.state("idle");
+    const held = await f.socket.wait((frame) => frame.type === "pending-messages" && frame.pane_id === f.pane
+      && frame.messages.some((item: PendingMessage) => item.id === message.id && item.state === "held"));
+    expect(held.messages.find((item: PendingMessage) => item.id === message.id).error.code).toBe("input_draft");
+    // no Esc cleared the copy: the composer takes it back from its next prompt read
+    expect(f.bytes()).toBe(before);
+  }, 30_000);
+
+  it("refuses a queued message arriving once Claude is idle rather than clearing the stopped message in its box", async () => {
+    const f = await setup("restored-idle");
+    const rule = "\u2500".repeat(60);
+    const footer = "[Haiku 4.5] \u2502 project";
+    const sent = await f.queue(1, "write a story about a gardener");
+    await f.state("idle"); await f.removed(sent.id);
+    await f.waitBytes(`${paste("write a story about a gardener")}\r`);
+    await f.state("working");
+    // Stopped: Claude puts the message back in its box, and the page still thinks the agent works
+    await f.showScreen(`  \u273b Cooked for 1s\n${rule}\n\u276f write a story about a gardener\n${rule}\n  ${footer}\n`, footer);
+    await f.state("idle");
+    const before = f.bytes();
+    f.socket.send({ type: "submit", id: 2, pane_id: f.pane, text: "then reply PONG", payload: "unused\r", delivery: "queue" });
+    // it names the copy as an immediate send's refusal does, for the composer's Clear it / Send it
+    expect(await f.socket.result(2)).toMatchObject({ ok: false, code: "input_draft", draft: "write a story about a gardener" });
+    // no Esc (nor anything else) was typed over the stopped copy
+    expect(f.bytes()).toBe(before);
+  }, 30_000);
+
+  it("marks a queued send typed at once as typed now, and never its replay or a discarded row's", async () => {
+    const f = await setup("typed-now");
+    await f.state("idle");
+    f.socket.send({ type: "submit", id: 1, pane_id: f.pane, text: "typed at once", payload: "unused\r", delivery: "queue" });
+    const fresh = await f.socket.result(1);
+    expect(fresh).toMatchObject({ ok: true, typed_now: true });
+    expect(fresh.pending).toBeUndefined();
+    await f.waitBytes(`${paste("typed at once")}\r`);
+    // the same id again: its answer is replayed and nothing is typed twice
+    const bytes = f.bytes(), from = f.socket.seen.length;
+    f.socket.send({ type: "submit", id: 1, pane_id: f.pane, text: "typed at once", payload: "unused\r", delivery: "queue" });
+    const replay = await f.socket.wait((frame) => frame.type === "submit-result" && frame.id === 1, from);
+    expect(replay.ok).toBe(true);
+    expect(replay.typed_now).toBeUndefined();
+    expect(f.bytes()).toBe(bytes);
+    // queued while the agent works, then discarded: its replay answers ok with no row, and was never typed
+    await f.state("working");
+    const row = await f.queue(2, "discarded follow-up");
+    f.socket.send({ type: "pending-action", id: 3, pane_id: f.pane, pending_id: row.id, action: "discard" });
+    expect((await f.socket.action(3)).ok).toBe(true);
+    await f.removed(row.id, "discarded");
+    const again = f.socket.seen.length;
+    f.socket.send({ type: "submit", id: 2, pane_id: f.pane, text: "discarded follow-up", payload: "unused\r", delivery: "queue" });
+    const discarded = await f.socket.wait((frame) => frame.type === "submit-result" && frame.id === 2, again);
+    expect(discarded.ok).toBe(true);
+    expect(discarded.pending).toBeUndefined();
+    expect(discarded.typed_now).toBeUndefined();
+    expect(f.bytes()).toBe(bytes);
   }, 30_000);
 
   it("takes no colors from a scrolled viewport: an older grey box with the typed words holds the message", async () => {

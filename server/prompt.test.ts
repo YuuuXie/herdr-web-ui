@@ -8,7 +8,7 @@ import type { InteractivePrompt } from "../shared/protocol.ts";
 import { answerKeys, hermesInputDraft, claudeClearableDraft, claudeInputBoxText, claudeInputDraft, claudeInputEmpty, historyEndShowsLive, viewportShowsLive, removedInvisible, noteSubmitted, codexQuestionsCollapsed, codexQueuedPrompt, handlePromptRequest, openOmoAsks, parseClaudeSuggestion, parseFallbackPrompt, parseInteractivePrompt, pendingOmoAsk, promptWaitEnded, claudeRestoredDraft, lastChatSubmitted } from "./prompt.ts";
 import { registry } from "./dialogs/registry.ts";
 import { gjcCustomEditorMatches } from "./dialogs/fallback.ts";
-import { parsedByPublicPrompt } from "./dialogs/shared.ts";
+import { ANSI_RE, parsedByPublicPrompt } from "./dialogs/shared.ts";
 
 const labels = (prompt: InteractivePrompt | null) => prompt?.options.map((option) => option.label);
 // Real omo-ai 5.1.30 pane.read captures at 120 and 45 columns, with the recorded open calls.
@@ -138,7 +138,8 @@ Claude has written up a plan and is ready to execute. Would you like to proceed?
     expect(answerKeys(plan!, { custom_text: "Keep the existing introduction" })).toEqual([
       { keys: ["down"] }, { keys: ["down"] }, { keys: ["down"] },
       { text: "Keep the existing introduction" },
-      { keys: ["shift+tab"] },
+      // Enter keeps planning: shift+tab approves the plan with the feedback
+      { keys: ["enter"] },
     ]);
   });
 
@@ -1095,6 +1096,80 @@ tab to add notes | enter to submit answer | esc to interrupt
     expect(() => answerKeys(claudeQuestion(), { option_index: 99 })).toThrow("valid option index");
     expect(() => answerKeys(claudeQuestion(), { custom_text: 42 } as never)).toThrow("must be a string");
     expect(() => answerKeys(claudeQuestion(), { option_indices: null } as never)).toThrow("must be an array");
+  });
+});
+
+describe("Claude's plan in a narrow pane", () => {
+  // Claude Code 2.1.316's plan dialog with a made-up plan, wrapped as Claude wraps it: a 58-column pane
+  // (two side by side) breaks the footer inside the plan's path or before it, a 44-column phone pane
+  // spreads it over three lines
+  const split = (footer: string) => `  ────────────────────────────────────────────────────────
+   Ready to code?
+
+   Here is Claude's plan:
+  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+   Plan: add a heading to the README
+
+   1. Add a heading line at the top of README.md.
+  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+
+
+  ────────────────────────────────────────────────────────
+   Claude has written up a plan and is ready to execute.
+   Would you like to proceed?
+
+   ❯ 1. Yes, and use auto mode
+     2. Yes, manually approve edits
+     3. Tell Claude what to change
+        shift+tab to approve with this feedback
+
+${footer}
+`;
+  const phone = `  ──────────────────────────────────────────
+   Ready to code?
+
+   Here is Claude's plan:
+  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+   Plan: add a heading to the README
+
+   1. Add a heading line at the top of
+   README.md.
+  ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+
+
+  ──────────────────────────────────────────
+   Claude has written up a plan and is
+   ready to execute. Would you like to
+   proceed?
+
+   ❯ 1. Yes, and use auto mode
+     2. Yes, manually approve edits
+     3. Tell Claude what to change
+        shift+tab to approve with this
+        feedback
+
+   ctrl+g to edit in VS Code ·
+   ~/.claude/plans/plan-add-a-heading-to-th
+   e-readme-mellow-pike.md
+`;
+  const screens = [
+    ["wrapped inside the path", split("   ctrl+g to edit in VS Code · ~/.claude/plans/plan-add-a\n   -heading-to-the-readme-mellow-pike.md")],
+    ["wrapped before the path", split("   ctrl+g to edit in VS Code ·\n   ~/.claude/plans/plan-readme-heading-mellow-pike.md")],
+    ["over three lines", phone],
+    ["on one line", split("   ctrl+g to edit in VS Code · ~/.claude/plans/plan-a.md")],
+  ];
+
+  test.each(screens)("reads the plan with its footer %s", (_footer, screen) => {
+    const prompt = parseInteractivePrompt("claude", screen);
+    expect(prompt).toMatchObject({
+      kind: "plan", title: "Ready to code?", custom_option_index: 2,
+      options: [{ label: "Yes, and use auto mode" }, { label: "Yes, manually approve edits" }, { label: "Tell Claude what to change" }],
+    });
+    expect(prompt?.body).toContain("Add a heading line");
+  });
+
+  test.each(screens)("reads no plan once output follows its footer %s", (_footer, screen) => {
+    expect(parseInteractivePrompt("claude", `${screen}\n⏺ User approved Claude's plan\n`)).toBeNull();
   });
 });
 
@@ -4122,6 +4197,8 @@ describe("an answer and the menu it was made for", () => {
     /** how long herdr takes over each screen read from now on */
     readDelay?: number;
     onRead?: () => void;
+    /** fail this screen read, without claiming that the screen is empty */
+    nextReadFails?: boolean;
     /** herdr never answers what it is asked about the pane's agent */
     agentUnanswered?: boolean;
     /** what an ANSI read shows instead of `screen`: the pane's viewport, scrolled off its live screen */
@@ -4132,6 +4209,12 @@ describe("an answer and the menu it was made for", () => {
     nextRead?: { text: string; delay: number };
     /** herdr presses this key and its reply is lost on the way */
     replyLostOn?: string;
+    /** herdr answers the next key only once this settles: what happens while a key is on its way */
+    holdSend?: Promise<unknown>;
+    /** the next screen read is taken as the screen is when it arrives, and answered only once this settles */
+    holdRead?: Promise<unknown>;
+    /** a held screen read has arrived */
+    onReadHeld?: () => void;
     /** more panes showing the same screen: p_2 … */
     more?: number;
     /** the next snapshot alone takes this long */
@@ -4162,6 +4245,17 @@ describe("an answer and the menu it was made for", () => {
         if (request.method === "session.snapshot") return void setTimeout(() => answer({ snapshot: { panes: Array.from({ length: 1 + (pane.more ?? 0) }, (_, index) => ({ pane_id: `p_${index + 1}`, agent: pane.agent, agent_status: pane.status, cwd: pane.cwd, ...(pane.omo ? { agent_session: { agent: "omo", kind: "path", value: pane.omo.path } } : {}) })), layouts: [] } }), snapshotDelay ?? 0);
         if (request.method === "pane.read") {
           pane.onRead?.();
+          if (pane.nextReadFails) {
+            pane.nextReadFails = false;
+            return void socket.destroy();
+          }
+          const gate = pane.holdRead;
+          if (gate) {
+            pane.holdRead = undefined;
+            const text = request.params.source === "visible" && pane.visibleScreen !== undefined ? pane.visibleScreen : request.params.format === "ansi" ? pane.viewport ?? pane.screen : pane.screen;
+            pane.onReadHeld?.();
+            return void gate.then(() => answer({ read: { text } }));
+          }
           const once = pane.nextRead;
           pane.nextRead = undefined;
           if (once) return void setTimeout(() => answer({ read: { text: once.text } }), once.delay);
@@ -4171,6 +4265,8 @@ describe("an answer and the menu it was made for", () => {
           : pane.agent === "omp" ? [pane.ompStopped ? { pid: 4100, argv: ["/bin/bash"] } : { pid: 4242, argv: ["omp"] }]
           // a Codex pane runs Codex: its rollout is read only while one does
           : pane.agent === "codex" ? [{ pid: 2147483647, argv: ["/usr/bin/codex"] }] : [] } });
+        // a pane whose scroll herdr does not report: a colored read counts when its text is the live screen's
+        if (request.method === "pane.get") return answer({ pane: { pane_id: "p_1" } });
         if (request.method === "agent.get" && pane.agentUnanswered) return;
         if (request.method === "agent.get") return answer({ agent: pane.rollout ? { agent_session: { kind: "path", value: pane.rollout } } : {} });
         if (request.method !== "pane.send_keys" && request.method !== "pane.send_text") throw new Error(`unexpected fixture RPC: ${request.method}`);
@@ -4181,6 +4277,9 @@ describe("an answer and the menu it was made for", () => {
           lost ||= sent === pane.replyLostOn;
         }
         if (lost) return void socket.destroy();
+        const held = pane.holdSend;
+        pane.holdSend = undefined;
+        if (held) return void held.then(() => answer({}));
         answer({});
       });
     });
@@ -4201,7 +4300,7 @@ describe("an answer and the menu it was made for", () => {
     return ((await (await handlePromptRequest(new Request(url), url, { codexHome }))!.json()) as { prompt: InteractivePrompt | null }).prompt;
   }
 
-  async function answer(promptId: string, choice: { option_index?: number; option_indices?: number[]; custom_text?: string }, more: { signal?: AbortSignal; codexHome?: string } = {}): Promise<{ status: number; code?: string }> {
+  async function answer(promptId: string, choice: { option_index?: number; option_indices?: number[]; custom_text?: string; step_back?: boolean; step_index?: number }, more: { signal?: AbortSignal; codexHome?: string } = {}): Promise<{ status: number; code?: string }> {
     const url = new URL("http://127.0.0.1/api/pane/prompt/answer");
     const response = (await handlePromptRequest(new Request(url, { method: "POST", signal: more.signal, body: JSON.stringify({ pane_id: "p_1", prompt_id: promptId, ...choice }) }), url, { codexHome: more.codexHome }))!;
     const body = await response.json() as { error?: { code: string } };
@@ -4945,7 +5044,8 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
       // another question by the time the cursor is down: the text would be typed into its row
       pane.onSent = () => { pane.screen = QUESTION(["main", "release", "Type something."], 2); };
       expect(await answer(prompt.id, { custom_text: "the internal set" })).toEqual({ status: 409, code: "prompt_changed" });
-      expect(pane.sent).toEqual(["down", "down"]);
+      // the read right before the second move already shows the other question: no second key either
+      expect(pane.sent).toEqual(["down"]);
     });
   });
 
@@ -5642,6 +5742,58 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
     });
   });
 
+  // live on Claude Code 2.1.316: herdr says blocked a moment before Claude draws its permission panel, and for a
+  // moment after it closes; a poll then got a "Waiting for input" card [Enter, Esc] made of Claude's own input box
+  test("shows no fallback card while Claude's own input box is still the screen", async () => {
+    const rule = "─".repeat(80);
+    const box = `\n\n                                     Tip: run /help for help\n${rule}\n❯ Use the Bash tool to run touch made.txt\n${rule}\n  user@host /tmp/garden\n  ⏸ manual mode on\n`;
+    await withPane("claude", "blocked", box, async (pane) => {
+      const first = await card();
+      expect(first === null ? null : { title: first.title, question: first.question, options: first.options.map((option) => option.label) }).toBeNull();
+      pane.screen = `● Bash(touch made.txt)\n${rule}\n Bash command\n   touch made.txt\n   Create the file\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n Esc to cancel · Tab to amend\n`;
+      expect((await card())?.title).toBe("Bash command");
+    });
+  });
+
+  test("still offers the fallback card for a Claude dialog no reader knows, drawn between two rules", async () => {
+    const rule = "─".repeat(80);
+    await withPane("claude", "blocked", `● Earlier output\n${rule}\n New MCP server found in .mcp.json: tools\n Use this server?\n${rule}\n Enter to confirm · Esc to cancel\n`, async () => {
+      expect((await card())?.title).toBe("Waiting for input");
+    });
+  });
+
+  // a list's cursor row between two rules, or a dialog drawn under a box, is no input box ending the screen
+  test.each([
+    ["its options between two rules", `● Earlier output\n Some new Claude dialog\n${"─".repeat(80)}\n ❯ 1. Allow\n   2. Deny\n${"─".repeat(80)}\n Enter to confirm · Esc to cancel\n`],
+    ["drawn under an input box", `● Earlier output\n${"─".repeat(80)}\n❯ \n${"─".repeat(80)}\n Some new dialog under the box\n ❯ 1. Allow\n   2. Deny\n Enter to confirm · Esc to cancel\n`],
+  ])("still offers the fallback card for a Claude dialog no reader knows, %s", async (_name, screen) => {
+    await withPane("claude", "blocked", screen, async () => {
+      expect((await card())?.options.map((option) => option.label)).toEqual(["Allow", "Deny", "Enter", "Esc"]);
+    });
+  });
+
+  test("keeps waiting for Claude's next question through a failed read after answering", async () => {
+    const screen = (question: string) => `←  ☐ Device  ☐ Symptoms  ✔ Submit  →\n\n${question}\n\n❯ 1. Phone\n  2. Desktop browser\n  3. Type something.\n${"─".repeat(80)}\n  4. Chat about this\n\nEnter to select · Tab/Arrow keys to navigate · Esc to cancel\n`;
+    await withPane("claude", "blocked", screen("Which device do you use?"), async (pane) => {
+      const prompt = (await card())!;
+      let reads = 0;
+      pane.onSent = (sent) => {
+        if (sent !== "enter") return;
+        pane.onRead = () => {
+          reads += 1;
+          if (reads === 1) pane.nextReadFails = true;
+          if (reads === 3) pane.screen = screen("Which problems do you see?");
+        };
+      };
+      expect(await answer(prompt.id, { option_index: 0 })).toEqual({ status: 200, code: undefined });
+      // the failed read, the old question, then the next one: its whole tab bar read once more in
+      // color and the text read again after that (#2465)
+      expect(reads).toBe(4);
+      expect((await card())!.question).toBe("Which problems do you see?");
+      expect(pane.sent).toEqual(["enter"]);
+    });
+  });
+
   // each refusal waits out the answer's own 1.5 s for the list to show the row
   test("types no s, and no further arrow, once Claude's model list is not the one that was tapped", async () => {
     // closed in the terminal right after the answer read it, with no move to wait on: the look
@@ -5743,6 +5895,251 @@ Enter to select · ↑/↓ to navigate · Esc to cancel
       expect(await answer(prompt.id, { option_index: 2 })).toEqual({ status: 200, code: undefined });
       expect(pane.sent).toEqual(["down", "text:s"]);
       expect(await card()).toBeNull();
+    });
+  });
+
+  test("answers Claude's question tabs only once the pane shows the next step, so the step answered does not come up again", async () => {
+    // Claude Code 2.1.314: two questions, then the review, each drawn a moment after the key
+    const rule = "─".repeat(80);
+    const tabs = (device: boolean, symptoms: boolean) => `←  ${device ? "☒" : "☐"} Device  ${symptoms ? "☒" : "☐"} Symptoms  ✔ Submit  →\n\n`;
+    const hint = "\nEnter to select · Tab/Arrow keys to navigate · Esc to cancel\n";
+    const mark = (at: number, row: number) => at === row ? "❯" : " ";
+    const device = (at: number) => `${tabs(false, false)}Which device do you use?\n\n${["Phone", "Desktop browser", "Type something."].map((row, index) => `${mark(at, index)} ${index + 1}. ${row}`).join("\n")}\n${rule}\n  4. Chat about this\n${hint}`;
+    const problems = ["Answer not sent", "Wrong option sent", "Card stays open"];
+    const symptoms = (at: number, ticked: number[]) => `${tabs(true, ticked.length > 0)}Which problems do you see?\n\n${problems.map((row, index) => `${mark(at, index)} ${index + 1}. [${ticked.includes(index) ? "✔" : " "}] ${row}`).join("\n")}\n${mark(at, 3)} 4. [ ] Type something\n     Submit\n${rule}\n  5. Chat about this\n${hint}`;
+    const review = `${tabs(true, true)}Review your answers\n\n ● Which device do you use?\n   → Desktop browser\n ● Which problems do you see?\n   → Answer not sent, Card stays open\n\nReady to submit your answers?\n\n❯ 1. Submit answers\n  2. Cancel\n`;
+    await withPane("claude", "blocked", device(0), async (pane) => {
+      let at = 0;
+      const ticked: number[] = [];
+      pane.onSent = (sent) => {
+        if (sent === "down") pane.screen = device(++at);
+        if (sent === "enter") setTimeout(() => { at = 0; pane.screen = symptoms(at, ticked); }, 200);
+      };
+      expect(await answer((await card())!.id, { option_index: 1 })).toEqual({ status: 200, code: undefined });
+      expect((await card())!.question).toBe("Which problems do you see?");
+
+      pane.onSent = (sent) => {
+        if (sent === "down") at += 1;
+        if (sent === "enter" || sent === "space") ticked.push(at);
+        pane.screen = symptoms(at, ticked);
+        // the review comes in two draws: its heading first, a screen no reader knows
+        if (sent === "right") setTimeout(() => { pane.screen = `${tabs(true, true)}Review your answers\n`; }, 100);
+        if (sent === "right") setTimeout(() => { pane.screen = review; }, 300);
+      };
+      expect(await answer((await card())!.id, { option_indices: [0, 2] })).toEqual({ status: 200, code: undefined });
+      expect(ticked).toEqual([0, 2]);
+      expect((await card())!.title).toBe("Review your answers");
+
+      // submitted: Claude goes on with the answers
+      pane.onSent = (sent) => { if (sent === "enter") setTimeout(() => { pane.status = "working"; pane.screen = `⏺ User answered Claude's questions\n\n${rule}\n❯ \n${rule}\n`; }, 200); };
+      expect(await answer((await card())!.id, { option_index: 0 })).toEqual({ status: 200, code: undefined });
+      expect(await card()).toBeNull();
+    });
+  });
+
+  // #2464's wait covered Claude's question tabs only; its other dialogs close a moment after the key too (live on
+  // Claude Code 2.1.316: the trust check read again right after its answer, under a new id; the plan read again
+  // after its feedback, the feedback drawn in its last row and read as a plain option)
+  const rows = (labels: string[], at: number, numbered: boolean, indent = " ") => labels.map((label, index) => `${indent}${index === at ? "❯" : " "} ${numbered ? `${index + 1}. ` : ""}${label}`).join("\n");
+  test.each([
+    ["a tool approval", (at: number) => `● Bash(touch made.txt)\n${"─".repeat(80)}\n Bash command\n   touch made.txt\n   Create the file\n Do you want to proceed?\n${rows(["Yes", "Yes, and always allow access to /tmp/x from this project", "No"], at, true)}\n Esc to cancel · Tab to amend\n`, { option_index: 0 }],
+    ["the folder-trust check", (at: number) => ` Accessing workspace:\n\n /tmp/garden\n\n Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source\n project, or work from your team).\n\n${rows(["No, exit", "Yes, I trust this folder"], at, false)}\n\n Enter to confirm · Esc to cancel\n`, { option_index: 1 }],
+    ["a plan, with feedback", (at: number, typed = "Tell Claude what to change") => `Ready to code?\n\nHere is Claude's plan:\nAdd a heading to the README file.\n\nClaude has written up a plan and is ready to execute. Would you like to proceed?\n\n${rows(["Yes, auto-accept edits", "Yes, manually approve edits", typed], at, true, "")}\n     shift+tab to approve with this feedback\n`, { custom_text: "Keep the intro" }],
+  ] as const)("answers %s only once Claude has closed it, so the read right after gets no card", async (_name, dialog, choice) => {
+    await withPane("claude", "blocked", dialog(0), async (pane) => {
+      let at = 0;
+      pane.onSent = (sent) => {
+        if (sent === "down") pane.screen = dialog(++at);
+        // the plan's typed feedback shows in its row before the key that sends it, as Claude draws it
+        if (sent.startsWith("text:")) pane.screen = dialog(at, sent.slice(5));
+        // the panel gives way to Claude's input box 200 ms after the key, while herdr still says blocked
+        if (sent === "enter" || sent === "shift+tab") setTimeout(() => { pane.screen = `✻ Working… (esc to interrupt)\n${"─".repeat(80)}\n❯ \n${"─".repeat(80)}\n`; }, 200);
+      };
+      const before = (await card())!;
+      expect(await answer(before.id, choice)).toEqual({ status: 200, code: undefined });
+      // the card's read right after the answer: neither the dialog just answered, under a new id, nor a fallback card
+      const after = await card();
+      expect(after === null ? null : { title: after.title, options: after.options.map((option) => option.label), sameId: after.id === before.id }).toBeNull();
+    });
+  });
+
+  test("an answer to a Claude approval that does not close waits about a second, however slow the reads", async () => {
+    const approval = `● Bash(touch made.txt)\n${"─".repeat(80)}\n Bash command\n   touch made.txt\n   Create the file\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n Esc to cancel · Tab to amend\n`;
+    await withPane("claude", "blocked", approval, async (pane) => {
+      const before = (await card())!;
+      pane.readDelay = 100;
+      const started = performance.now();
+      expect(await answer(before.id, { option_index: 0 })).toEqual({ status: 200, code: undefined });
+      // 20 reads of 100 ms and more took over 3 s; the wait's own deadline is 1 s, plus the read in flight
+      expect(performance.now() - started).toBeLessThan(2_000);
+    });
+  });
+
+  // #2503 review by @jpcarranza94, live on Claude Code 2.1.316
+  test("with colors (steps), an answer to Claude's last question waits through a half-drawn review", async () => {
+    const panel = (state: string) => readFileSync(new URL(`./fixtures/claude-tabs-2.1.312-${state}-120.ansi`, import.meta.url), "utf8");
+    const draw = (pane: Pane, screen: string) => { pane.viewport = screen; pane.screen = screen.replace(ANSI_RE, ""); };
+    const review = panel("review");
+    const heading = review.split("\n").slice(0, 4).join("\n") + "\n";
+    await withPane("claude", "blocked", "", async (pane) => {
+      draw(pane, panel("second"));
+      const second = (await card())!;
+      expect(second.steps?.length).toBe(3);
+      pane.onSent = (sent) => {
+        if (sent !== "enter") return;
+        setTimeout(() => draw(pane, heading), 100);
+        setTimeout(() => draw(pane, review), 300);
+      };
+      expect(await answer(second.id, { option_index: 0 })).toEqual({ status: 200, code: undefined });
+      expect((await card())!.title).toBe("Review your answers");
+    });
+  });
+
+  test("goes back between Claude's question tabs with ← only as the pane shows each tab, and stops when it does not", async () => {
+    // Claude Code 2.1.312 at 120 columns, colors kept: the active tab is drawn on a background (#2465)
+    const panel = (state: string) => readFileSync(new URL(`./fixtures/claude-tabs-2.1.312-${state}-120.ansi`, import.meta.url), "utf8");
+    // the first question once both are answered, as the review's ← ← shows it
+    const states: Record<string, string> = {
+      review: panel("review"), symptoms: panel("review-back"),
+      device: panel("first-answered").replace("☐ Symptoms", "☒ Symptoms"),
+    };
+    const show = (pane: Pane, state: string) => { pane.viewport = states[state]!; pane.screen = states[state]!.replace(ANSI_RE, ""); };
+    const order = ["device", "symptoms", "review"];
+    const press = (pane: Pane, skip = false) => {
+      let at = 2;
+      pane.onSent = (sent) => {
+        if (sent !== "left") return;
+        at = Math.max(0, at - (skip ? 2 : 1));
+        setTimeout(() => show(pane, order[at]!), 100);
+      };
+    };
+    await withPane("claude", "blocked", "", async (pane) => {
+      show(pane, "review");
+      const review = (await card())!;
+      expect(review).toMatchObject({ title: "Review your answers", can_step_back: true });
+      expect(review.steps?.map((step) => step.can_navigate ?? false)).toEqual([true, true, false]);
+      // the tab it is on, or one past the last: nothing to press
+      for (const choice of [{ step_index: 2 }, { step_index: 3 }, { step_index: -1 }, { step_back: true, step_index: 0 }, { step_back: true, option_index: 0 }]) {
+        expect((await answer(review.id, choice)).status).toBe(400);
+      }
+      expect(pane.sent).toEqual([]);
+      press(pane);
+      expect(await answer(review.id, { step_back: true })).toEqual({ status: 200, code: undefined });
+      expect(pane.sent).toEqual(["left"]);
+      expect(await card()).toMatchObject({ question: "Which problems do you see?", can_step_back: true });
+    });
+    await withPane("claude", "blocked", "", async (pane) => {
+      show(pane, "review");
+      press(pane);
+      expect(await answer((await card())!.id, { step_index: 0 })).toEqual({ status: 200, code: undefined });
+      expect(pane.sent).toEqual(["left", "left"]);
+      const device = (await card())!;
+      expect(device).toMatchObject({ title: "Device · 1 of 2", question: "Which device do you use?" });
+      expect(device.can_step_back).toBeUndefined();
+    });
+    // a frame mid-redraw whose colors cannot be checked says nothing about the tab: the route looks again
+    await withPane("claude", "blocked", "", async (pane) => {
+      show(pane, "review");
+      pane.onSent = (sent) => {
+        if (sent !== "left") return;
+        pane.viewport = states.symptoms!.replace(ANSI_RE, "");
+        pane.screen = states.symptoms!.replace(ANSI_RE, "");
+        setTimeout(() => show(pane, "symptoms"), 150);
+      };
+      expect(await answer((await card())!.id, { step_back: true })).toEqual({ status: 200, code: undefined });
+      expect(pane.sent).toEqual(["left"]);
+    });
+    // → lights the next tab a moment before the question under it is redrawn: that frame is no
+    // finished move, so the second → waits for the question too
+    await withPane("claude", "blocked", "", async (pane) => {
+      const bar = (lit: number) => "← " + [" ☒ Device ", " ☒ Symptoms ", " ✔ Submit "]
+        .map((tab, at) => at === lit ? `\u001b[38;2;0;0;0m\u001b[48;2;177;185;249m${tab}\u001b[0m` : tab).join("") + " →";
+      const lit = (screen: string, at: number) => screen.split("\n").map((line) => line.replace(ANSI_RE, "").startsWith("←") ? bar(at) : line).join("\n");
+      const draw = (screen: string) => { pane.viewport = screen; pane.screen = screen.replace(ANSI_RE, ""); };
+      draw(states.device!);
+      let at = 0;
+      // the question drawn when each → went out
+      const under: string[] = [];
+      pane.onSent = (sent) => {
+        if (sent !== "right") return;
+        under.push(pane.screen.includes("Which problems do you see?") ? "symptoms" : "device");
+        at += 1;
+        const next = order[at]!;
+        draw(lit(at === 1 ? states.device! : states.symptoms!, at));
+        setTimeout(() => show(pane, next), 150);
+      };
+      expect(await answer((await card())!.id, { step_index: 2 })).toEqual({ status: 200, code: undefined });
+      expect(pane.sent).toEqual(["right", "right"]);
+      expect(under).toEqual(["device", "symptoms"]);
+      expect((await card())!.title).toBe("Review your answers");
+    });
+    // a poll while a step is on its way reads the tab it moves to: that card's id still answers once
+    // the step is done, so the next tap on a step is not refused (#2503 review by @jpcarranza94)
+    await withPane("claude", "blocked", "", async (pane) => {
+      show(pane, "review");
+      let polled: InteractivePrompt | null = null;
+      pane.onSent = (sent) => {
+        if (sent !== "left") return;
+        const next = pane.sent.filter((key) => key === "left").length === 1 ? "symptoms" : "device";
+        show(pane, next);
+        // the poll runs to its end before herdr answers the key, so before the step can end
+        if (next === "symptoms") pane.holdSend = card().then((shown) => { polled = shown; });
+      };
+      expect(await answer((await card())!.id, { step_back: true })).toEqual({ status: 200, code: undefined });
+      expect(polled!).toMatchObject({ question: "Which problems do you see?" });
+      expect(await answer(polled!.id, { step_index: 0 })).toEqual({ status: 200, code: undefined });
+      expect(pane.sent).toEqual(["left", "left"]);
+      expect((await card())!.question).toBe("Which device do you use?");
+    });
+    // a card read before moves that come back to its tab is not the card now: each move is a new
+    // asking, so the review read before Back and a step back to the review is refused (#2503 review)
+    await withPane("claude", "blocked", "", async (pane) => {
+      show(pane, "review");
+      const before = (await card())!;
+      pane.onSent = (sent) => { if (sent === "left") show(pane, "symptoms"); if (sent === "right") show(pane, "review"); };
+      expect(await answer(before.id, { step_back: true })).toEqual({ status: 200, code: undefined });
+      expect(await answer((await card())!.id, { step_index: 2 })).toEqual({ status: 200, code: undefined });
+      expect(pane.sent).toEqual(["left", "right"]);
+      expect((await card())!.title).toBe("Review your answers");
+      expect(await answer(before.id, { step_back: true })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual(["left", "right"]);
+    });
+    // a poll begun during a move and answered after it read the tab the move left: it changes nothing
+    // about the asking, so the card of the tab the move reached still answers (#2503 review)
+    await withPane("claude", "blocked", "", async (pane) => {
+      show(pane, "review");
+      const review = (await card())!;
+      let release = () => {};
+      let late: Promise<InteractivePrompt | null> = Promise.resolve(null);
+      pane.onSent = (sent) => {
+        if (sent !== "left") return;
+        pane.holdRead = new Promise<void>((resolve) => { release = resolve; });
+        // the key waits for the poll's first read, taken as the review; only then does the pane redraw
+        pane.holdSend = new Promise<void>((resolve) => { pane.onReadHeld = () => { pane.onReadHeld = undefined; show(pane, "symptoms"); resolve(); }; });
+        late = card();
+      };
+      expect(await answer(review.id, { step_back: true })).toEqual({ status: 200, code: undefined });
+      const reached = (await card())!;
+      expect(reached.question).toBe("Which problems do you see?");
+      release();
+      await late;
+      expect((await card())!.id).toBe(reached.id);
+      pane.onSent = (sent) => { if (sent === "left") show(pane, "device"); };
+      expect(await answer(reached.id, { step_back: true })).toEqual({ status: 200, code: undefined });
+    });
+    // the pane went two tabs for one ←: not the tab asked for, so no second key
+    await withPane("claude", "blocked", "", async (pane) => {
+      show(pane, "review");
+      press(pane, true);
+      expect(await answer((await card())!.id, { step_index: 0 })).toEqual({ status: 409, code: "prompt_changed" });
+      expect(pane.sent).toEqual(["left"]);
+    });
+    // colors that do not say which tab is shown: no steps, and no key for a step
+    await withPane("claude", "blocked", states.review!.replace(ANSI_RE, ""), async (pane) => {
+      const review = (await card())!;
+      expect(review.steps).toBeUndefined();
+      expect((await answer(review.id, { step_back: true })).status).toBe(400);
+      expect(pane.sent).toEqual([]);
     });
   });
 

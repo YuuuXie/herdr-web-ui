@@ -9,6 +9,7 @@ import { MAX_INLINE_IMAGE_BYTES } from "../lib/markdownImages.ts";
 import { nativeTransport, setTransport } from "../lib/transport.ts";
 import { OpenFileContext } from "../lib/filePaths.ts";
 import { SettingsProvider } from "../lib/settings.ts";
+import { createSkillMatcher, type SkillMatcher } from "../lib/skillMentions.ts";
 import { ChatMarkdownImages } from "./ChatMarkdownImages.tsx";
 import { InlineMarkdown, Markdown } from "./Markdown.tsx";
 
@@ -19,10 +20,10 @@ const descriptors = new Map<string, PropertyDescriptor | undefined>();
 const onOpen = (image: GalleryImage) => { opened.push(image); };
 const info = (path: string, size = 100): FileInfo => ({ path, name: path.split("/").pop()!, size, modified: "2026-10-30T00:00:00Z", mime: "image/png", kind: "image" });
 
-async function draw({ machine = "local", pane = "w1:p1", cwd = "/project", connected = true, text = "![Diagram](./diagram.png)", inline = false, html = false }: {
-  machine?: string; pane?: string; cwd?: string | null; connected?: boolean; text?: string; inline?: boolean; html?: boolean;
+async function draw({ machine = "local", pane = "w1:p1", cwd = "/project", connected = true, text = "![Diagram](./diagram.png)", inline = false, html = false, skills = null }: {
+  machine?: string; pane?: string; cwd?: string | null; connected?: boolean; text?: string; inline?: boolean; html?: boolean; skills?: SkillMatcher | null;
 } = {}) {
-  const children = inline ? createElement(InlineMarkdown, { children: text }) : createElement(Markdown, { children: text, html });
+  const children = inline ? createElement(InlineMarkdown, { children: text }) : createElement(Markdown, { children: text, html, skills });
   const tree = createElement(SettingsProvider, { children: createElement(MachineContext.Provider, { value: machine,
     children: createElement(ChatMarkdownImages, { paneId: pane, cwd, connected, onOpen, children }),
   }) });
@@ -351,6 +352,21 @@ it("keeps a decoded canonical image when a browser cwd hint arrives", async () =
   await draw({ cwd: "/stale-pane-hint" });
   expect(requests).toHaveLength(1);
   expect(images()[0]).toBe(image);
+});
+
+it("keeps a decoded image and the answer's words when the pane's skill names arrive", async () => {
+  // the pane's commands load after its transcript: the answer is drawn first without skill names
+  const text = "![Diagram](./diagram.png)\n\nRun /review next.";
+  await draw({ text });
+  await answer(0, info("/project/diagram.png"));
+  const image = images()[0]!;
+  await act(async () => { image.props.onLoad(); });
+  const words = renderer!.root.findAllByType("p").at(-1)!;
+  await draw({ text, skills: createSkillMatcher([{ name: "review", description: "", source: "skill" }]) });
+  expect(renderer!.root.findAll((node) => node.props.className === "markdown-skill")).toHaveLength(1);
+  expect(renderer!.root.findAllByType("p").at(-1)).toBe(words);
+  expect(images()[0]).toBe(image);
+  expect(requests).toHaveLength(1);
 });
 
 it("keeps manual Retry usable after a pending retry fails across reconnects", async () => {

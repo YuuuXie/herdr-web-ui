@@ -84,6 +84,21 @@ describe("saved theme migration", () => {
     expect(loadSettings().terminalFontSize).toBe(18);
   });
 
+  it("keeps Return's default unchosen, and a choice, through an old tab's whole-record save", () => {
+    // unchosen: the old tab reads the boolean it knows and writes it back, which is still no choice
+    saveSettings(sanitizeSettings({}));
+    expect(oldSanitizeSettings(readOld()).enterSends).toBe(true);
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().enterSends).toBeNull();
+    expect(loadSettings().terminalFontSize).toBe(18);
+    // chosen either way: the old tab's unrelated save keeps it
+    for (const enterSends of [true, false]) {
+      saveSettings({ ...loadSettings(), enterSends });
+      oldSaveSettings({ ...readOld(), terminalFontSize: 20 });
+      expect(loadSettings().enterSends).toBe(enterSends);
+    }
+  });
+
   it("keeps the interface font in its own key, out of an old tab's whole-record save", () => {
     saveSettings(sanitizeSettings({ uiFontFamily: "system-ui" }));
     expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("uiFontFamily");
@@ -147,6 +162,23 @@ describe("saved theme migration", () => {
     expect(loadSettings().composerArtifacts).toBe(false);
     records.set("ovis:composer-artifacts", "not json");
     expect(loadSettings().composerArtifacts).toBe(false);
+  });
+
+  it("keeps Expand thinking and Collapse work in keys of their own, out of an old tab's whole-record save", () => {
+    for (const [key, stored] of [["expandThinking", "ovis:expand-thinking"], ["foldWork", "ovis:fold-work"]] as const) {
+      expect(loadSettings()[key]).toBe(false);
+      saveSettings(sanitizeSettings({ [key]: true }));
+      expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty(key);
+      oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+      expect(loadSettings()[key]).toBe(true);
+      expect(loadSettings().terminalFontSize).toBe(18);
+      saveSettings({ ...loadSettings(), [key]: false });
+      expect(loadSettings()[key]).toBe(false);
+      records.set(stored, "\"true\"");
+      expect(loadSettings()[key]).toBe(false);
+      records.set(stored, "not json");
+      expect(loadSettings()[key]).toBe(false);
+    }
   });
 
   it("survives repeated stale saves from an already-open old tab (f1)", () => {
@@ -252,6 +284,16 @@ it("keeps the composer's Artifacts chip off until this device turns it on, and k
   expect(sanitizeSettings({ composerArtifacts: true }).composerArtifacts).toBe(true);
   expect(sanitizeSettings({ composerArtifacts: "true" }).composerArtifacts).toBe(false);
   expect(SETTING_SCOPE.composerArtifacts).toBe("device");
+});
+
+it("keeps the chat's folds as they always started until this device chooses Expand thinking or Collapse work, and keeps that choice its own", () => {
+  for (const key of ["expandThinking", "foldWork"] as const) {
+    expect(sanitizeSettings({})[key]).toBe(false);
+    expect(sanitizeSettings({ [key]: true })[key]).toBe(true);
+    expect(sanitizeSettings({ [key]: "true" })[key]).toBe(false);
+    expect(SETTING_SCOPE[key]).toBe("device");
+    expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain(key);
+  }
 });
 
 it("keeps the screen wake lock off until this device explicitly enables it", () => {

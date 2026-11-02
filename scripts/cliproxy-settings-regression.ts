@@ -30,7 +30,7 @@ try {
   const ctx: UsageContext = {
     home, env: {}, platform: process.platform,
     fetch: async () => Response.json({ five_hour: { utilization: 18 } }),
-    now: Date.now, keychain: async () => ({ status: "missing" }), run: async () => null,
+    now: Date.now, keychain: async () => ({ status: "missing" }), run: async () => null, has: () => true,
   };
   const service = new CLIProxyService(stateDir);
   await service.save({ url: fake.server.url.origin, management_key: key });

@@ -36,6 +36,10 @@ import { loginPathProbe, ShellAgentLocator, type LoginPathProbe } from "./shell-
 import { DeviceStore } from "./devices.ts";
 import type { MachineEvent, MachineSettings } from "../shared/machines.ts";
 import { MAX_MUTED_PANES, type SharedPreferences } from "../shared/preferences.ts";
+import { OmoStatus } from "./omo-status.ts";
+import { omoJobTasks } from "./omo-jobs.ts";
+import { ClaudeSubagentStatus } from "./claude-subagents.ts";
+import { setFilePoolOptions } from "./file-pool.ts";
 
 /**
  * Contract test for Ovis's HTTP + WS surface.
@@ -522,12 +526,34 @@ describe("a Claude bash-mode command on GET /api/pane/conversation", () => {
 });
 
 describe("usage API", () => {
+  it.each([false, true])("serializes missing_commands when Linux secret-tool availability is %s", async (installed) => {
+    // Given: no Antigravity credentials and an isolated command lookup.
+    const usageState = mkdtempSync(join(tmpdir(), "herdr-usage-missing-command-"));
+    const usage = new UsageService({
+      home: usageState, env: {}, platform: "linux", now: () => Date.parse("2026-10-06T00:00:00Z"),
+      keychain: async () => ({ status: "missing" }), run: async () => null,
+      has: (command) => command !== "secret-tool" || installed,
+      fetch: async () => { throw new Error("usage must not fetch without credentials"); },
+    }, USAGE_PROVIDERS.filter((provider) => provider.id === "antigravity"));
+    const app = createServer({ port: 0, stateDir: usageState, usage });
+    try {
+      // When
+      const response = await fetch(`http://localhost:${app.port}/api/usage`);
+      // Then
+      expect(response.status).toBe(200);
+      const report: UsageReport = await response.json();
+      expect(report.providers).toEqual([]);
+      if (installed) expect(report).not.toHaveProperty("missing_commands");
+      else expect(report.missing_commands).toEqual([{ provider: "antigravity", command: "secret-tool" }]);
+    } finally { app.stop(); rmSync(usageState, { recursive: true, force: true }); }
+  });
+
   it("returns OpenCode Go windows without exposing its credential", async () => {
     const usageState = mkdtempSync(join(tmpdir(), "herdr-opencode-contract-"));
     const token = "oc_sk_contract_only";
     const usage = new UsageService({
       home: usageState, env: { OPENCODE_API_KEY: token }, platform: "linux", now: () => Date.parse("2026-10-06T00:00:00Z"),
-      keychain: async () => ({ status: "missing" }), run: async () => null,
+      keychain: async () => ({ status: "missing" }), run: async () => null, has: () => true,
       fetch: async (url, init) => {
         expect(url).toBe("https://opencode.ai/zen/go/v1/usage");
         expect(new Headers(init.headers).get("authorization")).toBe(`Bearer ${token}`);
@@ -1061,7 +1087,7 @@ describe("Portal API", () => {
       "#!/bin/sh",
       'case "$1" in',
       "  version) echo v2.6.1 ;;",
-      "  expose) trap 'exit 0' TERM; echo 'INF service ready at https://herdr-test-0123.relay.example:443'; while :; do sleep 0.05; done ;;",
+      "  expose) [ \"$2\" = --help ] && exit 0; trap 'exit 0' TERM; echo 'INF service ready at https://herdr-test-0123.relay.example:443'; while :; do sleep 0.05; done ;;",
       "  *) exit 2 ;;",
       "esac",
       "",
@@ -1077,6 +1103,7 @@ describe("Portal API", () => {
       expect((await fetch(url)).status).toBe(401);
       expect(await status()).toMatchObject({ supported: true, usable: true, blocked: null, phase: "idle" });
       expect((await post("start", {})).status).toBe(401);
+      expect((await post("invite", {})).status).toBe(401);
       expect((await post("start", signedIn)).status).toBe(202);
       const deadline = Date.now() + 10_000;
       let running = await status();
@@ -1977,6 +2004,58 @@ describe("workspace and discovery endpoints", () => {
     }
   }, 20_000);
 
+  it("pushes session-changed when a tab, workspace or worktree create answers, not after the collector's debounce", async () => {
+    // the page draws a new pane only once the roster lists it, and the roster is read on this frame
+    const repo = mkdtempSync(join(tmpdir(), "ovis-create-push-"));
+    const git = (...args: string[]) => Bun.spawnSync(["git", "-c", "user.name=ovis test", "-c", "user.email=test@example.invalid", ...args], { cwd: repo, stdout: "pipe", stderr: "pipe" });
+    expect(git("init", "-q", "-b", "main").exitCode).toBe(0);
+    writeFileSync(join(repo, "README.md"), "create push fixture\n");
+    expect(git("add", "README.md").exitCode).toBe(0);
+    expect(git("commit", "-q", "-m", "fixture").exitCode).toBe(0);
+    const socket = await RecordingSocket.connect(`ws://localhost:${server.port}/ws`);
+    const owned: string[] = [];
+    // until no session-changed comes for 700 ms: the collector's debounced one (500 ms after herdr's event) is not the next create's
+    const quiet = async (): Promise<void> => {
+      const changes = () => socket.seen.filter((frame) => frame.type === "session-changed").length;
+      const deadline = Date.now() + 10_000;
+      let count = changes(), since = Date.now();
+      while (Date.now() - since < 700) {
+        if (Date.now() > deadline) throw new Error("session-changed frames did not stop within 10s");
+        await Bun.sleep(25);
+        if (changes() !== count) { count = changes(); since = Date.now(); }
+      }
+    };
+    // ms from the answer to the first session-changed after the request: the collector's comes 500 ms late
+    const pushedOnAnswer = async (path: string, body: unknown): Promise<number> => {
+      const before = new Set(socket.seen);
+      const changed = socket.waitFor((frame) => frame.type === "session-changed" && !before.has(frame), `session-changed after ${path}`, 5_000).then(() => performance.now());
+      const response = await fetch(`${base()}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const answered = performance.now();
+      expect(response.status).toBe(200);
+      owned.push(((await response.json()) as WorkspaceCreated).workspace_id);
+      const pushed = await changed - answered;
+      await quiet();
+      return pushed;
+    };
+    try {
+      const parent = await workspaceCreate({ cwd: repo, label: "ovis-test-create-push" });
+      owned.push(parent.workspace.workspace_id);
+      await socket.waitFor((frame) => frame.type === "session-changed", "session-changed after setup", 5_000);
+      await quiet();
+      expect(await pushedOnAnswer("/api/tab/create", { workspace_id: parent.workspace.workspace_id })).toBeLessThan(250);
+      expect(await pushedOnAnswer("/api/workspace/create", { cwd: repo, label: "ovis-test-create-push-2" })).toBeLessThan(250);
+      const checkout = join(`${repo}-checkouts`, "feature");
+      expect(await pushedOnAnswer("/api/worktree/create", { workspace_id: parent.workspace.workspace_id, branch: "ovis-test-create-push", path: checkout })).toBeLessThan(250);
+      // opening a worktree that is open already answers from the same route: it pushes too
+      expect(await pushedOnAnswer("/api/worktree/open", { workspace_id: parent.workspace.workspace_id, path: checkout })).toBeLessThan(250);
+    } finally {
+      socket.close();
+      for (const id of new Set(owned)) await herdrRpc("workspace.close", { workspace_id: id }).catch(() => undefined);
+      rmSync(`${repo}-checkouts`, { recursive: true, force: true });
+      rmSync(repo, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("says a repository has no commits yet instead of passing git's refusal on", async () => {
     const repo = mkdtempSync(join(tmpdir(), "ovis-worktree-empty-"));
     expect(Bun.spawnSync(["git", "init", "-q", "-b", "main"], { cwd: repo, stdout: "pipe", stderr: "pipe" }).exitCode).toBe(0);
@@ -2196,6 +2275,69 @@ describe("workspace and discovery endpoints", () => {
 });
 
 describe("GET /api/pane/omo-tasks", () => {
+  it("answers a busy Claude task-list scan with retryable 503 while bridge health stays available", async () => {
+    const root = mkdtempSync(join(tmpdir(), "ovis-claude-task-busy-"));
+    const path = join(root, "synthetic.jsonl");
+    writeFileSync(path, "");
+    const original = ClaudeSubagentStatus.prototype.sessionOf;
+    const session = spyOn(ClaudeSubagentStatus.prototype, "sessionOf").mockImplementation(function(this: ClaudeSubagentStatus, paneId) {
+      return paneId === "busy-claude-pane" ? { path, live: true, startedAt: null, read: 1 } : original.call(this, paneId);
+    });
+    setFilePoolOptions({ workers: 0, waiting: 0 });
+    try {
+      const response = await fetch(`${base()}/api/pane/omo-tasks?pane_id=busy-claude-pane`);
+      expect(response.status).toBe(503);
+      expect(response.headers.get("retry-after")).toBe("1");
+      expect(await response.json()).toMatchObject({ error: { code: "file_busy" } });
+      expect((await fetch(`${base()}/api/health?scope=bridge`)).status).toBe(200);
+    } finally {
+      session.mockRestore();
+      setFilePoolOptions();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("merges running bash, monitor and eval jobs ahead of ended tasks and jobs", async () => {
+    // Given task records and the core tracker's transcript jobs for the same session.
+    const cwd = mkdtempSync(join(tmpdir(), "ovis-omo-merged-tasks-"));
+    const now = new Date().toISOString();
+    const tasks = join(cwd, ".omo", "senpi-task", "tasks");
+    mkdirSync(tasks, { recursive: true });
+    for (const [id, status] of [["st_running", "running"], ["st_ended", "completed"]]) {
+      writeFileSync(join(tasks, `${id}.json`), JSON.stringify({
+        task_id: id, parent_session_id: "merged-session", host_pid: process.pid, status,
+        task_summary: id, started_at: now, terminal_at: now,
+      }));
+    }
+    const jobs = omoJobTasks({
+      running: [
+        { id: "bash_1", kind: "command", title: "bun test", at: Date.parse(now) },
+        { id: "mon_FIRST", kind: "monitor", title: "test completion", at: Date.parse(now) },
+        { id: "cell-1", kind: "cell", title: "run tests", at: Date.parse(now) },
+      ],
+      ended: [{ id: "bash_2", kind: "command", title: "bun build", at: Date.parse(now), ended: { at: Date.parse(now), status: "completed" } }],
+    }, null);
+    const session = spyOn(OmoStatus.prototype, "sessionOf").mockImplementation((paneId) => paneId === "merged-pane" ? { cwd, sessionId: "merged-session" } : null);
+    const background = spyOn(OmoStatus.prototype, "jobsOf").mockImplementation((paneId) => paneId === "merged-pane" ? jobs : []);
+    try {
+      // When the browser requests the merged list through HTTP.
+      const response = await fetch(`${base()}/api/pane/omo-tasks?pane_id=merged-pane`);
+      const body = await response.json() as { tasks: { id: string; category: string | null; status: string }[] };
+      // Then running jobs precede even the ended task record, and neither source is lost.
+      expect(response.status).toBe(200);
+      expect(body.tasks.map((task) => [task.id, task.status])).toEqual([
+        ["st_running", "running"], ["bash_1", "running"], ["mon_FIRST", "running"], ["cell-1", "running"],
+        ["st_ended", "completed"], ["bash_2", "completed"],
+      ]);
+      expect(body.tasks.slice(1, 4).map((task) => task.category)).toEqual(["bash", "monitor", "eval"]);
+      expect(background).toHaveBeenCalledWith("merged-pane");
+    } finally {
+      session.mockRestore();
+      background.mockRestore();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("answers 400 without a pane, and no tasks for a pane that runs no OmO", async () => {
     const missing = await fetch(`${base()}/api/pane/omo-tasks`);
     expect(missing.status).toBe(400);

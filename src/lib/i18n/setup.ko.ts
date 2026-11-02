@@ -37,6 +37,8 @@ export const SETUP_KO: Record<string, string> = {
   "Accounts are read on the PC Ovis runs on: they are under Other accounts.": "계정은 Ovis가 실행되는 PC에서 읽으며, 다른 계정 아래에 있습니다.",
   "Install another agent ({count})": "다른 에이전트 설치 ({count})",
   "Not signed in": "로그인 안 됨",
+  "Sign-in unreadable: {command} is not installed": "로그인 정보를 읽을 수 없음: {command} 미설치",
+  "Ovis reads {agent}'s sign-in from the desktop keyring with {command}, which this PC does not have. Install it (the libsecret-tools package on Debian and Ubuntu, libsecret on Fedora and Arch), then open this page again.": "Ovis는 {agent}의 로그인 정보를 데스크톱 키링에서 {command}로 읽는데, 이 PC에는 없습니다. 설치한 뒤(Debian과 Ubuntu는 libsecret-tools 패키지, Fedora와 Arch는 libsecret) 이 페이지를 다시 여세요.",
   "Other agents herdr found": "herdr가 찾은 다른 에이전트",
   "Ovis cannot read {agent}'s sign-in, so it shows none here.": "Ovis는 {agent}의 로그인을 읽을 수 없어 여기에 표시하지 않습니다.",
   "Session resume": "세션 재개",
