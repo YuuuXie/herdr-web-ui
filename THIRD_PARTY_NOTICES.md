@@ -2,6 +2,29 @@
 
 Ovis includes material from the projects below, under their own licenses.
 
+## Paseo endpoint encryption
+
+`shared/vendor/paseo-e2ee/` vendors the Noise NK endpoint encryption from
+[getpaseo/paseo](https://github.com/getpaseo/paseo) at revision
+`1aef1ec6625f2c32cbd62cfbeb02cffb43a275d2`, under Apache-2.0,
+Copyright (c) 2025-present Mohamed Boudra. The full upstream license is included
+at `shared/vendor/paseo-e2ee/LICENSE`; the Apache-2.0 text below also applies.
+The Noise fixture retains its rweather/noise-c source URLs. Its vector assertions
+are ported to `shared/relay-e2ee.spike.test.ts`. The vendored sources and LICENSE are unchanged;
+only `tsconfig.json` is adapted to the flattened layout, as that directory's README says.
+
+The relay code also bundles the MIT-licensed packages those files and `shared/relay-mux.ts` import.
+The MIT license text below applies, with these copyright notices:
+
+- `@noble/ciphers` 2.4.0: `Copyright (c) 2022 Paul Miller (https://paulmillr.com)` and
+  `Copyright (c) 2016 Thomas Pornin <pornin@bolet.org>`
+- `@noble/curves` 2.4.0 and `@noble/hashes` 2.4.0: `Copyright (c) 2022 Paul Miller (https://paulmillr.com)`
+- `base64-js` 1.5.1: `Copyright (c) 2014 Jameson Little`
+- `jsonc-parser` 3.3.1: `Copyright (c) Microsoft`
+
+It also bundles `tweetnacl` 1.0.3, which its authors released into the public domain (the
+Unlicense).
+
 ## QR Code generator
 
 `app/windows/src/QrCode.cs` ports the byte-mode encoder from
@@ -35,6 +58,15 @@ the reading of a tool result's JSON envelope and `tool denied:` / `tool failed:`
 [`AltanS/collie`](https://github.com/AltanS/collie), `bridge/journal/muse.ts`, under MIT,
 Copyright (c) 2026 Altan Sarisin. The MIT license text below applies. The session binding in
 `server/muse-store.ts` is Ovis's own.
+
+## oh-my-pi figure tokens
+
+`src/lib/svgFigure.ts` adapts the figure token vocabulary and the token and root-tag resolution of
+`prepareSvg` from [`can1357/oh-my-pi`](https://github.com/can1357/oh-my-pi),
+`packages/tui/src/chat/svg-source.ts`, under MIT, Copyright (c) 2025 Mario Zechner,
+Copyright (c) 2025-2026 Can Bölük, Copyright (c) 2026 Stencil Labs, Inc. The MIT license text
+below applies. Mapping the tokens onto Ovis's theme roles and drawing the figure as an image are
+Ovis's own.
 
 ## Theme palettes
 

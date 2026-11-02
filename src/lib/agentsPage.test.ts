@@ -23,6 +23,11 @@ describe("agentsPage", () => {
     expect(page.rows.map((entry) => entry.provider)).toEqual(["claude", "codex", null, "antigravity"]);
   });
 
+  it("gives the row the command its provider's sign-in could not be read without", () => {
+    const page = agentsPage({ agents, providers, missing: [{ provider: "antigravity", command: "secret-tool" }], integrations: [], accountsHere: true });
+    expect(page.rows.map((entry) => entry.missing)).toEqual([null, null, null, "secret-tool"]);
+  });
+
   it("lists under Other accounts the providers no installed agent signs in to, in the order they came", () => {
     // Cursor has no agent in the catalog; Copilot's agent is not on this PC
     expect(agentsPage({ agents, providers, integrations: [], accountsHere: true }).otherProviders).toEqual(["cursor", "copilot"]);
@@ -59,5 +64,10 @@ describe("signInState", () => {
     expect(signInState("codex", [], true)).toEqual({ kind: "none" });
     expect(signInState("claude", [account("claude", "claude:a")], true)).toEqual({ kind: "signed-in", count: 1, account: "claude:a" });
     expect(signInState("claude", [account("claude", "claude:a"), account("claude", "claude:b", "expired")], true)).toEqual({ kind: "problem", count: 2, problems: 1 });
+  });
+
+  it("names the missing command rather than no sign-in when the server could not look", () => {
+    expect(signInState("antigravity", [], true, "secret-tool")).toEqual({ kind: "unreadable", command: "secret-tool" });
+    expect(signInState("antigravity", [account("antigravity", "antigravity:a")], true, "secret-tool")).toEqual({ kind: "signed-in", count: 1, account: "antigravity:a" });
   });
 });

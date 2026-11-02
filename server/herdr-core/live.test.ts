@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CoreAttachSession } from "./attach-session.ts";
 import { HcConnection } from "./connection.ts";
 
 /**
@@ -134,5 +135,34 @@ describe.skipIf(!bin)("hc client against a real hc", () => {
     await hc.call("terminal.rm", { terminal: record.address });
     await until("removed", () => events.some((event) => event.type === "removed" && event.terminal === record.address));
     await subscription.channel.close();
+  }, TEST_MS);
+
+  it("streams a terminal through CoreAttachSession: typing, a resize, and the program's exit code", async () => {
+    const record = await hc.call<{ address: string }>("terminal.run", { argv: ["bash", "-c", "stty -echo; IFS= read -r line; echo \"got:$line\"; exit 7"] });
+    let sizes = "";
+    const events = await hc.open<{ channel: number }>("events.subscribe", { terminal: record.address }, {
+      onData: (payload) => { sizes += new TextDecoder().decode(payload); wake(); },
+      onClose: () => {},
+    });
+    let screen = "";
+    const exit = Promise.withResolvers<number | null>();
+    const session = new CoreAttachSession({
+      hc,
+      terminal: record.address,
+      cols: 80,
+      rows: 24,
+      onData: (data) => { screen += data; wake(); },
+      onExit: (code) => exit.resolve(code),
+    });
+    await until("first paint", () => screen.length > 0);
+    session.resize(90, 20);
+    await until("resize", () => sizes.includes('"cols":90'));
+    const sized = await hc.call<{ cols: number; rows: number }>("terminal.get", { terminal: record.address });
+    expect([sized.cols, sized.rows]).toEqual([90, 20]);
+    session.write("hi\r");
+    expect(await exit.promise).toBe(7);
+    expect(screen).toContain("got:hi");
+    events.channel.close();
+    await hc.call("terminal.rm", { terminal: record.address });
   }, TEST_MS);
 });

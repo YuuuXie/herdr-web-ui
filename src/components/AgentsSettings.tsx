@@ -158,10 +158,11 @@ function ProviderAccounts({ id, providers, onLocalLogin, onFollow }: { readonly 
 
 /** The line under an agent's name: its sign-in as the accounts show it, or only that it is there. */
 function stateLine(entry: AgentsPageRow, read: boolean, t: Translate): { text: string; tone: "ok" | "warn" | "none" | "dim" } {
-  const state = signInState(entry.provider, entry.accounts, read);
+  const state = signInState(entry.provider, entry.accounts, read, entry.missing);
   switch (state.kind) {
     case "unknown": return { text: t("Installed"), tone: "dim" };
     case "none": return { text: t("Not signed in"), tone: "none" };
+    case "unreadable": return { text: t("Sign-in unreadable: {command} is not installed", { command: state.command }), tone: "warn" };
     case "signed-in": return { text: state.count > 1 ? t("Signed in · {count} accounts", { count: state.count }) : state.account ? t("Signed in · {account}", { account: state.account }) : t("Signed in"), tone: "ok" };
     case "problem": return { text: state.count === 1 ? t("Its account needs attention") : t("{count} accounts · {problems} need attention", { count: state.count, problems: state.problems }), tone: "warn" };
     default: { const unexpected: never = state; throw new Error(String(unexpected)); }
@@ -194,7 +195,8 @@ function AgentItem({ entry, open, onToggle, allProviders, read, limitsOn, local,
   const again = read && !watching ? accounts.filter(canSignInAgain) : [];
   const detailsId = `agents-details-${agent.id}`;
   // the one sign-in it lacks is a tap away while the row is shut; open, the list below has its own
-  const action = open || watching || !read || provider === null ? null
+  // without the command it is read with, a sign-in would not show here either: the note says what to install instead
+  const action = open || watching || !read || provider === null || (entry.missing !== null && accounts.length === 0) ? null
     : again.length === 1 ? <UsageSignInAgain usage={again[0]!} onStarted={onLocalLogin} onFollow={onFollow} />
       : accounts.length === 0 ? <button type="button" className="btn agents-row-action" aria-label={t("Sign in to {agent}", { agent: agent.name })} onClick={() => provider === "claude" || provider === "codex" ? onFollow({ provider, default: true }) : onAddAccount(provider)}><KeyRound aria-hidden="true" /><span className="agents-row-action-label">{t("Sign in")}</span></button>
         : null;
@@ -215,11 +217,13 @@ function AgentItem({ entry, open, onToggle, allProviders, read, limitsOn, local,
       {open && <div className="agents-details" id={detailsId}>
         {agent.state.meets_min_version === false && agent.min_version !== null && <p className="agents-detail-note settings-condition">{t("Ovis needs {version} or later.", { version: agent.min_version.version })}</p>}
         {provider !== null && (read ? <>
+          {entry.missing !== null && <p className="agents-detail-note settings-condition" role="status">{t("Ovis reads {agent}'s sign-in from the desktop keyring with {command}, which this PC does not have. Install it (the libsecret-tools package on Debian and Ubuntu, libsecret on Fedora and Arch), then open this page again.", { agent: agent.name, command: entry.missing })}</p>}
           <div className="agents-detail-head">
             <span>{t("Accounts")} <span className="usage-account-count">{accounts.length}</span></span>
             {!watching && <button type="button" className="btn btn-ghost" onClick={() => onAddAccount(provider)}><Plus aria-hidden="true" />{t("Add account")}</button>}
           </div>
-          <ProviderAccounts id={provider} providers={allProviders} onLocalLogin={watching ? undefined : onLocalLogin} onFollow={onFollow} />
+          {/* with the sign-in unreadable, "No accounts signed in" would be the guess the note replaces */}
+          {(entry.missing === null || accounts.length > 0) && <ProviderAccounts id={provider} providers={allProviders} onLocalLogin={watching ? undefined : onLocalLogin} onFollow={onFollow} />}
         </> : <p className="agents-detail-note" role="status">{limitsOn ? t("Loading…") : t("Turn on plan limits to see accounts.")}</p>)}
         {provider === null && signIn !== null && (local && signIn.provider === null
           ? <p className="agents-detail-note">{signIn.in_agent !== null ? t("{agent} signs in inside the agent ({how}). Ovis cannot read that sign-in, so it shows none here.", { agent: agent.name, how: signIn.in_agent }) : t("Ovis cannot read {agent}'s sign-in, so it shows none here.", { agent: agent.name })}</p>
@@ -331,7 +335,7 @@ export function AgentsSettings({ watching, onLocalLogin, onOpenPane, onOpenGuide
 
   const agents = catalog !== null && catalog.machineId === machineId ? catalog.agents : null;
   const providers = settings.showUsage ? usage.report?.providers ?? [] : [];
-  const page = agents === null && catalogError === null ? null : agentsPage({ agents: agents ?? [], providers, integrations: integrationOutcome?.kind === "list" ? integrationOutcome.integrations : [], accountsHere: local });
+  const page = agents === null && catalogError === null ? null : agentsPage({ agents: agents ?? [], providers, missing: settings.showUsage ? usage.report?.missing_commands ?? [] : [], integrations: integrationOutcome?.kind === "list" ? integrationOutcome.integrations : [], accountsHere: local });
   const otherProviders = page?.otherProviders ?? [...new Set(providers.map((entry) => entry.id))];
   const failed = Object.values(failures);
   const installNote = t("Install runs the maker's own installer in a terminal tab on this PC, where you can watch it.");

@@ -12,6 +12,7 @@ import { SETUP_KO } from "./i18n/setup.ko.ts";
 import { GUIDE_KO } from "./i18n/guide.ko.ts";
 import { UPDATES_KO } from "./i18n/updates.ko.ts";
 import { PALETTE_KO } from "./i18n/palette.ko.ts";
+import { RELAY_KO } from "./i18n/relay.ko.ts";
 
 /**
  * Korean for every `t("…")` in src/ that no part in lib/i18n/ holds: keys more than one feature
@@ -98,6 +99,8 @@ const BASE: Record<string, string> = {
   "The other PC's answer could not be read": "다른 PC의 응답을 읽을 수 없습니다",
   "Browse files": "파일 찾아보기",
   "Copy link": "링크 복사",
+  "Share link": "링크 공유",
+  "Copy address": "주소 복사",
   "Link copied": "링크를 복사했습니다",
   "That agent has closed: its workspace is open": "그 에이전트는 닫혔습니다. 대신 워크스페이스를 열었습니다",
   "That link's workspace is closed": "그 링크의 워크스페이스는 닫혔습니다",
@@ -182,6 +185,7 @@ const BASE: Record<string, string> = {
   "New code": "새 코드",
   "Paired: {name}.": "페어링됨: {name}.",
   "QR code that pairs a phone with code {code}": "코드 {code}로 폰을 페어링하는 QR 코드",
+  "Connect a phone": "폰 연결",
   "Pairing code": "페어링 코드",
   "Open this address on your phone": "폰에서 이 주소를 여세요",
   "{agent} is ready": "{agent} 준비 완료",
@@ -301,6 +305,7 @@ const BASE: Record<string, string> = {
   // t3code ports (a)
   // t3code ports (d)
   "Change PC": "PC 바꾸기",
+  "Forget this PC": "이 PC 잊기",
   "Selected": "선택됨",
   // Recover unsent text (components/UnsentText.tsx)
   "Unsent text": "보내지 않은 글",
@@ -345,6 +350,7 @@ export const KO_PARTS: Record<string, Record<string, string>> = {
   guide: GUIDE_KO,
   updates: UPDATES_KO,
   palette: PALETTE_KO,
+  relay: RELAY_KO,
 };
 
 export const KO: Record<string, string> = Object.assign({}, ...Object.values(KO_PARTS));

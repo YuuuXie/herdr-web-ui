@@ -1,5 +1,5 @@
 import type { AgentCatalogRow } from "../../shared/agent-catalog.ts";
-import type { AgentIntegration, ProviderUsage, UsageProviderId } from "../../shared/protocol.ts";
+import type { AgentIntegration, MissingCommand, ProviderUsage, UsageProviderId } from "../../shared/protocol.ts";
 import { agentSections } from "./agentList.ts";
 
 /** One installed agent on Settings → Agents, with what Ovis knows of it on the PC shown. */
@@ -9,6 +9,8 @@ export interface AgentsPageRow {
   provider: UsageProviderId | null;
   /** that provider's accounts, the hub's included, in the order they came */
   accounts: ProviderUsage[];
+  /** the command the server lacks to look for that provider's sign-in (`secret-tool`); null when it lacks none */
+  missing: string | null;
   /** herdr's integration for it, when herdr has one */
   integration: AgentIntegration | null;
 }
@@ -34,9 +36,11 @@ function integrationFor(agent: AgentCatalogRow, integrations: readonly AgentInte
  * two. The accounts are read on the PC Ovis's server runs on, so `accountsHere` false (another PC
  * shown) lists them all apart rather than under that PC's agents.
  */
-export function agentsPage({ agents, providers, integrations, accountsHere }: {
+export function agentsPage({ agents, providers, missing = [], integrations, accountsHere }: {
   agents: readonly AgentCatalogRow[];
   providers: readonly ProviderUsage[];
+  /** the usage report's `missing_commands` */
+  missing?: readonly MissingCommand[];
   integrations: readonly AgentIntegration[];
   accountsHere: boolean;
 }): AgentsPage {
@@ -46,7 +50,10 @@ export function agentsPage({ agents, providers, integrations, accountsHere }: {
     const wanted = accountsHere ? agent.sign_in?.provider ?? null : null;
     const provider = wanted !== null && !claimed.has(wanted) ? wanted : null;
     if (provider !== null) claimed.add(provider);
-    return { agent, provider, accounts: provider === null ? [] : providers.filter((usage) => usage.id === provider), integration: integrationFor(agent, integrations) };
+    return {
+      agent, provider, accounts: provider === null ? [] : providers.filter((usage) => usage.id === provider),
+      missing: missing.find((entry) => entry.provider === provider)?.command ?? null, integration: integrationFor(agent, integrations),
+    };
   });
   return {
     rows,
@@ -62,12 +69,14 @@ export type SignInState =
   /** no provider Ovis reads, or plan limits are off (nothing is read then) */
   | { kind: "unknown" }
   | { kind: "none" }
+  /** no account, and the server could not look where one may be: `command` is not installed there */
+  | { kind: "unreadable"; command: string }
   | { kind: "signed-in"; count: number; account: string | null }
   | { kind: "problem"; count: number; problems: number };
 
-export function signInState(provider: UsageProviderId | null, accounts: readonly ProviderUsage[], read: boolean): SignInState {
+export function signInState(provider: UsageProviderId | null, accounts: readonly ProviderUsage[], read: boolean, missing: string | null = null): SignInState {
   if (provider === null || !read) return { kind: "unknown" };
-  if (accounts.length === 0) return { kind: "none" };
+  if (accounts.length === 0) return missing === null ? { kind: "none" } : { kind: "unreadable", command: missing };
   const problems = accounts.filter((usage) => usage.problem !== null).length;
   if (problems > 0) return { kind: "problem", count: accounts.length, problems };
   return { kind: "signed-in", count: accounts.length, account: accounts.length === 1 ? accounts[0]!.account : null };

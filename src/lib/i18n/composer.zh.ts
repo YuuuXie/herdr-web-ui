@@ -7,6 +7,8 @@
  * Register and fixed terms follow ../i18n.zh.ts; a key another feature also uses goes there.
  */
 export const COMPOSER_ZH: Record<string, string> = {
+  "Next": "下一个",
+  "Next question": "下一个问题",
   "Edit queued message": "编辑排队消息",
   "Sent to Pi · waiting for transcript": "已发送到 Pi · 正在等待写入对话记录",
   "Sent to Pi · transcript confirmation unavailable": "已发送到 Pi · 无法确认对话记录",
@@ -230,6 +232,11 @@ export const COMPOSER_ZH: Record<string, string> = {
   "Deny": "拒绝",
   "Tab switched OpenCode's agent from {from} to {to}. Nothing more was typed. Check the terminal before sending again.": "Tab 键将 OpenCode 的 Agent 从 {from} 切换为 {to}。未继续输入。请先检查终端，再重新发送。",
   "OpenCode attached another skill. Your chat text stayed here. Check the terminal before sending again.": "OpenCode 附加了另一个 Skill。聊天文本仍保留在这里。请先检查终端，再重新发送。",
+  // quoting a selection into the composer (lib/chatQuote.ts)
+  "Quote": "引用",
+  "Quote it in your message": "引用到消息中",
+  "Selection": "所选文本",
+  "Too long to quote: shorten the message or the selection.": "太长，无法引用：请缩短消息或所选内容。",
   // comments on a reply (components/ReplyComments.tsx, #511)
   "Comment on the reply": "评论回复",
   "Add a comment": "添加评论",
@@ -246,4 +253,6 @@ export const COMPOSER_ZH: Record<string, string> = {
   "Update this PC to send comments on a reply. Your message and comments stayed here.": "请更新这台电脑以发送对回复的评论。消息和评论仍保留在这里。",
   "Not sent: the message is in the terminal's input line. Clear it there, or press Enter there to send it.": "未发送：消息在终端的输入行中。请在那里清除它，或在那里按 Enter 发送。",
   "Not sent: no agent is running in this pane. Your message stayed here.": "未发送：此窗格中没有运行的代理。消息仍保留在这里。",
+  "1 comment": "1 条评论",
+  "{count} comments": "{count} 条评论",
 };

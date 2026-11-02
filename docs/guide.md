@@ -114,7 +114,7 @@ To rearrange a split tab instead, drop a pane's title on another pane's title in
 two panes trade places.
 
 
-**3. Take it with you.** Scan the installer's QR code with a phone signed in to the same Tailscale account, then install the app from the browser. See [On your phone](#on-your-phone).
+**3. Take it with you.** Scan the installer's QR code with a phone signed in to the same Tailscale account, then install the app from the browser. No Tailscale? Turn on the [Ovis relay](#through-the-ovis-relay) and scan its QR code instead. See [On your phone](#on-your-phone).
 
 ### In a terminal
 
@@ -128,7 +128,7 @@ bun "$root/scripts/plugin.ts" pair   # plugin install
 bun scripts/plugin.ts pair           # from a checkout
 ```
 
-`pair` prints the code, the address the phone opens when Tailscale serves one, and that address as a QR code. Neither is a herdr action: herdr keeps an action's output in its log, and a pairing code belongs on the screen. The actions start, stop and report on the server:
+`pair` prints the code, the address the phone opens when Tailscale serves one, and that address as a QR code. Neither is a herdr action: herdr keeps an action's output in its log, and a pairing code belongs on the screen. While the [Ovis relay](#through-the-ovis-relay) is online, `pair` also prints the relay's pairing link and its QR code; while it's off, it says where to turn it on. The actions start, stop and report on the server:
 
 ```bash
 herdr plugin action invoke devswha.ovis.start    # leaves a running server alone
@@ -170,6 +170,7 @@ Every agent herdr runs shows up with its live status, terminal and alerts. The c
 | **Muse Code** | **Linux untested with real Muse.** Native session log, bound to the pane by the session lock Muse writes for its process; panes in one folder each show their own session. macOS and Linux; Windows uses Terminal. See [Muse chat](muse-chat.md). | — use Terminal |
 | **Antigravity (agy)** | **Experimental; macOS untested.** Native ledger, selected by the running process’s held conversation lock. Linux native-tested; Windows uses terminal text. See [Agy behavior and limits](agy-chat.md). | — use Terminal |
 | **Letta Code** | **Experimental; Linux and macOS.** Read-only native transcript, once herdr's Letta integration is installed (`herdr integration install letta`, experimental). A turn shows when it ends; meanwhile Chat says **Working…**. Windows uses Terminal. See [Letta Code](#letta-code) below. | — use Terminal |
+| **DeepSeek Harness** (`dsh-tui`) | **Linux.** Native session log of the pane's dsh process, bound by the session lock it holds; dsh-tui panes, and dsh-tui-pi's (`dsh --profile tui`) found by their process. Install it from **Settings → Agents** or the setup guide (`npm install -g @deepseek-ai/dsh @deepseek-harness-tui/dsh-tui`; its first start needs pnpm), and start it from **New workspace**, **New tab with agent…** or **New worktree**, which run `dsh-tui` in the pane's shell. macOS uses Terminal; Windows is not offered. See [DeepSeek Harness](dsh.md). | — use Terminal |
 | **GitHub Copilot CLI** | Linux native transcript when the foreground session is verified. See [Copilot setup and limits](copilot-chat.md). | — recorded choices are read-only; answer questions and approvals in Terminal |
 | **Anything else** | The terminal's text | — use Terminal |
 
@@ -283,6 +284,11 @@ until `letta` starts again on that conversation. In the home folder it always do
 while another pane runs `letta` in the same folder or reports the same conversation, and until the conversation's
 first turn on this PC has ended; Chat comes back by itself once that is no longer so.
 
+With Letta's local backend, the composer shows the model and reasoning effort the conversation
+runs with, read from Letta's local store (`lc-local-backend`): the conversation's own `/model`
+choice, else its agent's. A cloud conversation keeps those on Letta's server, so its composer shows
+none.
+
 Letta writes a turn only when it ends, so a turn appears once it is done, and a cancelled one
 never does. While it runs, Chat shows the turns written so far and **Working…**, and a message you
 sent stays a faded bubble for a minute at most; the Terminal shows the turn as it happens. Only
@@ -306,7 +312,6 @@ across an Ovis restart, which forgets where it saw each `letta` before. Check th
 | --- | --- |
 | **Read the conversation** | Prompts and Markdown answers (links, code blocks, tables). Each turn's commands, edits and progress are folded into one "Worked for …" block. Copy an answer as Markdown or plain text. A Claude Code bash-mode command (`!`) shows as one card: the command, then what it printed, with what it wrote to stderr in red. In a pi, omp, Claude Code or Codex pane, a picture the agent's own tool opened shows inside that tool's row. A picture opens in a full-screen viewer: zoom at the pointer, pan, step through the message's other pictures, **Copy image** and **Download**. Skill names an answer writes (`/name`, or `$name` for Codex) show as chips when the pane's own command list names that skill. Once you have sent four or more messages, a rail of dashes at the left, one per message you sent, jumps between them (not on a phone, or when the chat column leaves less than 32 px of margin at each side). |
 | **Follow the plan** | A supported todo-tool call folds into the turn's work block like any tool: it reads as the done count or the step it took, and opened, as the whole list by phase. |
-| **Rewind in terminal** | Claude Code, grok and Antigravity messages offer **Rewind in terminal** beside Copy. It sends nothing, preserves your draft and opens the same pane with a hint to run `/rewind`. Choose and confirm there. Chat follows the native conversation once the agent records its new branch; Claude Code does so on the next prompt or command. |
 | **Drop into the real terminal** | xterm.js 6 on the live pane: full-screen TUIs, raw keys and herdr's scrollback, shared with your own herdr TUI. When a program marks its redraws as synchronized output, as herdr does, xterm.js 6 waits for the whole frame (up to a second) before drawing it, so a fast-redrawing agent does not show half of its new screen over its old one. In a program that reads the mouse, hold Alt to scroll it faster with a trackpad. Drag to select and it is copied on release, unless herdr's `[ui] copy_on_select` is off on the PC serving Ovis: then it is only selected, and stays selected under the pointer until Ctrl+C or Copy copies it. The wheel or the screen's edge scrolls further back while you drag. In an OpenCode pane a drag goes to OpenCode, which selects inside its own panel and copies it itself, as in a native terminal; hold Shift (Option on a Mac) to select and copy in Ovis instead, which is also the way when OpenCode's own copy does not reach this device's clipboard. Ctrl+C copies a selection instead of interrupting. **Quote in message**, shown while text is selected, adds the selection to that pane's chat draft in a code block headed by the pane name, and its line numbers when herdr reports them; nothing is sent. |
 | **Find in terminal** | **More → Find in terminal** or Mod+Shift+F searches literal text in herdr's history, with a match count, previous/next navigation and visible match highlights. Search jumps and scrolling move the same viewport in every attached client, including the TUI. Older bridges retain search navigation without automatic highlights. |
 | **Jump across PCs** | The command palette (Mod+Shift+K) searches all connected PCs at once by PC, workspace, branch, tab, pane title or agent kind. PC names distinguish results, and Recent remembers each pane's PC. Picking a result opens that PC and pane directly. Disconnected PCs are omitted; app and plugin actions remain on the currently selected PC. It also finds Settings pages and actions by related words (try `theme` or `font`), and browses folders: type a path such as `~/`, or pick **Browse folders**, and the folder you reach opens in Files. |
@@ -375,10 +380,24 @@ Only providers with a sign-in are shown; a GitHub account without Copilot is lef
   adds only `herdr-statusline/` in Claude's config directory (`CLAUDE_CONFIG_DIR`, else `~/.claude`)
   and points `statusLine` in that directory's `settings.json` at a wrapper there (creating the file
   when Claude has none yet). The wrapper runs your status line command unchanged (none where none was
-  set) and keeps only the two windows and the account in `~/.herdr/statusline-last.json`, readable only
+  set). It also stores each session’s model and context limit under `~/.herdr/statusline-context/`,
+  using a profile hash prefix so Claude config directories do not share session files. Context capture
+  requires a real directory owned by your uid without group/other permissions; it never changes that
+  directory’s permissions. Chat requires the installer’s mark, matching profile, session and model,
+  and a capture no more than six hours old, read through a bounded, no-follow file descriptor.
+  This needs no subscription usage data. New session captures inspect at most 128 directory entries
+  for expired captures of their own profile; cleanup is best-effort, not a total file-count bound.
+  Context replacement and removal first quarantine an entry, then verify it through a descriptor.
+  Unrecognized entries are restored without overwriting a newcomer, or kept as visible
+  `statusline-context-recovery-*` entries if restoration is blocked. Publication uses a hard link
+  and never overwrites an existing target. These pathname-only POSIX operations cannot prevent a
+  concurrent process running as your uid from replacing a parent directory between operations.
+  A concurrent same-user process replacing the quarantine name or directory itself during the few microseconds of an operation is also outside what pathname APIs can exclude.
+  The wrapper keeps only the two windows and the account in `~/.herdr/statusline-last.json`, readable only
   by you. A reading counts only for the account that drew it and only until its window resets, and an
   answer from the endpoint newer than it wins. Turning it off puts `settings.json` back as it was and
-  deletes what was added; a file there that it did not write is never replaced or deleted. If you have
+  deletes its marked files; context removal checks the profile too and removes the context directory
+  only when empty. Unmarked files are left alone under normal, nonconcurrent use. If you have
   since changed the status line yourself and it still runs the wrapper, turning it off changes nothing
   and says so: set the status line yourself first. A watching device sees the switch and cannot turn it. It is not available on
   Windows.
@@ -398,6 +417,68 @@ Turn it on in **Settings → Voice input**, then tap the mic beside Attach (chat
 - Recording needs HTTPS (or `localhost`): the mic is turned off on a plain `http://` LAN address. To use another OpenAI-compatible server, set `OVIS_OPENAI_BASE_URL`; a key from `OVIS_OPENAI_API_KEY` is only ever sent there or to OpenAI.
 
 ## On your phone
+
+A phone reaches the app on this PC in one of two ways. The **Ovis relay** needs nothing set up on the phone or your network: turn it on and scan a QR code. **Tailscale** keeps everything inside your own network, with an HTTPS address for this PC. Either way the app installs on the phone's home screen and gets push alerts.
+
+### Through the Ovis relay
+
+The Ovis relay lets your phone reach this PC from anywhere, with no Tailscale, no account and nothing to set up on the phone. It's off until you turn it on. While it's on, the PC and the phone each connect out to a relay that Ovis runs at `relay.ovis.sh`, which passes their traffic between them. Everything they send is end-to-end encrypted between the phone and the PC, so the relay can't read it. To turn it on, open **Settings → Phone & devices** on the PC, switch on **Ovis relay**, then point the phone's camera at the QR code that shows up.
+
+Step by step:
+
+1. On the PC, open **Settings → Phone & devices**, choose **Connect** next to **Connect a phone**, and turn on the switch on the **Ovis relay** card. Once it says **Online**, a QR code shows below. It works for ten minutes, and **New code** makes another.
+2. Scan the QR code with the phone's camera. Ovis opens in the phone's browser at `app.ovis.sh` and asks whether to pair with this PC: tap **Pair**.
+3. Install it: in Safari, choose **Share → Add to Home Screen**; in Chrome, choose **Install app** or **Add to Home screen** from its menu. Then open the **⋯** menu at the top right and tap **Alerts** to get alerts on this phone. iPhone needs iOS 16.4+ and the home-screen app.
+
+If the relay cannot start before its link exists, the switch stays off and shows
+**The relay did not start: …** with the reason. Fix the cause, then press **Try again**.
+A link that already exists stays on while retrying a connection error.
+
+The phone pairs once. It makes a key of its own for this PC, which never leaves the phone, and proves itself with it on every connection, so there's no token or password to type. The PC lists the phone under **Phone & devices**, marked **via relay**, and **Revoke** there removes it and closes its connections at once. Opened again later, the app connects by itself. Each PC is an app of its own: pair another PC from its own QR code, and `app.ovis.sh` lists every PC the phone is paired with.
+
+**On an iPhone or iPad, add it to the Home Screen to stay paired.** In a Safari tab, the phone's key for a PC can be cleared after a week without a visit, and the phone then has to pair again. The home-screen app keeps it, and the app reminds you of this in Safari.
+
+**What the relay sees.** It sees which PC a phone connects to, from which address, when and for how long, and how much goes each way, down to the timing of the keys you type in a terminal. What you type, what the PC shows and your files stay hidden from it, and it can't change any of them. The app at `app.ovis.sh` is the part you have to trust: it's the code that runs on your phone and holds its key. [The relay's trust model](relay.md#trust-model) has the details.
+
+**Limits.** In a browser, the app's service worker streams files through the relay, so pictures, PDFs and videos load as they arrive and a video can skip ahead. The worker opens each file with its scripts turned off, so a file from one PC can't reach the app or your other PCs. Without that service worker, text, source and Markdown files still show in the file viewer as usual. For other files, only pictures, videos, sounds and PDFs open in the app; any other file, SVG pictures included, downloads instead. Such a file loads whole before it shows, and only up to 64 MiB: for a larger one the file viewer says it's too large to open on the phone, so download it on the PC. Rendered HTML pages open with their scripts running, but their own large videos and sounds don't play ([how files load](relay.md#files)). Up to 8 open apps or tabs can use the relay to one PC at a time.
+
+**It's a best effort.** The maintainer runs `relay.ovis.sh` with no promise that it's always up. A relay update drops every connection for a moment; the PC and the app reconnect by themselves, and nothing you typed is sent again: it waits as a draft, as after any disconnect. When that matters, [run your own relay](#running-your-own-relay).
+
+Good to know:
+
+- Relay controls require drive access and a direct connection to this PC. A visitor signed in
+  through Portal can read the state in Connect a phone, with an explanation, but gets no relay
+  switch, no QR code and no identity reset. Relay changes answer `403 read_only` for the default watch visitor;
+  even a saved drive invitation gets `403 owner_only`, because the watch guard runs first
+  ([`server/dispatch.ts:223-243`](../server/dispatch.ts#L223-L243)).
+  Open Ovis on the PC or at its direct address, using the owner's access token or a paired
+  device with drive access instead.
+  The hosted shell offers no relay at all; changes over the relay answer `403 local_required`.
+- `OVIS_TAILSCALE_SERVE_ONLY=1` keeps the relay off: that setting says `tailscale serve` is the only way into this PC, and the relay would be another.
+- Turning the relay on closes the device gate when no device has paired yet and no token is set. From then on a new browser needs a pairing code or the token ([Access and safety](#access-and-safety)).
+- Only a phone paired through the relay gets in through it. The token and device cookies don't work there.
+- Turning the relay off closes every connection through it, and the PC then makes no connection to the relay at all.
+- **Reset relay identity**, below the switch, gives this PC a new identity on the relay and removes every phone paired through it; each then needs a new QR code. Use it when a QR code or pairing link may have been seen by someone else.
+- On a PC with no browser of its own, `pair` in a terminal also prints the relay's QR code while the relay is online ([In a terminal](#in-a-terminal)).
+
+#### Running your own relay
+
+The relay is part of this repository ([`relay/`](../relay/README.md)) and runs anywhere Bun does. From a checkout:
+
+```bash
+bun relay/bun.ts --port 8787 --hostname 127.0.0.1
+```
+
+It listens on plain HTTP, so put it behind a TLS proxy (Caddy, nginx, `tailscale serve`): the PC and phones connect to it only over `wss://`. Then set `OVIS_RELAY_URL` on the PC to its `wss://` address (see [Configuration](#configuration)) and restart Ovis. Out of the box it takes 120 new connections a minute from one address and 600 in all; behind a proxy every connection comes from the proxy's address, so raise those limits for it ([the relay's limits](relay.md#operations)). The app at `app.ovis.sh` works with it as is, since it connects to whichever relay the QR code names. A phone keeps the relay it paired through, so on a phone paired before the change, choose **Forget this PC** in the app's Settings and scan a new QR code, then revoke its old entry under **Phone & devices** on the PC. [relay/README.md](../relay/README.md#running-your-own) also covers running the relay as a Cloudflare Worker on your own account.
+
+The Bun relay also caps open sockets at 64 per address, including sockets waiting, connected or
+still upgrading. Set `--max-sockets-per-address` or `RELAY_MAX_SOCKETS_PER_ADDRESS` to size that
+cap for your deployment; behind a local TLS proxy all users share it. A new socket past the cap
+gets `429` and `Retry-After: 60`, without closing sockets already open.
+
+To stop trusting `app.ovis.sh` too, host the app yourself. `bun run build:shell` builds it into `dist-shell/`. Serve that folder over HTTPS from a host that follows its `_redirects` and `_headers` files, as Cloudflare Pages does (another host needs the same rewrites and headers), and set `OVIS_RELAY_APP_URL` on the PC to its address: the PC's QR codes then open your copy. Build it from the same release as the PC's Ovis.
+
+### Through Tailscale
 
 Serve the app over **HTTPS** to install it and receive push alerts. The simplest way is Tailscale: keep the server on `127.0.0.1` and let Tailscale add the HTTPS address.
 
@@ -423,6 +504,8 @@ whether the test was sent or failed; a missing subscription offers **Turn alerts
 While the app is in front on any device, its window visible and focused, no alert goes to any
 device: you are already looking at the change. Alerts resume once no window of the app is in use.
 The test push is always sent.
+
+### Using the app
 
 On a phone:
 - Agent panes open in the chat.
@@ -503,11 +586,13 @@ Then there is one app to update: each release is downloaded and built once, the 
 
 ## Access and safety
 
-Anyone who can reach the server can type into your terminals, so what matters is who gets in. It listens on `127.0.0.1` by default, which means only this computer. From anywhere else, a request gets in in one of three ways:
+Anyone who can reach the server can type into your terminals, so what matters is who gets in. It listens on `127.0.0.1` by default, which means only this computer. From anywhere else, a request gets in in one of four ways:
 
 - **It is you, says Tailscale.** `tailscale serve` states the requesting device's Tailscale login in a header it strips from anything incoming. A login that matches this PC's own gets in; another login is refused, and a tagged device (one with no person's login) needs pairing. If you set `OVIS_TAILSCALE_SERVE_ONLY=1` to say `tailscale serve` is the only way in, and `tailscale status` on this PC lists one login on every node it sees and no tagged node, a serve request that states no login is the owner as well: no one else is among those nodes to be mistaken for (a node an ACL hides from this PC is not seen, and cannot reach serve either), so your own phone opens the address and lands in the app with no code. Nothing to set up, unless this PC's own Tailscale node is tagged: it then has no login of its own, so every device pairs, yours included, or you name your login in `OVIS_TAILSCALE_OWNER`.
 - **It is a paired device.** **Settings → Phone & devices**, on the PC (or on a device already paired), shows a six-digit code that lives ten minutes and a QR code that carries it. On a headless PC, the `pair` command prints the same in its terminal (see [In a terminal](#in-a-terminal)); Devices also shows the pairing link as text, to send to the other device. The other device enters it once and keeps its own credential in an HttpOnly cookie; the list shows it, and **Revoke** immediately closes its terminal connections and roster stream and refuses subsequent requests.
-- **It holds the token.** `OVIS_TOKEN`, for scripts and proxies, as a cookie after sign-in or as `Authorization: Bearer <token>`. When a token is set, everything else needs it, this computer and your own Tailscale login included: enter it once on each device, and that browser stays signed in for a year. A paired device still gets in without it.
+- **It holds the token.** `OVIS_TOKEN`, for scripts and proxies, as a cookie after sign-in or as `Authorization: Bearer <token>`. When a token is set, everything else needs it, this computer and your own Tailscale login included: enter it once on each device, and that browser stays signed in for a year. A paired device, or a visitor Portal's own sign-in let in, still gets in without it.
+- **It passed Portal's own sign-in.** Only where the app started its own Portal with one (a private link, an Ethereum wallet or an OIDC account: [Who may open the address](#who-may-open-the-address)). Portal tells the app who signed in, and that visitor may watch by default, like a paired watch device, but cannot type, read files, pair or revoke devices, subscribe to push alerts or control Portal. The same headers from anything else are ignored.
+- **It comes through the Ovis relay from a phone paired there.** The relay is off by default ([Through the Ovis relay](#through-the-ovis-relay)). A phone pairs once by scanning the relay's QR code under **Settings → Phone & devices**, which gives it a key of its own for this PC, and proves itself with that key on every connection. Through the relay only that key counts, never the token, a device cookie or a Tailscale login. **Revoke** closes its connections at once, as for any paired device.
 
 | How you reach it | What gets you in |
 | --- | --- |
@@ -516,7 +601,10 @@ Anyone who can reach the server can type into your terminals, so what matters is
 | `tailscale serve`, your own devices | Nothing needed: your login. With `OVIS_TAILSCALE_SERVE_ONLY=1` on a one-login tailnet, the owner's phone needs nothing either. With a token set, the token, once per device |
 | `tailscale serve` on a tailnet you share with others | Your devices: your login (with a token set, the token once). Theirs: refused unless you pair them |
 | Your LAN (`HOST=0.0.0.0` or a LAN address) | Pair each device, or set a token |
-| A public domain, reverse proxy or Portal | Set a token, with HTTPS, and set the proxy up as in [Behind a reverse proxy](#behind-a-reverse-proxy). Never `tailscale funnel` it |
+| A public domain, reverse proxy or Portal | Set a token, with HTTPS, and set the proxy up as in [Behind a reverse proxy](#behind-a-reverse-proxy). Never `tailscale funnel` it. Portal can also ask [its own sign-in](#who-may-open-the-address) first |
+| The Ovis relay | Paired devices only: pair each phone once by scanning the relay's QR code. No token needed, see below |
+
+The relay needs no token where a public proxy does, because it has no open address. A proxy puts the app itself on the internet: anyone who finds the address reaches it, and until a device pairs, an install with no token lets them in. Through the relay, a request reaches this PC only inside an encrypted connection that a phone opens with the PC's public key from the QR code, and the PC then admits it only with a valid pairing code or the key of a phone it paired before. Turning the relay on also closes the device gate when it was still open.
 
 Until the first device is paired, and with no token set, a LAN or proxied address is open to anyone who reaches it, as it always was: the server warns on startup. The exception is a proxy on this PC while its Tailscale login is known, as with `tailscale serve`: a request that carries no login there needs pairing from the start, unless `OVIS_TAILSCALE_SERVE_ONLY=1` is set and that tailnet has one login and no tagged node, where such a request is the owner's own device. With that setting off, which is the default, every such request pairs. The first pairing closes access only after the browser returns its new device cookie. If the cookie is blocked or the pairing response is lost, the unconfirmed pairing does not restrict access; retry after checking browser and proxy cookie settings. Once confirmed, the gate stays closed: revoking every device does not reopen it. This app-level restriction also applies behind a proxy with its own authentication; other browsers need their own pairing or the app's token. Without a token, this computer itself stays in whatever happens, so you can never lock yourself out: revoke everything and pair again from `http://localhost:7317`. With a token set, this computer signs in with the token.
 
@@ -633,11 +721,11 @@ Take `<relay>` from `portal list`; it has to run v2.6.1 or later. A `portal` pro
 
 Portal prints `service ready at https://<name>-<address>.<relay>:443`, where `<address>` is the identity file's 40-character address; with or without `:443` it is the same address. That address belongs to the identity, so nobody else can take it, even while Portal is stopped; keep the identity file private and keep using it, since a new identity gives a new address. Check it as above: `https://<name>-<address>.<relay>/api/session`, opened from another device without signing in, must answer 401. Then open it on the phone and sign in with the token, or pair the phone from **Settings → Phone & devices → Pair a device** on the PC. Use that address, not the shorter `https://<name>.<relay>`, which another identity can claim while Portal is stopped.
 
-**Settings → Phone & devices → Portal** runs that command for you once Portal v2.6.1 or later is installed on this PC ([Portal's install script](https://github.com/gosuda/portal-tunnel#quick-start) puts `portal` in `~/.local/bin`): enter a relay and press **Start**. It starts only with `OVIS_TOKEN` set and `OVIS_TAILSCALE_SERVE_ONLY` off, and asks the relay for its version first. The address and its QR code show on every signed-in device, any device that can type into your terminals can stop it, and one left on comes back when the app restarts. If Portal stops on its own after its address was up, the app starts it once more on the same relay and identity, and the panel says **Recovering…** meanwhile. If it stops again, or the restart may not go ahead (the token or serve-only setting no longer allows it, or its saved state or identity file changed), the panel shows the error with Portal's output; **Stop** and then **Start** begin again. The app keeps an identity file of its own in `OVIS_STATE_DIR`, so its address stays the same from one start to the next and differs from the one a `portal` you run yourself has.
+**Settings → Phone & devices → Portal** runs that command for you once Portal v2.6.1 or later is installed on this PC ([Portal's install script](https://github.com/gosuda/portal-tunnel#quick-start) puts `portal` in `~/.local/bin`): enter a relay and press **Start**, after choosing [who may open the address](#who-may-open-the-address). It starts only with `OVIS_TOKEN` set and `OVIS_TAILSCALE_SERVE_ONLY` off, and asks the relay for its version first. The address and its QR code show on every signed-in device, any device that can type into your terminals can stop it, and one left on comes back when the app restarts. If Portal stops on its own after its address was up, the app starts it once more on the same relay and identity, and the panel says **Recovering…** meanwhile. If it stops again, or the restart may not go ahead (the token or serve-only setting no longer allows it, or its saved state or identity file changed), the panel shows the error with Portal's output; **Stop** and then **Start** begin again. The app keeps an identity file of its own in `OVIS_STATE_DIR`, so its address stays the same from one start to the next and differs from the one a `portal` you run yourself has.
 
 At startup, the app waits for any recorded Portal process to stop before answering requests. If `portal/state.json` under `OVIS_STATE_DIR` is damaged, or the recorded process cannot be identified or stopped, requests fail closed rather than risk exposing a server restarted without a token. Check the server log. After confirming that this app's Portal process has stopped, repair or remove only `portal/state.json` and restart the app. Keep `portal/identity.json` to preserve the address; never discard the state record while its tunnel may still be running. Servers on different ports need separate state directories to control their own Portal addresses.
 
-**Sign out** in Settings → Devices clears, after asking once, this browser's token and device cookies; terminal sessions and agents keep running. It is shown when this browser signed in with the token or as a paired device, not when a proxy sends the token in the `Authorization` header (sign out at the proxy) or for automatic local or Tailscale access.
+**Sign out** in Settings → Devices clears, after asking once, this browser's token and device cookies; terminal sessions and agents keep running. If Portal's sign-in remains after those cookies are cleared, the same click also ends the Portal session and reloads. A browser signed in only through Portal ends that session directly. This does **not** sign out of Google or your company identity provider: Portal asks the provider without `prompt` or `max_age`, so an existing provider session can sign you straight back in. Sign out of that account at the provider too if you want the next visit to ask for credentials. Sign out is not offered when a proxy sends the token in the `Authorization` header (sign out at the proxy), or for automatic local or Tailscale access.
 
 If `devices.json` under `OVIS_STATE_DIR` (default `~/.config/ovis`) is corrupt or unreadable, the server keeps unrecognized external clients out and preserves the file. Local access and the owner's trusted Tailscale login without a configured token, and a valid token, still work. Settings → Phone & devices and the server log explain the error. Restore a valid registry from backup or fix its permissions, then restart; pairing and device changes remain disabled until it is repaired.
 
@@ -650,6 +738,25 @@ Attaches and reconnects wait when another client holds the terminal. **Open here
 notice explicitly takes that pane with `--takeover`: the other web bridge waits in turn, while a
 standalone `herdr terminal attach` exits. The herdr TUI stays connected (verified on herdr 0.9.3).
 Observe connections cannot take a pane, and a displaced bridge never takes it back automatically.
+
+#### Who may open the address
+
+By default the app's own token or a paired device lets a visitor in, as above. **Settings → Phone & devices → Portal** also offers to put Portal's own sign-in in front of the whole address, so a visitor must pass it before the app is reached at all:
+
+- **Token or paired device only** is the default, and starts Portal exactly as before.
+- **Private link** (`--auth credential`) lets in only people you send a link to. While Portal runs, **Invite someone** takes a name and 1, 7, 30 or 90 days (30 by default) and shows the link once. It is a bearer secret: whoever holds it gets in until it expires, so send it only to its person; the app keeps no copy, and the link works only for that Portal address. Add link names to the list to accept only links issued to those names; **with none, every unexpired link you issue works**. A browser that is in through Portal's own sign-in cannot issue links, or a link's holder could issue a new one before theirs expires.
+- **Ethereum wallet** (`--auth siwe`) lets in only the wallets you list, each proving itself with a signature. At least one is required here: with none, Portal would let any wallet in.
+- **Google or company login** (`--auth oidc`) lets in only the verified emails, `@domain`s (the exact domain) and `sub:<id>` accounts you list, signed in at an OpenID Connect provider: Google, or any https issuer. Register **both redirect URIs** shown by the running panel: `https://<name>-<address>.<relay>/_portal/auth/callback` for the address-bound host (`service ready at`), and `https://<name>.<relay>/_portal/auth/callback` for the short `--name` host (`short URL`). Portal builds the callback from the host the visitor opens, and Google matches redirect URIs exactly; registering only one leaves the other host with `redirect_uri_mismatch`. The panel reads these from `url` and `short_url` and shows them once Portal has started. Put the provider's client secret in `OVIS_PORTAL_OIDC_CLIENT_SECRET` in the server's environment: the app hands it to Portal's environment and nowhere else, so it is never typed in the panel, put in an argument (`ps` shows those), saved in `portal/state.json` or sent in an answer, and the panel says when it is not set. OIDC also needs a Portal build that lists its own flags.
+
+Whoever passes Portal's sign-in may **watch by default**, with no app token asked. The server applies the same restrictions as a paired watch device: no terminal input or resize, file reads, workspace changes, pairing or device changes, or Portal Start, Stop and **Invite someone**. Even a Portal invitation with a saved drive role cannot redeem a pairing code, manage devices, use push subscription or status routes, or control Portal; alerts stay in the open tab. The owner's app token that started Portal still gives drive access, and an existing paired device keeps its assigned role. These app credentials take precedence over Portal's identity; no link name, wallet or OIDC account is guessed to be the owner.
+
+Each invitation stores its name and `watch` role in `portal/state.json`, never its bearer link. Issuing another link for the same name sets it to watch again; a request cannot choose a drive role. Missing invite records and missing roles default to watch, including links issued before this change. The server reads stored roles on start or resume. Earlier builds of this Portal sign-in feature ignore these records and grant Portal visitors drive access: **stop Portal before rolling back to one of those builds** if visitors must remain watch-only. Released builds without Portal sign-in require the app token or a paired device instead. Giving someone the app token or a driving device still gives them a shell as your user on this PC.
+
+Portal checks its sign-in on every request, and the app closes such a browser's open terminal connection and live updates every 5 minutes so they too come back through Portal: a link that expires, a name taken off the list or a sign-out ends a page left open within 5 minutes. Link names, wallet addresses and OIDC entries are checked as Portal checks them (names and ids in ASCII only, since a name reaches the app in an HTTP header). The sign-in choice is saved with the rest of Portal's state and changed only while Portal is stopped: an app restart brings the address back with the same sign-in, and a relaunch after Portal ended on its own goes ahead only while the saved settings are the ones it served with. **Settings → Devices** says who signed in through Portal.
+
+A sign-in needs a Portal that can prove who signed in. The panel decides by the flags the installed `portal` lists in `portal expose --help`: it offers a sign-in only when `--auth`, `--auth-allow`, `--auth-identity-headers` and `--auth-identity-proof` are all there (OIDC adds its own), and says "This Portal does not support it yet" when they are not. A Portal that signs visitors in but cannot send the proof would leave the app to believe a header anyone can type, so it gets no sign-in at all. Portal v2.7.0 is the first release that lists `--auth-identity-proof`, and it lists the OIDC flags too, so a sign-in needs v2.7.0 or later.
+
+Portal tells the app who signed in with `X-Portal-User` and `X-Portal-Auth` (`--auth-identity-headers`) and, beside them, `X-Portal-Proof`: a secret the app makes at each launch of that Portal, hands over in its environment (`AUTH_IDENTITY_PROOF`, never an argument, since `ps` shows those) and keeps in memory. Portal drops a visitor's own copy of all three. The app believes the identity only on a request whose proof matches (compared in constant time) and whose values are shaped as Portal makes them. Without the proof, or with a wrong one, the headers are ignored and the request meets the token rules like any other, so another proxy on this PC (`tailscale serve`, nginx, Caddy), a local process or any other way to the app's port gets nothing by typing them. The proof is not saved, logged or sent in any answer, and it goes with the Portal that had it: when that Portal stops, ends or is launched again, the old proof counts for nothing. It is as private as `OVIS_TOKEN`: whoever can read the server's or Portal's environment can read both. Without a sign-in no proof is made, and the command drops a visitor's copies (`--strip-request-header X-Portal-User --strip-request-header X-Portal-Auth`). A `portal expose` you run by hand with `--auth` is just a proxy to the app, which still asks for its token.
 
 ## Herdr app terminals
 
@@ -664,16 +771,31 @@ Ovis refuses to start with this runtime on Windows; use the default `herdr` runt
 - **Sidebar:** each of the app's spaces is a workspace and each of its tabs a tab, in the app's
   order and names; every terminal block in a tab is a pane. A terminal no tab holds (a worker an
   agent started, one from `hc run`) has a tab of its own under **Other terminals**.
+- **New and Close:** **New workspace**, **New tab**, a new terminal and **New tab with agent**
+  start a shell that herdr-core keeps, labeled so the Herdr app takes it into that space and tab;
+  it shows there even before the app does. Ovis never writes the app's own names, so a name you
+  type is kept on the terminal and shown while the app has no name of its own for that space or
+  tab. **Close** ends every terminal of the pane, tab or workspace, and the app drops them. Terminals under **Other terminals** are closed one by one.
+- **Starting an agent:** the agent's command is typed into the pane's shell, so it starts only
+  in a pane that runs a plain shell of its own (sh, bash, dash, zsh, ksh, mksh, ash or fish), and
+  only while nothing else runs in front of it. A pane the app started with a program directly
+  cannot take one.
 - **Status and alerts:** an agent's status is what it reports to herdr-core (OSC 7501), so an
-  agent that reports none shows no status. `error` counts as finished.
-- **Terminal:** the live view is `hc attach`, input and the key bar work as on herdr, and the
-  terminal takes the size of the viewer that last typed in it or resized it: the app's window, or
-  your phone once you type or open it there.
+  agent that reports none shows no status. A turn is done only when the program itself reports
+  its turn finished (`done`, or `working` then `idle`); `error` shows no status.
+- **Terminal:** the live view streams over the server's own connection to herdr-core, input and
+  the key bar work as on herdr, and the terminal takes the size of the viewer that last typed in
+  it or resized it: the app's window, or your phone once you type or open it there.
+- **Tabs out of use:** herdr-core draws no read-only view at another size, so a tab you leave is
+  not kept current behind your back. A recent tab you switch away from keeps its last screen until
+  you are back, **Use alongside herdr's own window** lets go of a pane only when you leave the
+  window, and after a reconnect a tab attaches again at once.
 - **Chat:** screen reads carry no colors, so a grey suggestion Claude Code or Hermes leaves in an
   empty input box reads as typed text, and a send waits for you to confirm it.
-- **Not on herdr-core:** making, rearranging, renaming or closing workspaces, tabs, splits and
-  panes, which belong to the app's window; search and scrollback selection in a pane; plugins and
-  worktrees. Remote PCs keep running herdr's TUI server.
+- **Not on herdr-core:** renaming, moving or reordering workspaces, tabs and panes, and
+  splitting, swapping, zooming or resizing panes, which belong to the app's window; Ovis hides
+  those actions on such a PC. Search and scrollback selection in a pane, plugins and worktrees
+  are not available either. Remote PCs keep running herdr's TUI server.
 
 ## Configuration
 
@@ -687,9 +809,12 @@ Each `OVIS_*` variable was called `HERDR_WEB_*` before Ovis took its name (`OVIS
 | `OVIS_TOKEN` | unset | Shared token for scripts and proxies. Once set, every client that is not a paired device needs it, this computer and your own Tailscale login included |
 | `OVIS_CSP` | unset (enforced) | `report-only` sends the policy as `Content-Security-Policy-Report-Only`: the browser reports what it would block and the app keeps working. Used to measure the policy after a change |
 | `OVIS_TAILSCALE_OWNER` | this PC's Tailscale login | The Tailscale login that gets in through `tailscale serve` without pairing. Set it on a PC whose Tailscale node is tagged, which has no login of its own |
-| `OVIS_TAILSCALE_SERVE_ONLY` | unset (off) | `1` declares `tailscale serve` the only way anything reaches this port. Then the owner's own device gets in through serve without a code, on a tailnet one login owns with no tagged node. Enable it only when no public reverse proxy, tunnel or other forwarding server exposes this port: a visitor through one would otherwise get the owner's access |
+| `OVIS_TAILSCALE_SERVE_ONLY` | unset (off) | `1` declares `tailscale serve` the only way anything reaches this port. Then the owner's own device gets in through serve without a code, on a tailnet one login owns with no tagged node. Enable it only when no public reverse proxy, tunnel or other forwarding server exposes this port: a visitor through one would otherwise get the owner's access. It also keeps the [Ovis relay](#through-the-ovis-relay) off |
 | `OVIS_TAILSCALE_HTTPS_PORT` | unset (first free of 443, 8443, 7317, 17317) | The HTTPS port the installer publishes the app on with `tailscale serve`, and the one **Settings → Phone & devices** suggests. When another service already uses it, the installer stops and says so instead of taking another port, since an app installed on a phone stays on the address it came from. An address that already serves the app is kept |
-| `OVIS_STATE_DIR` | `~/.config/ovis` | Push keys, device subscriptions, PC registrations, update builds and the app's Portal identity |
+| `OVIS_RELAY_URL` | `wss://relay.ovis.sh` | The [Ovis relay](#through-the-ovis-relay) this PC connects to while the relay is on: a `wss://` address with no path, such as [your own](#running-your-own-relay). Read when the server starts; a value that is not such an address keeps the server from starting |
+| `OVIS_RELAY_APP_URL` | `https://app.ovis.sh` | The address the relay's QR codes open on a phone: an `https://` address with no path. Set it when you [host the app yourself](#running-your-own-relay). A value that is not such an address keeps the server from starting |
+| `OVIS_STATE_DIR` | `~/.config/ovis` | Push keys, device subscriptions, PC registrations, update builds, the app's Portal and relay identities, and the Portal sign-in you chose |
+| `OVIS_PORTAL_OIDC_CLIENT_SECRET` | unset | The OIDC client secret for **Google or company login** in Portal's panel ([Who may open the address](#who-may-open-the-address)). Read at each start into Portal's environment only; set here, it cannot be changed from the app |
 | `OVIS_OPENAI_API_KEY` | unset | OpenAI API key for [voice input](#voice-input). Set here, it cannot be changed from the app |
 | `OVIS_OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible API root for voice input |
 | `OVIS_AUTO_UPDATE` | `0` | `1` installs new releases without asking |
@@ -698,7 +823,7 @@ Each `OVIS_*` variable was called `HERDR_WEB_*` before Ovis took its name (`OVIS
 | `OVIS_BUNDLE_MANIFEST` | unset | Remote-PC bundle manifest (path or URL) that overrides local and published bundles |
 | `OVIS_HERDR_BIN` | `herdr` | herdr executable used for terminal attach |
 | `OVIS_RUNTIME` | `herdr` | `herdr-core` shows the terminals of [herdr-core](https://herdr.dev/core) (`hc`), the core the Herdr desktop app runs on, instead of herdr's TUI server: see [Herdr app terminals](#herdr-app-terminals) |
-| `OVIS_HC_BIN` | `hc` | hc executable used with `OVIS_RUNTIME=herdr-core`, for its connection and for terminal attach. `HC_SESSION` and `HC_SOCKET` pick the core as for any hc command |
+| `OVIS_HC_BIN` | `hc` | hc executable used with `OVIS_RUNTIME=herdr-core`: the server runs it as its one `hc connect`, which also carries the live terminals. `HC_SESSION` and `HC_SOCKET` pick the core as for any hc command |
 | `OVIS_SSH` | `ssh` (Git for Windows' on Windows) | OpenSSH client for [remote PCs](#remote-pcs-over-ssh); the `sftp` and `ssh-keygen` beside it are used too |
 | `OVIS_APP_NAME` | unset (`Ovis`) | The name the installed app has on a phone or computer, for example the PC's name. Each PC installs as an app of its own, and without it they are all called `Ovis`. An app already installed takes the new name when the browser next updates it, usually within a day or two, without a reinstall. Keep it short: a home screen cuts a long label |
 | `OVIS_PASTE_DIR` | `<pane cwd>/.ovis` | Where pasted and attached files are saved: an absolute path or `~/…`. Set it to keep them out of your projects; an agent may then ask before reading one. It covers the panes of this server's PC; a remote PC keeps the default |
@@ -819,7 +944,7 @@ U and D to **Scroll pane up** and **Scroll pane down** in Settings → Shortcuts
 or record a chord such as `⌘+U`). This lets you read history without leaving the message box or reaching for
 the screen. Shift+PageUp/PageDown alone retains the focused control's own behavior.
 
-Enter sends and Shift+Enter adds a line. On a touch screen, Settings → Chat → Composer → Return inserts a new line lets Return add a line instead; use Send to send the message. On a desktop, turning off Enter sends switches sending to Mod+Enter. On a touch screen with a hardware keyboard, Mod+Enter sends while Return inserts a new line is on. This choice is saved per device.
+On a desktop, Enter sends and Shift+Enter adds a line. On a touch screen, Return adds a line and the Send button sends the message, unless you turn off Settings → Chat → Composer → Return inserts a new line, which makes Return send. On a desktop, turning off Enter sends switches sending to Mod+Enter. On a touch screen with a hardware keyboard, Mod+Enter sends while Return inserts a new line is on. This choice is saved per device.
 
 ## How it works
 
@@ -850,11 +975,13 @@ A React client talks to a Bun HTTP/WebSocket server.
 - **Status:** the server reads workspaces and agent status from herdr's Unix socket.
 - **Terminal:** it streams the real `herdr terminal attach` output through a PTY host: the Rust one (`crates/pty-sidecar`) on Linux and macOS, or the Node sidecar where that cannot run (`OVIS_PTY_SIDECAR=node` asks for it). Browsers watching one pane share one attach, with a bounded replay and backpressure ([terminal flow control](terminal-flow-control.md)).
 - **Chat:** it reads the agents' own session files, and sending types into the same live pane.
+- **Relay (optional):** while it's on, the server also keeps a WebSocket open to the [Ovis relay](relay.md), and a paired phone's requests come in through it, end-to-end encrypted, to the same handlers as a browser's.
 
 herdr owns the processes and the scrollback.
 
 With `OVIS_RUNTIME=herdr-core`, the server answers herdr's socket API itself from herdr-core
-(`server/herdr-core/`), through one `hc connect`, and attaches with `hc attach`.
+(`server/herdr-core/`), through one `hc connect`, and streams the live terminals over that same
+connection.
 
 ## FAQ
 
@@ -869,6 +996,7 @@ No. Both attach to the same terminals at the same time. Use the TUI at your desk
 
 No, but a phone needs two things Tailscale gives at once: a way to reach the PC from outside your network, and HTTPS, which installing the app and push alerts both require. Without it:
 
+- **The Ovis relay**, built in and off by default: turn it on under **Settings → Phone & devices** and scan its QR code. The phone needs nothing else, and what passes through the relay is end-to-end encrypted ([Through the Ovis relay](#through-the-ovis-relay)).
 - **An SSH tunnel from the phone** (Termux, Blink): `ssh -L 7317:127.0.0.1:7317 <pc>`, then open `http://localhost:7317` on the phone. Browsers treat localhost as secure, so installing and alerts should work while the tunnel is up (not verified on iOS yet). The phone still has to reach the PC over SSH.
 - **A VPN into your home** (WireGuard, ZeroTier, a router VPN): the LAN address works in the browser, but a plain `http://` address can neither install the app nor receive alerts.
 - **A reverse proxy with a real certificate** on a domain you own, with a token set and the proxy sending `X-Forwarded-For`: [Behind a reverse proxy](#behind-a-reverse-proxy) has Caddy, nginx and Cloudflare Tunnel examples to copy. This exposes the server to the internet, so read [Access and safety](#access-and-safety) first.
@@ -878,7 +1006,7 @@ No, but a phone needs two things Tailscale gives at once: a way to reach the PC 
 <details>
 <summary><b>Does my code or conversation leave my machine?</b></summary>
 
-Session files stay on the PC running each agent, and their contents are sent to browsers connected to the app. Ovis has no hosted relay or account service of its own. The agents' own connections to model providers depend on their configuration.
+Session files stay on the PC running each agent, and their contents are sent to browsers connected to the app. Ovis has no account service, and its relay is off unless you turn it on. The agents' own connections to model providers depend on their configuration.
 
 Optional features can send data off the PC:
 - [Voice input](#voice-input) sends recordings to the configured transcription provider; polishing also sends the transcribed text. Without a configured API key, browser speech recognition may use the browser vendor's service.
@@ -886,6 +1014,7 @@ Optional features can send data off the PC:
 - Updates and remote-PC setup fetch releases or configured runtime bundles over the network; remote panes are reached over SSH.
 - Enabled push alerts go through the browser vendor's push service as encrypted notifications.
 - [Portal](#behind-a-reverse-proxy), while it runs, carries every connection to the app through the relay you chose: the relay sees connection addresses, timing and volume, and holds the certificate for the address.
+- The [Ovis relay](#through-the-ovis-relay), while it's on, carries everything between a paired phone and this PC through `relay.ovis.sh`, end-to-end encrypted: the relay sees connection addresses, timing and sizes, down to the timing of keystrokes, but none of the content. The app on the phone comes from `app.ovis.sh`, which itself sees only requests for the app's files, whose path names the PC. You have to trust whoever serves that app, since it's the code that holds the phone's key and shows you the PC ([trust model](relay.md#trust-model)).
 
 See [Access and safety](#access-and-safety) for who can connect to the app.
 </details>
@@ -907,7 +1036,7 @@ Samsung Internet has a forced dark mode that repaints every page, including one 
 
 All three are in the herdr plugin marketplace too, and each does something this app does not. [collie](https://github.com/AltanS/collie) is a mobile terminal for herdr, tmux and zellij, with a status dashboard, a key pad, quick replies and voice input, served over Tailscale by its own bridge. [roamgate](https://github.com/powerfooI/roamgate) is a browser client for herdr with a file explorer and diff annotations, installed by its own script. [herdr-remote](https://github.com/dcolinmorgan/herdr-remote) is a macOS menu-bar app with a phone dashboard and a Telegram bot behind a relay and a free tunnel.
 
-Ovis reads the agent's own transcript, so Claude Code, Codex, omp, omo, gjc, pi, OpenCode and identifiable Devin CLI panes are a chat with the work folded per turn. Supported prompt cards are checked against the live menu before an answer is typed; Devin prompts use Terminal. The terminal is the same live pane as your TUI, other PCs join over SSH from the sidebar, and it installs and updates as a herdr plugin, with no server or account of its own. It brings no tunnel: you reach it over Tailscale, SSH or your own HTTPS proxy. If you want tmux or zellij, diffs, Telegram or a tunnel out of the box, one of the others is the better fit.
+Ovis reads the agent's own transcript, so Claude Code, Codex, omp, omo, gjc, pi, OpenCode and identifiable Devin CLI panes are a chat with the work folded per turn. Supported prompt cards are checked against the live menu before an answer is typed; Devin prompts use Terminal. The terminal is the same live pane as your TUI, other PCs join over SSH from the sidebar, and it installs and updates as a herdr plugin, with no account of its own. You reach it over Tailscale, SSH, your own HTTPS proxy, or the Ovis relay, which is end-to-end encrypted and off until you turn it on. If you want tmux or zellij, diffs or Telegram, one of the others is the better fit.
 </details>
 
 <details>
