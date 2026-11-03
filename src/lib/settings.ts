@@ -201,6 +201,8 @@ export interface Settings {
   claudeLaunchMode: ClaudeLaunchMode;
   /** the same for Codex: a sandbox and approval preset */
   codexLaunchMode: CodexLaunchMode;
+  /** Opt-in API for new Copilot launches only; never restarts an existing process. */
+  copilotApiEnabled: boolean;
 }
 
 export const MARKDOWN_WIDTHS = ["readable", "full"] as const;
@@ -215,7 +217,7 @@ export type DiffStyle = (typeof DIFF_STYLES)[number];
  * (shared/telemetry.ts) does not carry them. */
 type TelemetrySourceSettings = Omit<Settings,
   "keyBarExtras" | "keyBarItems" | "shortcutOverrides" | "terminalFontFamily" | "chatFontFamily" | "uiFontFamily"
-  | "quickReplies" | "usageOrder" | "usageHidden" | "fileOpen" | "webLinks" | "claudeLaunchMode" | "codexLaunchMode"
+  | "quickReplies" | "usageOrder" | "usageHidden" | "fileOpen" | "webLinks" | "claudeLaunchMode" | "codexLaunchMode" | "copilotApiEnabled"
   | "followHerdrFocus" | "composerNewTabButton" | "composerArtifacts" | "terminalMirrorWrap" | "sidebarFilter" | "historyPrompts"
   | "expandThinking" | "foldWork" | "autoTabNames">;
 
@@ -313,7 +315,7 @@ export const SETTING_SCOPE = {
   // Viewer layout follows this screen, as chatWidth does.
   wrapCode: "device", markdownWidth: "device", diffStyle: "device", fileOpen: "device", webLinks: "device",
   // a new agent starts the same way whichever device opened it
-  claudeLaunchMode: "shared", codexLaunchMode: "shared",
+  claudeLaunchMode: "shared", codexLaunchMode: "shared", copilotApiEnabled: "shared",
 } as const satisfies Record<keyof Settings, "shared" | "device">;
 
 /** The shared part of `settings`, by the names shared/preferences.ts lists. */
@@ -386,6 +388,7 @@ export const DEFAULT_SETTINGS: Settings = {
   webLinks: "tab",
   claudeLaunchMode: "default",
   codexLaunchMode: "default",
+  copilotApiEnabled: false,
 };
 
 export const QUICK_REPLIES_MAX = 12;
@@ -577,6 +580,7 @@ export function sanitizeSettings(raw: unknown): Settings {
     webLinks: WEB_LINK_TARGETS.find((target) => target === record["webLinks"]) ?? DEFAULT_SETTINGS.webLinks,
     claudeLaunchMode: CLAUDE_LAUNCH_MODES.find((mode) => mode === record["claudeLaunchMode"]) ?? DEFAULT_SETTINGS.claudeLaunchMode,
     codexLaunchMode: CODEX_LAUNCH_MODES.find((mode) => mode === record["codexLaunchMode"]) ?? DEFAULT_SETTINGS.codexLaunchMode,
+    copilotApiEnabled: typeof record["copilotApiEnabled"] === "boolean" ? record["copilotApiEnabled"] : DEFAULT_SETTINGS.copilotApiEnabled,
   };
 }
 

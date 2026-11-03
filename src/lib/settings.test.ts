@@ -38,6 +38,16 @@ describe("saved theme migration", () => {
   const putOld = (record: object) => records.set(main, JSON.stringify(record));
   const readOld = () => oldSanitizeSettings(JSON.parse(records.get(main) ?? "{}"));
 
+  it("keeps the Copilot API off unless explicitly enabled and persists either choice", () => {
+    expect(loadSettings().copilotApiEnabled).toBe(false);
+    for (const bad of ["true", 1, null, [], {}]) expect(sanitizeSettings({ copilotApiEnabled: bad }).copilotApiEnabled).toBe(false);
+    saveSettings({ ...loadSettings(), copilotApiEnabled: true });
+    expect(loadSettings().copilotApiEnabled).toBe(true);
+    saveSettings({ ...loadSettings(), copilotApiEnabled: false });
+    expect(loadSettings().copilotApiEnabled).toBe(false);
+    expect(telemetrySettingsSnapshot(sanitizeSettings({ copilotApiEnabled: true }))).not.toHaveProperty("copilotApiEnabled");
+  });
+
   it.each([
     [{ theme: "dark", palette: "catppuccin" }, "catppuccin", "catppuccin"],
     [{ theme: "system", palette: "amber", paletteLight: "catppuccin", paletteDark: "charcoal" }, "charcoal", "catppuccin"],
@@ -1140,4 +1150,3 @@ describe("shared settings", () => {
     expect(Object.keys(SETTING_SCOPE).sort()).toEqual(Object.keys(DEFAULT_SETTINGS).sort());
   });
 });
-

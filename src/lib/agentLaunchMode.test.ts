@@ -15,6 +15,17 @@ it("starts Claude Code with its permission mode", () => {
   expect(launchAgent("claude", { ...plain, claudeLaunchMode: "bypassPermissions" })).toEqual({ kind: "claude", args: ["--permission-mode", "bypassPermissions"] });
 });
 
+it("opts only new Copilot launches into the API, without changing permissions or prompt delivery", () => {
+  expect(launchArgs("copilot", plain)).toBeUndefined();
+  expect(launchArgs("copilot", { ...plain, copilotApiEnabled: false })).toBeUndefined();
+  const enabled = { ...plain, copilotApiEnabled: true };
+  expect(launchAgent("copilot", enabled, { prompt: "Fix it" }))
+    .toEqual({ kind: "copilot", args: ["--ui-server", "--port", "0"] });
+  expect(firstPromptDelivery("copilot", "Fix it")).toBe("pending");
+  for (const kind of ["claude", "codex", "gemini"]) expect(launchArgs(kind, enabled)).toBeUndefined();
+  expect(launchAgent("", enabled)).toBeNull();
+});
+
 it("starts Codex with a sandbox and an approval policy together", () => {
   expect(launchArgs("codex", { ...plain, codexLaunchMode: "readOnly" })).toEqual(["--sandbox", "read-only", "--ask-for-approval", "on-request"]);
   expect(launchArgs("codex", { ...plain, codexLaunchMode: "auto" })).toEqual(["--sandbox", "workspace-write", "--ask-for-approval", "on-request"]);

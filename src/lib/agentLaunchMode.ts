@@ -21,6 +21,12 @@ export type ClaudeLaunchMode = (typeof CLAUDE_LAUNCH_MODES)[number];
 export const CODEX_LAUNCH_MODES = ["default", "readOnly", "auto", "fullAccess"] as const;
 export type CodexLaunchMode = (typeof CODEX_LAUNCH_MODES)[number];
 
+export interface LaunchSettings {
+  claudeLaunchMode: ClaudeLaunchMode;
+  codexLaunchMode: CodexLaunchMode;
+  copilotApiEnabled?: boolean;
+}
+
 const CODEX_ARGS: Record<Exclude<CodexLaunchMode, "default">, string[]> = {
   readOnly: ["--sandbox", "read-only", "--ask-for-approval", "on-request"],
   auto: ["--sandbox", "workspace-write", "--ask-for-approval", "on-request"],
@@ -131,10 +137,11 @@ export function firstPromptDelivery(kind: string, prompt: string | undefined): "
 }
 
 /** The arguments a new agent of `kind` starts with; undefined when there are none to add. */
-export function launchArgs(kind: string, modes: { claudeLaunchMode: ClaudeLaunchMode; codexLaunchMode: CodexLaunchMode }, choices: LaunchChoices = {}): string[] | undefined {
+export function launchArgs(kind: string, modes: LaunchSettings, choices: LaunchChoices = {}): string[] | undefined {
   const args: string[] = [];
   if (kind === "claude" && modes.claudeLaunchMode !== "default") args.push("--permission-mode", modes.claudeLaunchMode);
   if (kind === "codex" && modes.codexLaunchMode !== "default") args.push(...CODEX_ARGS[modes.codexLaunchMode]);
+  if (kind === "copilot" && modes.copilotApiEnabled === true) args.push("--ui-server", "--port", "0");
   const can = launchCapabilities(kind);
   const model = choices.model?.trim() ?? "";
   if (model !== "" && can.model && MODEL_NAME.test(model)) args.push("--model", model);
@@ -149,7 +156,7 @@ export function launchArgs(kind: string, modes: { claudeLaunchMode: ClaudeLaunch
 }
 
 /** The `agent` of a create request: the kind and the arguments its mode and choices add; null for a plain shell. */
-export function launchAgent(kind: string, modes: { claudeLaunchMode: ClaudeLaunchMode; codexLaunchMode: CodexLaunchMode }, choices: LaunchChoices = {}): { kind: string; args?: string[] } | null {
+export function launchAgent(kind: string, modes: LaunchSettings, choices: LaunchChoices = {}): { kind: string; args?: string[] } | null {
   if (!kind) return null;
   const args = launchArgs(kind, modes, choices);
   return args === undefined ? { kind } : { kind, args };

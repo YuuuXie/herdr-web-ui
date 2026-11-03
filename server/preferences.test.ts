@@ -16,6 +16,17 @@ afterEach(() => {
 const put = (store: PreferenceStore, body: string, headers: Record<string, string> = {}) => handlePreferencesRequest(new Request("http://x/api/preferences", { method: "PUT", body, headers }), store);
 
 describe("shared preferences", () => {
+  it("shares the explicit Copilot API launch choice and preserves it across store reloads", async () => {
+    const dir = root();
+    const store = new PreferenceStore(dir);
+    expect((await put(store, JSON.stringify({ settings: { copilotApiEnabled: true } }))).status).toBe(200);
+    expect(new PreferenceStore(dir).get().settings.copilotApiEnabled).toBe(true);
+    expect((await put(store, JSON.stringify({ settings: { showThinking: true } }))).status).toBe(200);
+    expect(store.get().settings.copilotApiEnabled).toBe(true);
+    expect((await put(store, JSON.stringify({ settings: { copilotApiEnabled: false } }))).status).toBe(200);
+    expect(new PreferenceStore(dir).get().settings.copilotApiEnabled).toBe(false);
+  });
+
   const seed = { theme: "dark", palette: "tokyo-night", darkTheme: "tokyo-night", lightTheme: "tokyo-night-day" };
   it.each([
     ["h", [{ palette: "catppuccin" }], { darkTheme: "catppuccin", lightTheme: "tokyo-night-day", palette: "catppuccin" }],

@@ -7,7 +7,7 @@
  * one send: nothing is typed by this page afterwards.
  */
 import type { CreateTabRequest, CreateWorkspaceRequest, WorkspaceCreated } from "../../shared/protocol.ts";
-import type { ClaudeLaunchMode, CodexLaunchMode } from "./agentLaunchMode.ts";
+import type { LaunchSettings } from "./agentLaunchMode.ts";
 import { firstPromptDelivery, launchAgent, launchCapabilities, launchChoiceFault } from "./agentLaunchMode.ts";
 
 export interface NewSessionFields {
@@ -27,7 +27,7 @@ export type NewSessionLaunch =
   | { fault: "model" | "effort" | "ultracode" | "prompt" };
 
 /** The create request's agent for the fields, or the first choice the launch does not take. */
-export function newSessionLaunch(fields: NewSessionFields, modes: { claudeLaunchMode: ClaudeLaunchMode; codexLaunchMode: CodexLaunchMode }): NewSessionLaunch {
+export function newSessionLaunch(fields: NewSessionFields, modes: LaunchSettings): NewSessionLaunch {
   const fault = launchChoiceFault(fields.agent, fields);
   if (fault !== null) return { fault };
   const via = firstPromptDelivery(fields.agent, fields.prompt);
@@ -43,7 +43,7 @@ export function newSessionLaunch(fields: NewSessionFields, modes: { claudeLaunch
  * blocks Start nor goes with the launch. The agent list can move the kind past the picker's resets, as when a
  * remembered Claude Code the PC no longer offers gives way to a shell with Ultracode left on.
  */
-export function dialogLaunch(fields: NewSessionFields, modes: { claudeLaunchMode: ClaudeLaunchMode; codexLaunchMode: CodexLaunchMode }): NewSessionLaunch {
+export function dialogLaunch(fields: NewSessionFields, modes: LaunchSettings): NewSessionLaunch {
   return newSessionLaunch({ ...fields, ultracode: fields.ultracode && launchCapabilities(fields.agent).ultracode }, modes);
 }
 
