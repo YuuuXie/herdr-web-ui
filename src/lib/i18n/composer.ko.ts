@@ -7,6 +7,8 @@
  * Register and fixed terms follow ../i18n.ko.ts; a key another feature also uses goes there.
  */
 export const COMPOSER_KO: Record<string, string> = {
+  "Next": "다음",
+  "Next question": "다음 질문",
   "Edit queued message": "대기 중인 메시지 편집",
   "Sent to Pi · waiting for transcript": "Pi로 보냄 · 대화 기록을 기다리는 중",
   "Sent to Pi · transcript confirmation unavailable": "Pi로 보냄 · 대화 기록을 확인할 수 없음",
@@ -230,6 +232,11 @@ export const COMPOSER_KO: Record<string, string> = {
   "Deny": "거부",
   "Tab switched OpenCode's agent from {from} to {to}. Nothing more was typed. Check the terminal before sending again.": "Tab 키로 OpenCode 에이전트가 {from}에서 {to}(으)로 바뀌었습니다. 더 이상 입력하지 않았습니다. 다시 보내기 전에 터미널을 확인하세요.",
   "OpenCode attached another skill. Your chat text stayed here. Check the terminal before sending again.": "OpenCode가 다른 스킬을 첨부했습니다. 채팅 텍스트는 여기에 남아 있습니다. 다시 보내기 전에 터미널을 확인하세요.",
+  // quoting a selection into the composer (lib/chatQuote.ts)
+  "Quote": "인용",
+  "Quote it in your message": "메시지에 인용",
+  "Selection": "선택한 텍스트",
+  "Too long to quote: shorten the message or the selection.": "인용하기에 너무 깁니다. 메시지나 선택을 줄이세요.",
   // comments on a reply (components/ReplyComments.tsx, #511)
   "Comment on the reply": "답변에 코멘트",
   "Add a comment": "코멘트 추가",
@@ -246,4 +253,6 @@ export const COMPOSER_KO: Record<string, string> = {
   "Update this PC to send comments on a reply. Your message and comments stayed here.": "답변 코멘트를 보내려면 이 PC를 업데이트하세요. 메시지와 코멘트는 그대로 남아 있습니다.",
   "Not sent: the message is in the terminal's input line. Clear it there, or press Enter there to send it.": "보내지 않음: 메시지가 터미널 입력 줄에 들어가 있습니다. 거기서 지우거나, 거기서 Enter를 눌러 보내세요.",
   "Not sent: no agent is running in this pane. Your message stayed here.": "보내지 않음: 이 패널에서 실행 중인 에이전트가 없습니다. 메시지는 그대로 남아 있습니다.",
+  "1 comment": "코멘트 1개",
+  "{count} comments": "코멘트 {count}개",
 };

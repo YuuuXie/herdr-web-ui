@@ -15,16 +15,18 @@
  * What does not: files, images, push and remote PCs, which need a real machine.
  */
 import { NO_AGENT_MESSAGE } from "../../shared/submit-outcome.ts";
-import type { AgentIntegration, AgentStatus, CommandForm, CommandOutcome, ConversationTurn, DevicePairedEvent, DevicesRevokedAll, HealthAuth, IntegrationsResponse, Machine, MachineEvent, OmoActivity, OmoTask, PairedDevice, PairingCode, PaneBackgroundAgentDetail, PaneDirection, PaneFindMatch, PaneFindRequest, PanePlan, PaneResized, PaneSplit, PaneSwapped, PaneZoomed, PendingMessage, PlanStep, PluginActionResult, PluginActions, PluginActionsResponse, PortalStatus, SecuritySummary, ServerMessage, SessionSnapshot, SlashCommand, TabMoved, TabMovedToWorkspace, UsageReport, WorkspaceCreated, WorkspaceInfo, WorktreeEntry, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../../shared/protocol.ts";
+import type { AgentIntegration, AgentStatus, CommandForm, CommandOutcome, ConversationTurn, DevicePairedEvent, DevicesRevokedAll, HealthAuth, IntegrationsResponse, Machine, MachineEvent, OmoActivity, OmoTask, PairedDevice, PairingCode, PaneBackgroundAgentDetail, PaneDirection, PaneFindMatch, PaneFindRequest, PanePlan, PaneResized, PaneSplit, PaneSwapped, PaneZoomed, PendingMessage, PlanStep, PluginActionResult, PluginActions, PluginActionsResponse, PortalStatus, RelayStatus, SecuritySummary, ServerMessage, SessionSnapshot, SlashCommand, TabMoved, TabMovedToWorkspace, UsageReport, WorkspaceCreated, WorkspaceInfo, WorktreeEntry, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../../shared/protocol.ts";
 import type { PushSubscriptionStatus, RepoBranchComparison, RepoDiffFile, RepoDiffFileList, RepoDiffFilePatch, RepoDiffRefs, RepoDiffRepository, RepoDiffScope, SessionHistoryAgent, SessionHistoryResponse, SessionResumeResponse } from "../../shared/protocol.ts";
-import { normalizeThemeChange, sharedPreferencesBody, type SharedPreferences } from "../../shared/preferences.ts";
+import { nextTabLabels, normalizeThemeChange, sharedPreferencesBody, type SharedPreferences } from "../../shared/preferences.ts";
 import { VOICE_DEFAULTS, type VoiceStatus } from "../../shared/voice.ts";
 import { isAgentName } from "../../shared/agent-name.ts";
 import { skillSyntax } from "../../shared/skill-syntax.ts";
 import { firstMessageFault } from "../../shared/launch-rules.ts";
 import { insertTextProblem } from "../../shared/terminal-insert.ts";
+import { encodeOffer } from "../../shared/relay-offer.ts";
 import { neighborPane } from "../../src/lib/layoutMap.ts";
 import { closeLayoutPane, resizeLayout, setLayoutSplitRatio, splitLayout, swapLayoutPanes } from "../../src/lib/layoutTree.ts";
+import { deviceLabel } from "../../src/lib/phone.ts";
 import { rollupStatus } from "../../src/lib/status.ts";
 import { movedTabOrder } from "../../src/lib/tabOrder.ts";
 import { agentSkillRows, CHATS, DEMO_AGENT_CATALOG, DEMO_PUSH, PROMPT, resumedSession, SESSION_HISTORY_AGENTS, sessionHistoryRows, SPECS, type DemoSpec } from "./fixtures.ts";
@@ -368,10 +370,13 @@ let preferences: SharedPreferences = { revision: 0, settings: {}, muted_panes: [
 
 function changePreferences(raw: unknown): Response {
   const change = sharedPreferencesBody(raw);
-  if (change === null) return error("invalid_body", "Send { settings: object, pins?: string[], muted_panes?: string[] }", 400);
+  if (change === null) return error("invalid_body", "Send { settings: object, pins?: string[], muted_panes?: string[], tab_labels?: { [pane|terminal]: string }, tab_labels_removed?: string[] }", 400);
   const { settings } = normalizeThemeChange(preferences.settings, change);
   const pins = change.pins ?? preferences.pins;
-  preferences = { revision: preferences.revision + 1, settings: { ...preferences.settings, ...settings }, ...(pins === undefined ? {} : { pins }), muted_panes: change.muted_panes ?? preferences.muted_panes ?? [] };
+  const merged = { ...preferences.settings, ...settings };
+  const labels = nextTabLabels(preferences.tab_labels, change, merged);
+  const kept = labels !== undefined && Object.keys(labels).length > 0 ? labels : undefined;
+  preferences = { revision: preferences.revision + 1, settings: merged, ...(pins === undefined ? {} : { pins }), muted_panes: change.muted_panes ?? preferences.muted_panes ?? [], ...(kept === undefined ? {} : { tab_labels: kept }) };
   emitSse({ type: "preferences", preferences });
   return json(preferences, 200, { "cache-control": "no-store" });
 }
@@ -1083,6 +1088,20 @@ function usageReport(): UsageReport {
 const DEVICE_STATE = new URLSearchParams(location.search).get("demo_devices");
 const CONNECTION_DROPS = new URLSearchParams(location.search).get("demo_connection") === "drops";
 let connectionLost = false;
+/** `?demo_connection=switch`: the page loses the bridge connection with `herdrDemoLoseConnection()` and lets it
+ *  back with `herdrDemoRestoreConnection()`, so a capture of the header while it reconnects never races a timer
+ *  (scripts/reconnect-header-demo-regression.ts) */
+if (new URLSearchParams(location.search).get("demo_connection") === "switch") Object.assign(globalThis, {
+  herdrDemoLoseConnection: () => {
+    connectionLost = true;
+    for (const socket of [...sockets]) socket.close(1006, "demo: the connection was lost");
+  },
+  // an attempt made during the outage never opens: it fails now, so the client's next retry finds the bridge back
+  herdrDemoRestoreConnection: () => {
+    connectionLost = false;
+    for (const socket of [...sockets]) if (socket.readyState === 0) socket.close(1006, "demo: the attempt failed");
+  },
+});
 const DEVICE_PAIRS_AFTER_MS = 1800;
 /** `held`: each pairing started waits here until the page releases it; no timer decides it */
 const PAIRING_HELD = new URLSearchParams(location.search).get("demo_pairing") === "held";
@@ -1098,14 +1117,28 @@ const demoDevices: PairedDevice[] = DEVICE_STATE === "empty" ? [] : [
   { id: "6f1c2a9d4b7e8503", label: "Pixel 9", role: "drive", created_at: ago(41 * 24 * 60), last_seen_at: ago(3), current: DEVICE_STATE === "watch" },
   { id: "0b8e7d6c5a493f21", label: "iPad", role: "drive", created_at: ago(12 * 24 * 60), last_seen_at: ago(26 * 60), current: false },
   { id: "c3d9e1f24a5b6078", label: "Kitchen laptop, the old one with the broken hinge", role: "drive", created_at: ago(3 * 24 * 60), last_seen_at: null, current: false },
+  // `relay`: a device paired through the relay under this browser's own name, as Connect a phone's same-name hint reads it
+  ...(DEVICE_STATE === "relay" ? [{ id: "9a7e5c3b1d2f4068", label: deviceLabel(navigator.userAgent, navigator.maxTouchPoints ?? 0), role: "drive" as const, created_at: ago(5 * 24 * 60), last_seen_at: ago(40), current: false, via_relay: true as const }] : []),
 ];
 const demoAuth: HealthAuth = DEVICE_STATE === "watch" ? { required: false, authenticated: true, via: "device", role: "watch" } : { required: false, authenticated: true };
 let demoPairings = 0;
 // what a server answers when the registry write fails (server/http.ts): a log reference, nothing more
 const registryUnwritable = () => error("internal_error", "internal error (d3m0f41l0001)", 500);
+/**
+ * The one pending pairing code, as the server keeps it (server/devices.ts): started by the Devices
+ * group or the relay panel's New code, carried by the relay offer while it lasts, gone once the
+ * fictional phone enters it. The code itself never changes: the demo's captures show one code.
+ */
+let demoPairing: PairingCode | null = null;
+function startDemoPairing(): PairingCode {
+  demoPairing = { code: "482913", expires_at: new Date(Date.now() + 10 * 60_000).toISOString() };
+  return demoPairing;
+}
+const activeDemoPairing = (): PairingCode | null => demoPairing !== null && Date.parse(demoPairing.expires_at) > Date.now() ? demoPairing : null;
 /** The fictional phone that enters the code: a device more, and the event every window hears. */
 function demoDevicePairs(): void {
   demoPairings += 1;
+  demoPairing = null;
   const device: PairedDevice = { id: `${demoPairings.toString(16).padStart(4, "0")}9e2d1c0b7a6f`, label: demoPairings === 1 ? "Living-room iPad" : `Phone ${demoPairings}`, role: "drive", created_at: new Date().toISOString(), last_seen_at: new Date().toISOString(), current: false };
   demoDevices.push(device);
   emitSse({ type: "device-paired", event_id: `d${demoPairings.toString(16).padStart(15, "0")}`, device_id: device.id, label: device.label, enrolled_at: device.created_at } satisfies DevicePairedEvent);
@@ -1123,7 +1156,32 @@ const PLUGINS: PluginActions[] = [
   ] },
 ];
 
-const NO_PORTAL: PortalStatus = { supported: false, version: null, min_version: "v2.6.1", usable: false, phase: "idle", relay: null, url: null, blocked: null, error: null, output: null };
+const NO_PORTAL: PortalStatus = { supported: false, version: null, min_version: "v2.6.1", usable: false, phase: "idle", relay: null, url: null, blocked: null, error: null, output: null, auth: { method: "none", allow: [], issuer: null, client_id: null }, auth_methods: [], oidc_secret: false };
+
+// ---- the Ovis relay (Settings → Phone & devices → Connect a phone) ------------------
+
+/**
+ * A fictional relay link, so the demo shows the panel's online state: the switch turns it on and
+ * off, no phone is ever connected, the pairing offer is a real offer URL (shared/relay-offer.ts)
+ * around a made-up server identity and key, and a reset gives the PC the next made-up identity.
+ * Nothing here opens a socket or holds a credential.
+ */
+const DEMO_RELAY = "wss://relay.ovis.sh";
+const DEMO_RELAY_APP = "https://app.ovis.sh";
+/** 32 made-up key bytes, in the canonical base64 the offer's validator accepts */
+const DEMO_RELAY_PUBLIC_KEY = btoa(String.fromCharCode(...Array.from({ length: 32 }, (_, index) => (index * 37 + 11) & 0xff)));
+/** `?demo_relay=on` opens the demo with the relay already online, as a PC that turned it on before */
+let demoRelayOnline = new URLSearchParams(location.search).get("demo_relay") === "on";
+let demoRelayIdentities = 1;
+const demoRelayServerId = (): string => `${demoRelayIdentities.toString(16).padStart(4, "0")}5e1f1d0ff3ab1e0ff3ab1e5e1f1d`;
+const demoRelayStatus = (): RelayStatus => ({ phase: demoRelayOnline ? "online" : "off", relay: DEMO_RELAY, app: DEMO_RELAY_APP, sessions: 0, blocked: null, error: null });
+/** POST /api/relay/offer: the pending code inside an offer for the fictional identity, as the server reuses it */
+function demoRelayOffer(): Response {
+  if (!demoRelayOnline) return error("relay_off", "Start the relay before pairing.", 409);
+  const pairing = activeDemoPairing() ?? startDemoPairing();
+  const url = encodeOffer({ v: 1, server_id: demoRelayServerId(), server_public_key: DEMO_RELAY_PUBLIC_KEY, relay: DEMO_RELAY, code: pairing.code }, DEMO_RELAY_APP);
+  return json({ url, expires_at: pairing.expires_at }, 200, { "cache-control": "no-store" });
+}
 /**
  * The demo opens no public address, so its Portal section stays hidden. A QA script may stage a
  * fictional status (a recovering Portal, say) as JSON in sessionStorage["ovis:demo-portal"]
@@ -1152,24 +1210,28 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     if (query.get("scope") === "bridge") {
       if (variant === "loading") return await new Promise<Response>(() => undefined);
       if (variant === "error") return error("server_unavailable", "The demo server is not answering.", 503);
-      return json({ ok: true, auth, bridge_protocol: 1, ...facts }, 200, { "cache-control": "no-store" });
+      return json({ ok: true, auth, bridge_protocol: 1, relay: demoRelayStatus(), ...facts }, 200, { "cache-control": "no-store" });
     }
     // the LAN warning is drawn only where a real server would send it: an other-address bind, no token, nothing paired
     const lan = variant === "unknown" ? { lan_exposure: { host: "0.0.0.0" } } : {};
-    return json({ ok: true, herdr: { version: "0.9.0", protocol: 22, terminal_attach: true }, auth, ...lan, ...facts, web_ui: { boot_id: orderOf(local.id).epoch, revision: null } }, 200, { "cache-control": "no-store" });
+    return json({ ok: true, herdr: { version: "0.9.0", protocol: 22, terminal_attach: true }, auth, relay: demoRelayStatus(), ...lan, ...facts, web_ui: { boot_id: orderOf(local.id).epoch, revision: null } }, 200, { "cache-control": "no-store" });
   }
-  // without `?demo_devices=` the demo answers no device route: its /api/devices stays a 404, as before
+  // a code starts here from the Devices group or from the relay panel's New code; the fictional phone
+  // enters it only where the demo has a device list to add it to
+  if (path === "/api/devices/pair/start") {
+    if (demoAuth.role === "watch") return error("read_only", "this device can only watch", 403);
+    if (DEVICE_STATE !== null) {
+      if (PAIRING_HELD) heldPairings.push(demoDevicePairs);
+      else setTimeout(demoDevicePairs, DEVICE_PAIRS_AFTER_MS);
+    }
+    return json(startDemoPairing(), 200, { "cache-control": "no-store" });
+  }
+  // without `?demo_devices=` the demo answers no other device route: its /api/devices stays a 404, as before
   if (DEVICE_STATE !== null) {
     if (path === "/api/devices") {
       // the `slow` state: held until released, so the lane captures the page while its list loads
       if (deviceListHeld) await deviceListHeld;
       return json({ devices: demoDevices }, 200, { "cache-control": "no-store" });
-    }
-    if (path === "/api/devices/pair/start") {
-      if (demoAuth.role === "watch") return error("read_only", "this device can only watch", 403);
-      if (PAIRING_HELD) heldPairings.push(demoDevicePairs);
-      else setTimeout(demoDevicePairs, DEVICE_PAIRS_AFTER_MS);
-      return json({ code: "482913", expires_at: new Date(Date.now() + 10 * 60_000).toISOString() } satisfies PairingCode, 200, { "cache-control": "no-store" });
     }
     if (path === "/api/devices/revoke-all") {
       if (demoAuth.role === "watch") return error("read_only", "this device can only watch", 403);
@@ -1224,9 +1286,20 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
   if (path === "/api/telemetry") return json({ error: { code: "not_found", message: "This server sends no telemetry" } }, 404, { "cache-control": "no-store" });
   if (path === "/api/herdr/update") return json({ supported: false, phase: "idle", server_version: null, binary_version: null, stale: false, output: null, finished_at: null }, 200, { "cache-control": "no-store" });
   if (path === "/api/portal") return json(demoPortal(), 200, { "cache-control": "no-store" });
-  if (path === "/api/portal/start" || path === "/api/portal/stop") return error("portal_unsupported", "The demo opens no public address.", 409);
+  if (path === "/api/relay") return json(demoRelayStatus(), 200, { "cache-control": "no-store" });
+  if (path === "/api/relay/start" || path === "/api/relay/stop" || path === "/api/relay/offer" || path === "/api/relay/reset-identity") {
+    if (method !== "POST") return error("method_not_allowed", "Use GET for status and POST for relay actions.", 405);
+    if (demoAuth.role === "watch") return error("read_only", "this device can only watch", 403);
+    if (path === "/api/relay/offer") return demoRelayOffer();
+    if (path === "/api/relay/start") demoRelayOnline = true;
+    else if (path === "/api/relay/stop") demoRelayOnline = false;
+    // a new identity: the offers made so far name a PC that no longer exists; the link stays as it was
+    else demoRelayIdentities += 1;
+    return json(demoRelayStatus(), 200, { "cache-control": "no-store" });
+  }
+  if (path === "/api/portal/start" || path === "/api/portal/stop" || path === "/api/portal/invite") return error("portal_unsupported", "The demo opens no public address.", 409);
   if (path === "/api/herdr-ui") return json({ copy_on_select: true }, 200, { "cache-control": "no-store" });
-  if (path === "/api/access") return json({ port: 7317, tailscale: { state: "running", dns_name: "workstation.example.ts.net", serving_url: "https://workstation.example.ts.net", serve_command: null, serve_url: null } });
+  if (path === "/api/access") return json({ port: 7317, relay: demoRelayStatus(), tailscale: { state: "running", dns_name: "workstation.example.ts.net", serving_url: "https://workstation.example.ts.net", serve_command: null, serve_url: null } });
   if (path === "/api/usage") return json(usageReport(), 200, { "cache-control": "no-store" });
   if (path === "/api/usage/statusline") {
     if (method === "POST") {
@@ -1243,7 +1316,7 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     login.reads += 1;
     const ended = login.provider === "claude" ? login.code : login.reads > 3;
     if (ended) signInDemo.signedIn.add(login.provider);
-    if (ended) return json({ provider: login.provider, url: null, user_code: null, wants_code: false, ended: true }, 200, { "cache-control": "no-store" });
+    if (ended) return json({ provider: login.provider, url: null, user_code: null, wants_code: false, ended: true, succeeded: true, account: login.provider === "claude" ? "me@example.test" : "codex@example.test" }, 200, { "cache-control": "no-store" });
     return json(login.provider === "claude"
       ? { provider: "claude", url: CLAUDE_SIGN_IN_URL, user_code: null, wants_code: true, ended: false }
       : { provider: "codex", url: "https://auth.openai.com/codex/device", user_code: "PDLB-SLDUA", wants_code: false, ended: false }, 200, { "cache-control": "no-store" });

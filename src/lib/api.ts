@@ -3,9 +3,10 @@ import type { PreferencesChange, SharedPreferences } from "../../shared/preferen
 import type { SeenFinish } from "../../shared/seen.ts";
 import type { AgentCatalogResponse, AgentTabStarted } from "../../shared/agent-catalog.ts";
 import { resumeConnectionTraces } from "./connectionTrace.ts";
-import { machinePath, type BridgeHealth, type HerdrIdentity, type Machine, type MachineRoster, type SetupAction, type SetupJob, type SetupRequest } from "../../shared/machines.ts";
+import { machinePath, type BridgeHealth, type HerdrCoreFacts, type HerdrIdentity, type Machine, type MachineRoster, type SetupAction, type SetupJob, type SetupRequest } from "../../shared/machines.ts";
 import type {
   WorkspaceMoved,
+  HerdrPane,
   AgentKind,
   AgentRenameRequest,
   CommandOutcome,
@@ -53,8 +54,11 @@ import type {
   ProjectFavicon,
   PromptAnswer,
   PushKey,
+  PortalAuth,
+  PortalInvite,
   PushSubscriptionStatus,
   PortalStatus,
+  RelayStatus,
   RemoteAccess,
   RemoveWorktreeRequest,
   ResizePaneRequest,
@@ -201,10 +205,49 @@ export function fetchPortal(): Promise<PortalStatus> {
   return getJson<PortalStatus>("/api/portal");
 }
 
-export async function requestPortal(action: "start" | "stop", relay?: string): Promise<void> {
+export async function requestPortal(action: "start" | "stop", relay?: string, auth?: PortalAuth): Promise<void> {
   const url = `/api/portal/${action}`;
-  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify(relay === undefined ? {} : { relay }) });
+  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify(relay === undefined ? {} : { relay, auth }) });
   if (!response.ok) throw await errorFrom(url, response);
+}
+
+/** A private link for `name`, good for `days`: a bearer secret the server keeps nowhere, so this is the one time it is read. */
+export async function issuePortalInvite(name: string, days: number): Promise<PortalInvite> {
+  const url = "/api/portal/invite";
+  const response = await apiFetch(url, { method: "POST", headers: { "content-type": "application/json", "x-herdr-update": "1" }, body: JSON.stringify({ name, days }) });
+  if (!response.ok) throw await errorFrom(url, response);
+  return (await response.json()) as PortalInvite;
+}
+
+/** Settings → Phone & devices: the Ovis relay, through which paired phones reach this PC from anywhere. */
+export function fetchRelay(): Promise<RelayStatus> {
+  return getJson<RelayStatus>("/api/relay");
+}
+
+/** POST /api/relay/offer: a one-time pairing offer for the QR code, good until `expires_at`. */
+export interface RelayOffer {
+  readonly url: string;
+  readonly expires_at: string;
+}
+
+/**
+ * The relay actions answer with the state they left the relay in, a refusal too: a start that
+ * serve-only blocks is a 409 whose body is still the RelayStatus, so it is the answer, not an error.
+ * Only a body without a phase (the origin gate, a watching device, an older server) is one.
+ */
+export async function requestRelay(action: "start" | "stop" | "reset-identity"): Promise<RelayStatus> {
+  const url = `/api/relay/${action}`;
+  const response = await apiFetch(url, { method: "POST", headers: { "x-herdr-update": "1" } });
+  if (!response.ok) {
+    const body: unknown = await response.clone().json().catch(() => null);
+    if (body !== null && typeof body === "object" && "phase" in body) return body as RelayStatus;
+    throw await errorFrom(url, response);
+  }
+  return (await response.json()) as RelayStatus;
+}
+
+export function requestRelayOffer(): Promise<RelayOffer> {
+  return getJson<RelayOffer>("/api/relay/offer", { method: "POST", headers: { "x-herdr-update": "1" } });
 }
 
 /** Anonymous install and update counts; null from a server that sends none (404). */
@@ -214,9 +257,10 @@ export async function fetchPreferences(): Promise<SharedPreferences | null> {
   catch (error) { if (error instanceof ApiError && error.status === 404) return null; throw error; }
 }
 
-export async function savePreferences(body: PreferencesChange): Promise<SharedPreferences> {
+/** `keepalive` lets the request finish after the page is gone (a reload, a closed tab) */
+export async function savePreferences(body: PreferencesChange, keepalive = false): Promise<SharedPreferences> {
   const url = "/api/preferences";
-  const response = await apiFetch(url, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  const response = await apiFetch(url, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(body), keepalive });
   if (!response.ok) throw await errorFrom(url, response);
   return (await response.json()) as SharedPreferences;
 }
@@ -321,10 +365,10 @@ const wrappedOnly = new Set<string>();
  * rejoins the rows the terminal soft-wrapped, so a line reflows to the chat's
  * width instead of breaking where the pty's columns ended.
  */
-export async function fetchPaneTranscript(paneId: string, lines: number, machineId = "local"): Promise<PaneReadResult> {
+export async function fetchPaneTranscript(paneId: string, lines: number, machineId = "local", signal?: AbortSignal): Promise<PaneReadResult> {
   const read = async (source: "recent" | "recent_unwrapped"): Promise<PaneReadResult> => {
     const query = new URLSearchParams({ pane_id: paneId, source, format: "text", lines: String(lines) });
-    return (await withChatReadDeadline((signal) => getJson<{ read: PaneReadResult }>(machinePath(machineId, `pane/read?${query.toString()}`), { signal }), chatReadDeadlineMs(machineId))).read;
+    return (await withChatReadDeadline((bounded) => getJson<{ read: PaneReadResult }>(machinePath(machineId, `pane/read?${query.toString()}`), { signal: bounded }), chatReadDeadlineMs(machineId), signal)).read;
   };
   if (wrappedOnly.has(machineId)) return read("recent");
   try {
@@ -345,6 +389,8 @@ export type ConversationPageQuery = {
   prompts?: number;
   /** Revalidate a new finish without borrowing another key's 304. */
   fresh?: boolean;
+  /** The requesting screen lifetime; transport-only, never part of the URL or cache key. */
+  signal?: AbortSignal;
 };
 
 /**
@@ -367,6 +413,8 @@ interface ConversationAnswer {
   bytes: number;
   /** the pane the answer belongs to: a pane the chat has open keeps every page size it read */
   pane: string;
+  /** the pane's session when it was read (paneSessions): drawn and revalidated only while the pane is still on it */
+  session: string | undefined;
 }
 
 /** The pane alone, without the page query: one pane can hold several sizes and cursors at once. */
@@ -435,6 +483,85 @@ function trimConversationAnswers(keep: string): void {
   }
 }
 
+/**
+ * Each pane's session as the roster last named it: its agent and the session herdr reports for it.
+ * A conversation answer is read for the session its pane was on when the read started, and stands for
+ * that session only: a press read is taken, a cached page drawn or revalidated, and an answer kept
+ * only while the pane is still on it. A pane the roster has not named yet is on `undefined`.
+ */
+const paneSessions = new Map<string, string>();
+/**
+ * Per PC, a token its event that panes changed (paneSessionsMoving) gave it until the roster after it
+ * names the sessions: a read in between is of a session not known yet, so it stands for none other.
+ */
+const movingSessions = new Map<string, { token: string; event: number }>();
+let movingEvents = 0;
+
+/** The session a pane (paneKey) is on for a read starting now: its PC's moving token, else the roster's. */
+function sessionNow(pane: string): string | undefined {
+  return movingSessions.get(pane.slice(0, pane.indexOf("\u0000")))?.token ?? paneSessions.get(pane);
+}
+
+/**
+ * The session names the conversation: herdr reports the pane's agent_session, and its PC has said nothing
+ * since. A press read is started and taken only then: a pane with no reported session can change
+ * conversation with nothing on the client changing, so its chat asks the server on mount, as before #2562.
+ */
+function namesSession(session: string | undefined): boolean {
+  return session !== undefined && !movingToken(session) && !session.endsWith("\u0000");
+}
+const movingToken = (session: string): boolean => session.startsWith("moving:");
+
+/** How many PC events said panes changed: a roster read started now is read after every one of them. */
+export function paneSessionEvents(): number {
+  return movingEvents;
+}
+
+/** A pane's session as paneSessions keeps it. */
+export function paneSessionKey(pane: Pick<HerdrPane, "agent" | "agent_session">): string {
+  return `${pane.agent ?? ""}\u0000${pane.agent_session?.value ?? ""}`;
+}
+
+/**
+ * Takes every pane's session from a roster as it arrives, before any chat renders from it. A herdr that
+ * replaced another reuses its pane IDs, so the session is the herdr's too; a pane the roster no longer
+ * lists has none.
+ */
+export function observePaneSessions(machines: readonly { id: string; snapshot: { herdr_lifetime?: string; panes: readonly Pick<HerdrPane, "pane_id" | "agent" | "agent_session">[] } | null }[], readAfter?: number): void {
+  for (const machine of machines) {
+    if (machine.snapshot === null) continue;
+    // only a roster read after the PC's last event names its panes' sessions now; one read before it (a poll
+    // that was out, a push the server built earlier) can still name the session a pane left
+    const moving = movingSessions.get(machine.id);
+    if (moving !== undefined && readAfter !== undefined && readAfter >= moving.event) movingSessions.delete(machine.id);
+    const listed = new Set<string>();
+    for (const pane of machine.snapshot.panes) {
+      const key = paneKey(pane.pane_id, machine.id);
+      listed.add(key);
+      paneSessions.set(key, `${machine.snapshot.herdr_lifetime ?? ""}\u0000${paneSessionKey(pane)}`);
+    }
+    for (const key of paneSessions.keys()) if (key.startsWith(paneKey("", machine.id)) && !listed.has(key)) paneSessions.delete(key);
+  }
+}
+
+/**
+ * The PC says its panes changed (a session-changed or pane-exited event) before the roster that
+ * names them comes: a press read on it may be of a session a pane has left, so none is taken.
+ */
+export function paneSessionsMoving(machineId: string): void {
+  movingEvents += 1;
+  movingSessions.set(machineId, { token: `moving:${movingEvents}`, event: movingEvents });
+  for (const [url, pressed] of pressReads) if (pressed.pane.startsWith(paneKey("", machineId))) pressReads.delete(url);
+}
+
+/** The cached answer at `url`, while its pane is still on the session it was read for; one from another session is dropped. */
+function currentAnswer(url: string, pane: string): ConversationAnswer | undefined {
+  const answer = conversationAnswers.get(url);
+  if (answer === undefined || answer.session === sessionNow(pane)) return answer;
+  conversationAnswers.delete(url);
+  return undefined;
+}
+
 /** The chat's open pane keeps its pages: `pin`ed panes are evicted last. */
 export function pinPaneConversation(paneId: string, machineId = "local"): void {
   pinnedConversations.add(paneKey(paneId, machineId));
@@ -458,29 +585,118 @@ function conversationUrl(paneId: string, machineId: string, page: ConversationPa
  * that mounts draws it at once while its read revalidates it. It leaves the cache order alone.
  */
 export function peekPaneConversation(paneId: string, machineId = "local", prompts?: number): ConversationResponse | undefined {
-  return conversationAnswers.get(conversationUrl(paneId, machineId, prompts === undefined ? {} : { prompts }))?.body;
+  const answer = conversationAnswers.get(conversationUrl(paneId, machineId, prompts === undefined ? {} : { prompts }));
+  return answer?.session === sessionNow(paneKey(paneId, machineId)) ? answer?.body : undefined;
+}
+
+/** A newest-page read a press started, the pane's session it was read for, and its answer once it came. */
+interface PressRead { at: number; pane: string; session: string | undefined; controller: AbortController; read: Promise<ConversationResponse>; answer?: ConversationResponse }
+/**
+ * Newest-page reads a press started (prefetchPaneConversation), by page URL without the history:
+ * the chat the press opens takes its mount read from here instead of asking again. Each one is
+ * taken once, only within PRESS_READ_MS of the press, and only while the pane is still on the session
+ * it was read for: any other read asks the server.
+ */
+const pressReads = new Map<string, PressRead>();
+/** A press becomes a pick well within this, or it was a scroll, a drag or a long press. */
+export const PRESS_READ_MS = 1000;
+/**
+ * Per newest-page URL, the read that started last: an older read that answers after it (an untaken press read,
+ * a held page) keeps out of the cache. A held (`from`) read also counts for the plain page it writes.
+ */
+const lastNewestRead = new Map<string, number>();
+let newestReads = 0;
+
+/**
+ * Starts the first read of a chat that a press is about to open (a tab or a sidebar row, before
+ * the pick renders), with the query ChatView's mount read sends. Sent at the press, it answers
+ * before the herdr calls the pick sets off, which herdr 0.9.0 holds about 250 ms when they overlap.
+ * A pane whose chat is mounted (pinned: shown, or kept in the tab cache) reads it itself, so
+ * nothing starts for it.
+ */
+export function prefetchPaneConversation(paneId: string, machineId: string, prompts: number): void {
+  const pane = paneKey(paneId, machineId);
+  if (pinnedConversations.has(pane) || !namesSession(sessionNow(pane))) return;
+  const url = conversationUrl(paneId, machineId, { prompts });
+  if (pressReads.has(url)) return;
+  // the mount read names the history of the cached answer it drew (ChatView's peek)
+  const cached = currentAnswer(url, pane)?.body;
+  const historyId = cached?.source === "scrollback" ? undefined : cached?.history_id;
+  const controller = new AbortController();
+  const pressed: PressRead = { controller, at: performance.now(), pane, session: sessionNow(pane), read: fetchPaneConversation(paneId, machineId, { prompts, history_id: historyId, fresh: true, signal: controller.signal }) };
+  // a press that was a scroll leaves it untaken; a read that takes it still gets its failure
+  pressed.read.then((answer) => { pressed.answer = answer; }, () => undefined);
+  pressReads.set(url, pressed);
+  setTimeout(() => { if (pressReads.get(url) === pressed) pressReads.delete(url); }, PRESS_READ_MS);
 }
 
 /** GET /api/pane/conversation: structured turns, or scrollback fallback; `page` as ConversationResponse.cursor describes. */
 export async function fetchPaneConversation(paneId: string, machineId = "local", page: ConversationPageQuery = {}): Promise<ConversationResponse> {
+  return readPaneConversation(paneId, machineId, page, false);
+}
+
+/** fetchPaneConversation; `retried`: this is the one read again for a session the pane moved to, which is not read a third time. */
+async function readPaneConversation(paneId: string, machineId: string, page: ConversationPageQuery, retried: boolean): Promise<ConversationResponse> {
+  if (page.signal?.aborted) throw page.signal.reason ?? new DOMException("The read was cancelled.", "AbortError");
   const url = conversationUrl(paneId, machineId, page);
+  const pane = paneKey(paneId, machineId);
+  const session = sessionNow(pane);
   const polled = page.before === undefined;
-  const known = polled ? conversationAnswers.get(url) : undefined;
+  const pressed = polled ? pressReads.get(url) : undefined;
+  if (pressed !== undefined) {
+    pressReads.delete(url);
+    // a press held past its answer: the pick drew that answer from the cache and names its history.
+    // A copy is this read's own: the chat counts its presentation read, and it can prove a finish.
+    // A pane herdr moved to another session since the press asks again: that answer is the old session's
+    if (performance.now() - pressed.at < PRESS_READ_MS && pressed.session === session && namesSession(session)) {
+      if (pressed.answer !== undefined) return { ...pressed.answer };
+      // The press read is taken once: its adopting screen now owns the pending transport too.
+      const abort = () => pressed.controller.abort(page.signal?.reason);
+      page.signal?.addEventListener("abort", abort, { once: true });
+      try {
+        const answer = await pressed.read;
+        if (page.signal?.aborted) throw page.signal.reason ?? new DOMException("The read was cancelled.", "AbortError");
+        return answer;
+      }
+      finally { page.signal?.removeEventListener("abort", abort); }
+    }
+  }
+  // the plain page a held read also writes (below): a plain read that starts after it owns that page
+  const plain = polled && page.from !== undefined ? conversationUrl(paneId, machineId, page.prompts === undefined ? {} : { prompts: page.prompts }) : undefined;
+  const read = ++newestReads;
+  if (polled) lastNewestRead.set(url, read);
+  if (plain !== undefined) lastNewestRead.set(plain, read);
+  const known = polled ? currentAnswer(url, pane) : undefined;
   const requestUrl = page.history_id === undefined ? url : `${url}&history_id=${encodeURIComponent(page.history_id)}`;
   const { response, body } = await withChatReadDeadline(async (signal) => {
     const response = await apiFetch(requestUrl, { cache: "no-store", signal, ...(known && !page.fresh ? { headers: { "if-none-match": known.etag } } : {}) });
     if (response.status === 304 && known) return { response, body: known.body };
     if (!response.ok) throw await errorFrom(url, response);
     return { response, body: (await response.json()) as ConversationResponse };
-  }, chatReadDeadlineMs(machineId)).catch((cause: unknown) => {
+  }, chatReadDeadlineMs(machineId), page.signal).catch((cause: unknown) => {
+    // a failed read gives up what it held of the pages' order: a later read is the newest again
+    if (polled && lastNewestRead.get(url) === read) lastNewestRead.delete(url);
+    if (plain !== undefined && lastNewestRead.get(plain) === read) lastNewestRead.delete(plain);
     // a rejected history is the pane's, whatever page size it was read at: none of its pages may draw again
-    if (cause instanceof ApiError && cause.status === 409) {
-      const pane = paneKey(paneId, machineId);
+    // (unless the pane has moved on to another session since: that one's pages are not the rejected history's)
+    if (cause instanceof ApiError && cause.status === 409 && sessionNow(pane) === session) {
       for (const [cached, answer] of conversationAnswers) if (cached === url || answer.pane === pane) conversationAnswers.delete(cached);
     }
     throw cause;
   });
   // Cache changes occur after the bounded read: a late, aborted answer cannot replace it.
+  // A newest-page read that started after this one owns the cache, answered or not
+  const ownsPlain = plain !== undefined && lastNewestRead.get(plain) === read;
+  if (ownsPlain) lastNewestRead.delete(plain);
+  const ownsUrl = polled && lastNewestRead.get(url) === read;
+  if (ownsUrl) lastNewestRead.delete(url);
+  if (page.signal?.aborted) throw page.signal.reason ?? new DOMException("The read was cancelled.", "AbortError");
+  // the pane went to another session while this read was out: its answer is the session left behind,
+  // so the newest page is read again for the session the pane is on now, whether or not a newer read
+  // owns the cache; it is never the cache's. Once only: a PC whose panes keep changing is caught up by the chat's
+  // next read (a push, the backstop, the roster naming the session), not by a chain of reads
+  if (sessionNow(pane) !== session) return polled && !retried ? readPaneConversation(paneId, machineId, { prompts: page.prompts, fresh: true, signal: page.signal }, true) : body;
+  if (polled && !ownsUrl) return body;
   if (response.status === 304 && known) {
     conversationAnswers.delete(url);
     conversationAnswers.set(url, known);
@@ -492,7 +708,16 @@ export async function fetchPaneConversation(paneId: string, machineId = "local",
   if (etag !== null) {
     const bytes = conversationAnswerBytes(body, response.headers.get("content-length"), response.headers.get("content-encoding"));
     if (bytes <= CONVERSATION_ANSWER_MAX_BYTES) {
-      conversationAnswers.set(url, { etag, body, bytes, pane: paneKey(paneId, machineId) });
+      const answer = { etag, body, bytes, pane, session };
+      conversationAnswers.set(url, answer);
+      // a chat that holds its newest turns from a cursor (`from`) reads no other newest page: a chat
+      // opened again draws this answer first (peekPaneConversation), not the one from before it held.
+      // Its ETag is never the plain page's, so the mount read still gets the plain page whole.
+      // A newest page read since it started (a chat opened again on the pane's next session) is newer.
+      if (plain !== undefined && ownsPlain) {
+        conversationAnswers.delete(plain);
+        conversationAnswers.set(plain, answer);
+      }
       trimConversationAnswers(url);
     }
   }
@@ -509,6 +734,8 @@ export interface HealthInfo {
   lan_exposure?: LanExposure;
   /** authenticated only; absent from an older server, which the summary shows as unavailable */
   security?: SecuritySummary;
+  /** authenticated only; absent from an older server and until the server's first look for hc has ended */
+  herdr_core?: HerdrCoreFacts;
 }
 
 export async function fetchHealth(): Promise<HealthInfo> {
@@ -566,6 +793,13 @@ export async function revokeAllDevices(): Promise<DevicesRevokedAll> {
 export async function signOut(): Promise<void> {
   const response = await apiFetch("/api/auth", { method: "DELETE" });
   if (!response.ok) throw await errorFrom("/api/auth", response);
+}
+
+/** Portal's own sign-out, answered by its gateway and never by this server: a same-origin POST that clears Portal's session cookie for this address. */
+export async function signOutOfPortal(): Promise<void> {
+  const url = "/_portal/auth/logout";
+  const response = await apiFetch(url, { method: "POST" });
+  if (!response.ok) throw await errorFrom(url, response);
 }
 
 /** Chunked btoa: the naive one-liner blows the stack on multi-MB screenshots. */
@@ -803,7 +1037,11 @@ export async function fetchFileInfo(path: string, paneId: string | null, machine
 
 /** GET /api/fs/favicon: the icon the project in folder `root` keeps, or null, in one request. */
 export async function fetchProjectFavicon(root: string, machineId = "local"): Promise<FileInfo | null> {
-  return (await getJson<ProjectFavicon>(machinePath(machineId, `fs/favicon?${new URLSearchParams({ root }).toString()}`))).icon;
+  return (await getJson<ProjectFavicon>(projectFaviconUrl(root, machineId))).icon;
+}
+
+export function projectFaviconUrl(root: string, machineId = "local"): string {
+  return machinePath(machineId, `fs/favicon?${new URLSearchParams({ root }).toString()}`);
 }
 
 /** GET /api/fs/file: the file itself, streamed (ranges for media); `download` saves it instead. */

@@ -18,6 +18,12 @@ import type { AgentInfo, AgentStatus, PaneInfo, PaneLayoutSnapshot, PaneProcessI
 export const HERDR_PROTOCOL = 22;
 export const OTHER_WORKSPACE_ID = "hc-other";
 export const LAYOUT_DOC = "herdr-app";
+/** The labels the Herdr app groups its terminals by (herdr-app src/window.rs): a terminal it has not placed is adopted there. */
+export const SPACE_LABEL = "herdr.space";
+export const TAB_LABEL = "herdr.tab";
+/** The names a person gave a workspace or tab Ovis made: names live in the app's document, which Ovis never writes. */
+export const WORKSPACE_NAME_LABEL = "ovis.workspace";
+export const TAB_NAME_LABEL = "ovis.tab";
 
 /** One OSC 7501 report (hc's `Status`): the program's own words. */
 export interface HcStatus { app?: string; state: string; title?: string; msg?: string }
@@ -47,8 +53,8 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * hc stores the program's own status word (idle, working, done, blocked, error, …). herdr's
- * vocabulary is narrower: an error ends a turn the way done does, and a word neither knows says
- * nothing.
+ * vocabulary is narrower: an error says nothing about the turn having finished, so it shows as no
+ * status, like a word neither knows.
  */
 export function agentStatusOf(status: HcStatus | null | undefined): AgentStatus {
   switch (status?.state) {
@@ -57,16 +63,23 @@ export function agentStatusOf(status: HcStatus | null | undefined): AgentStatus 
     case "idle":
     case "done":
       return status.state;
-    case "error":
-      return "done";
     default:
       return "unknown";
   }
 }
 
-/** The agent a status names; a terminal whose program never reported one runs none herdr would see. */
+/** herdr-core's names for agents herdr names otherwise: the rest of the server knows herdr's (`claude`, `agy`). */
+const HERDR_AGENT_NAMES: Record<string, string> = { "claude-code": "claude", antigravity: "agy" };
+
+/** The agent a status names, by herdr's name; a program that never reported one runs none herdr would see. */
+export function agentOfStatus(status: HcStatus | null | undefined): string | null {
+  const app = status?.app;
+  if (!app) return null;
+  return Object.hasOwn(HERDR_AGENT_NAMES, app) ? HERDR_AGENT_NAMES[app]! : app;
+}
+
 export function agentOf(terminal: HcTerminal): string | null {
-  return terminal.status?.app || null;
+  return agentOfStatus(terminal.status);
 }
 
 const STATUS_RANK: Record<string, number> = { blocked: 4, working: 3, done: 2, idle: 1 };
@@ -116,12 +129,13 @@ function basename(path: string): string {
   return parts[parts.length - 1] ?? path;
 }
 
-interface Group { id: string; label: string; tabs: { id: string; label: string; placed: Placed[] }[] }
+interface Group { id: string; label: string; folder?: string; tabs: { id: string; label: string; placed: Placed[] }[] }
 
 /**
  * The app's spaces and tabs over the live terminals. A name the user gave wins; an unnamed space
  * or tab reads as the app labels its terminals (`where`: `<space> / <tab>`), and failing that as
- * its first terminal's folder, or its number. A space or tab id seen before, or empty, is skipped.
+ * its first terminal's folder, or its number. A space or tab id seen before, or empty, is skipped; one
+ * with no live terminal stays a place for a labeled terminal and shows only once it holds one.
  */
 function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
   const live = new Map(terminals.filter((terminal) => terminal.state === "live").map((terminal) => [terminal.address, terminal]));
@@ -145,29 +159,65 @@ function groups(terminals: readonly HcTerminal[], layout: unknown): Group[] {
       ids.add(tab["id"]);
       const held: Placed[] = [];
       tile(tab["root"], 0, 0, take, held);
-      if (held.length === 0) continue;
+      const tabName = tab["name"];
+      // a tab with no live terminal stays a place: a labeled terminal the app will adopt into it keeps its ids
+      // (unnamed, it reads as the terminal it gets is labeled, below)
+      if (held.length === 0) { group.tabs.push({ id: tab["id"], label: typeof tabName === "string" ? tabName : "", placed: [] }); continue; }
       const first = held[0]!.terminal;
       const where = first.labels?.["where"]?.split(" / ").map((part) => part.trim());
-      const tabName = tab["name"];
-      group.tabs.push({ id: tab["id"], label: typeof tabName === "string" && tabName ? tabName : where?.[1] || String(index + 1), placed: held });
+      group.tabs.push({ id: tab["id"], label: typeof tabName === "string" && tabName ? tabName : where?.[1] || first.labels?.[TAB_NAME_LABEL] || String(index + 1), placed: held });
       if (!group.label) {
         const spaceName = space["name"];
         const folder = space["folder"];
         group.label = typeof spaceName === "string" && spaceName ? spaceName
-          : where?.[0] || (typeof folder === "string" && folder ? basename(folder) : basename(first.foreground?.cwd ?? first.cwd));
+          : where?.[0] || first.labels?.[WORKSPACE_NAME_LABEL] || (typeof folder === "string" && folder ? basename(folder) : basename(first.foreground?.cwd ?? first.cwd));
       }
     }
-    if (group.tabs.length > 0) result.push(group);
+    // a space with no live terminal: its name, else as the terminal it gets is labeled (below)
+    if (!group.label && typeof space["name"] === "string") group.label = space["name"];
+    if (typeof space["folder"] === "string" && space["folder"]) group.folder = space["folder"];
+    result.push(group);
   }
-  const rest = [...live.values()].filter((terminal) => !placed.has(terminal.address));
+  // a terminal the app has not placed yet, labeled with its space (and tab) the way the app labels
+  // its own (an agent's worker, a terminal Ovis started): in that space, as the app will adopt it
+  const rest: HcTerminal[] = [];
+  for (const terminal of [...live.values()].filter((candidate) => !placed.has(candidate.address))) {
+    // named as a placed terminal is: `where` (`<space> / <tab>`), then Ovis's own labels
+    const where = terminal.labels?.["where"]?.split(" / ").map((part) => part.trim());
+    const spaceId = terminal.labels?.[SPACE_LABEL];
+    let group = spaceId ? result.find((candidate) => candidate.id === spaceId) : undefined;
+    // a label naming no space but an id the app's document uses for something else is no space
+    if (!spaceId || (!group && ids.has(spaceId))) { rest.push(terminal); continue; }
+    if (!group) {
+      group = { id: spaceId, label: where?.[0] || terminal.labels?.[WORKSPACE_NAME_LABEL] || basename(terminal.foreground?.cwd ?? terminal.cwd), tabs: [] };
+      ids.add(spaceId);
+      result.push(group);
+    }
+    if (!group.label) group.label = where?.[0] || terminal.labels?.[WORKSPACE_NAME_LABEL] || basename(group.folder ?? terminal.foreground?.cwd ?? terminal.cwd);
+    const labeled = terminal.labels?.[TAB_LABEL];
+    // a tab id the app uses in another space would make one tab of two: this terminal gets its own
+    // (an id of its own taken by a space or tab of the app's gets a number after it)
+    let tabId = labeled && !(ids.has(labeled) && !group.tabs.some((candidate) => candidate.id === labeled)) ? labeled : `${spaceId}:${terminal.address}`;
+    for (let n = 2; tabId !== labeled && ids.has(tabId) && !group.tabs.some((candidate) => candidate.id === tabId); n++) tabId = `${spaceId}:${terminal.address}:${n}`;
+    const tab = group.tabs.find((candidate) => candidate.id === tabId);
+    if (tab && !tab.label) tab.label = where?.[1] || terminal.labels?.[TAB_NAME_LABEL] || String(group.tabs.indexOf(tab) + 1);
+    // beside what the tab already shows, never over it: the app places it when it adopts it
+    if (tab) tab.placed.push({ terminal, x: tab.placed.length ? Math.max(...tab.placed.map((held) => held.x + held.terminal.cols + 1)) : 0, y: 0 });
+    else {
+      ids.add(tabId);
+      group.tabs.push({ id: tabId, label: where?.[1] || terminal.labels?.[TAB_NAME_LABEL] || String(group.tabs.length + 1), placed: [{ terminal, x: 0, y: 0 }] });
+    }
+  }
+  // a space or tab of the app's with nothing live in it shows nothing
+  const shown = result.map((group) => ({ ...group, tabs: group.tabs.filter((tab) => tab.placed.length > 0) })).filter((group) => group.tabs.length > 0);
   if (rest.length > 0) {
-    result.push({
+    shown.push({
       id: OTHER_WORKSPACE_ID,
       label: "Other terminals",
-      tabs: rest.map((terminal) => ({ id: `${OTHER_WORKSPACE_ID}:${terminal.address}`, label: terminal.name || terminal.address, placed: [{ terminal, x: 0, y: 0 }] })),
+      tabs: rest.map((terminal) => ({ id: `${OTHER_WORKSPACE_ID}:${terminal.address}`, label: terminal.labels?.[TAB_NAME_LABEL] || terminal.name || terminal.address, placed: [{ terminal, x: 0, y: 0 }] })),
     });
   }
-  return result;
+  return shown;
 }
 
 function paneOf(terminal: HcTerminal, workspaceId: string, tabId: string): PaneInfo {

@@ -17,6 +17,7 @@ import { useAgentSkills } from "../lib/useAgentSkills.ts";
 import { useT } from "../lib/i18n.ts";
 import { latestRead, READ_AGAIN_MS, READ_AGAIN_TIMES, readAgainUntil } from "../lib/latestRead.ts";
 import { useSettings } from "../lib/settings.ts";
+import { learnTabLabel } from "../lib/tabLabels.ts";
 import { launchCapabilities, modelSuggestions } from "../lib/agentLaunchMode.ts";
 import { MAX_COMPOSER_CHARS } from "../lib/compose.ts";
 import { createRequest, dialogLaunch, firstMessageOutcome, startNewSession } from "../lib/newSession.ts";
@@ -346,6 +347,8 @@ export function NewSessionDialog({ open, defaultCwd, tab = null, onClose, onCrea
         setCreatedKept(true);
         return;
       }
+      // the new tab takes its label from the first message, however it reaches the agent (#2019)
+      if (settings.autoTabNames && agentKind !== "" && result.agent_started) learnTabLabel(machineId, result.pane_id, prompt);
       const messageWaits = outcome.kind === "queued";
       // the dialog closes on this: left pending, its next opening would start a frame with the
       // fields disabled and Escape ignored, until the open effect's reset has rendered

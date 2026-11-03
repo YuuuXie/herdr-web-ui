@@ -27,7 +27,7 @@ export interface SettingsPageEntry {
 export function settingsPageEntries(t: Translate): SettingsPageEntry[] {
   return [
     { id: "appearance", label: t("Appearance"), aliases: t("theme themes palette dark light mode colors density language sidebar logos") },
-    { id: "chat", label: t("Chat"), aliases: `${t("chat font size message width composer enter send thinking code")} ${t("Chat font size")}` },
+    { id: "chat", label: t("Chat"), aliases: `${t("chat font size message width composer enter send thinking code")} ${t("Chat font size")} ${t("Expand thinking")} ${t("Collapse work")}` },
     { id: "terminal", label: t("Terminal"), aliases: `${t("terminal font size key bar keyboard clipboard")} ${t("Terminal font size")}` },
     { id: "alerts", label: t("Alerts"), aliases: t("notifications sound push bell needs input finished") },
     { id: "voice", label: t("Voice input"), aliases: t("dictation microphone speech openai") },
