@@ -88,6 +88,7 @@ run_script scripts/terminal-late-faces-regression.ts
 run_script scripts/terminal-hangul-seam-regression.ts
 run_script scripts/terminal-sync-output-regression.ts
 run_script scripts/terminal-bundled-mono-regression.ts
+run_script scripts/terminal-served-font-regression.ts
 run_script scripts/application-paging-regression.ts
 run_script scripts/pane-paging-demo-regression.ts
 run_script scripts/link-menu-demo-regression.ts
@@ -199,6 +200,7 @@ run_script scripts/pc-load-demo-regression.ts
 run_script scripts/sidebar-branch-line-demo-regression.ts
 run_script scripts/sidebar-tokens-demo-regression.ts
 run_script scripts/sidebar-context-ring-demo-regression.ts
+run_script scripts/sidebar-background-workspaces-demo-regression.ts
 run_script scripts/agent-helpers-fold-demo-regression.ts
 run_script scripts/agent-lock-demo-regression.ts
 run_script scripts/agent-groups-demo-regression.ts

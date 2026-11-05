@@ -127,6 +127,13 @@ pane with `herdr pane report-metadata <pane_id> --source <id> --token role=backg
 moves up with the others until it is answered, and a pinned one stays in the pinned card. Panes
 without the tag stay where they are.
 
+Workspaces can be set apart the same way: tag each one a tool opens for its workers with
+`herdr workspace report-metadata <workspace_id> --source <id> --token role=background`, and turn on
+**Settings > Appearance > Background workspaces apart** (off by default). The sidebar then lists those
+workspaces after the others, under **Background workspaces**, folded at first with their count. The
+workspace you have open, and one whose agent asks a question, stay in sight, and a pinned one stays in
+the pinned card.
+
 
 **3. Take it with you.** Scan the installer's QR code with a phone signed in to the same Tailscale account, then install the app from the browser. No Tailscale? Turn on the [Ovis relay](#through-the-ovis-relay) and scan its QR code instead. See [On your phone](#on-your-phone).
 
@@ -583,6 +590,14 @@ On a phone:
 - **Settings → Phone & devices → Keep screen on** keeps the screen awake while a terminal or chat
   pane is open. It is off by default, releases when the app is hidden, and resumes when
   you return. It needs HTTPS or localhost and browser support; power-saving mode may refuse it.
+- A font named in **Settings → Terminal → Terminal font**, **Chat → Chat font** or the custom
+  interface font only draws where it is installed, and a phone has none of your PC's fonts. To
+  use one there, copy its files into `fonts/` under `OVIS_STATE_DIR` (default
+  `~/.config/ovis/fonts/`) on the PC. The PC serves them to its signed-in devices only.
+  Each file's name is its family, with an optional `-Regular`, `-Bold`, `-Italic` or `-BoldItalic`
+  (`D2Coding-Bold.ttf` is D2Coding in bold), and `.woff2`, `.woff`, `.ttf` and `.otf` files of up to
+  32 MB are served, at most 64 of them in file name order. A device downloads only the families its
+  Settings name, and keeps the files where the browser allows it. Reload the app after adding a file.
 
 On an iPad with a hardware keyboard (a Magic Keyboard, say), the small bar that rises from the
 bottom when a field gets the focus (language, arrows, dictation) is iPadOS's shortcuts bar for
