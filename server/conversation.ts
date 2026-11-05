@@ -76,7 +76,7 @@ import { COPILOT_IMAGE_REF, copilotImage, copilotOffsetOutput, copilotOutput, co
 import { copilotApiTranscript, copilotExplicitResume, copilotHandoffSession, copilotProcessSession, copilotTranscriptFile, copilotUnwrittenSession, openCopilotFile, readCopilotProcessSession } from "./copilot-store.ts";
 import { forgetCopilotForeground, readCopilotForeground } from "./copilot-foreground.ts";
 import { claudeSetting, parseConversationMetadata } from "./conversation-metadata.ts";
-import { answerVersion, ConversationNotStarted, ConversationReadPending, ConversationUnavailable, copilotRecoverable, type ConversationPage, HistoryChanged, type RecognizedConversation, type StreamSource, TRANSCRIPT_WINDOW_BYTES } from "./conversation-shared.ts";
+import { answerVersion, ConversationNotStarted, ConversationReadPending, ConversationUnavailable, copilotRecoverable, copilotUiServerWouldRead, type ConversationPage, HistoryChanged, type RecognizedConversation, type StreamSource, TRANSCRIPT_WINDOW_BYTES } from "./conversation-shared.ts";
 import { forgetHermesTranscriptState, hermesConversationPage, hermesToolOutput, hermesTranscriptForPane } from "./hermes.ts";
 
 import { createOmpTranscriptParser, isContextClear, MAX_TURNS, omoTaskResults, parseOmpTranscript, PI_IMAGE_REF, PI_PROMPT_IMAGE_REF, piImageBlock, piMessage, piNotice, piPromptImages, piResults, type TranscriptParser } from "./transcript-records.ts";
@@ -1790,8 +1790,12 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
     : logged !== null ? "copilot_transcript_unreadable"
     : report == null ? "copilot_report_missing"
     : selected?.sessionId !== report.value ? "copilot_report_mismatch" : "copilot_transcript_unreadable");
+  // Its API was not asked only because the flag is missing; it would answer where the files could not,
+  // unless the session it would name, the one the process holds, is another pane's.
+  const hint = copilotUiServerWouldRead(diagnostic) && !(selected != null && await claimedByPeer(selected.sessionId))
+    ? "copilot_ui_server" : undefined;
   throw new ConversationUnavailable(copilotExplicitResume(argv) ? "copilot_resume_unknown" : report == null ? "no_session_id" : "no_session_path",
-    undefined, diagnostic);
+    undefined, diagnostic, hint);
 }
 
 /** Where a pane's conversation is: a transcript file, or a session in OpenCode's database. */

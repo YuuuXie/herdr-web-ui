@@ -1054,6 +1054,31 @@ it.skipIf(process.platform !== "linux")("keeps report-and-marker fallback for a 
   } finally { await fixture.close(); }
 });
 
+it.skipIf(process.platform !== "linux")("suggests --ui-server for an unreported held marker only while no peer claims its session", async () => {
+  const own = await logFixture([session]);
+  const peer = await logFixture([]);
+  const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } });
+  const info = spyOn(herdr, "paneProcessInfo").mockImplementation(async (paneId) =>
+    ({ pane_id: paneId, foreground_processes: [{ pid: paneId === "own" ? own.pid : peer.pid, name: "copilot", argv: ["copilot"] }] }));
+  const environment = spyOn(omo, "processEnviron").mockImplementation((pid) => pid === own.pid ? own.environment : peer.environment);
+  const snapshot = { panes: ["own", "peer"].map((pane_id) => ({ pane_id, agent: "copilot", cwd: own.root })), agents: [] } as unknown as SessionSnapshot;
+  const snapshots = spyOn(herdr, "sessionSnapshot").mockResolvedValue(snapshot);
+  try {
+    writeFileSync(join(own.root, "session-state", session, "events.jsonl"), start + prompt("held history"));
+    writeFileSync(own.log, "2026-10-23T00:00:00.000Z [INFO] CLI started\n");
+    appendFileSync(peer.log, register(other));
+    await expect(paneConversation("own")).rejects.toMatchObject({ diagnostic: "copilot_report_missing", hint: "copilot_ui_server" });
+    // the API would name the held session, which another pane holds
+    appendFileSync(peer.log, register(session));
+    forgetTranscriptState();
+    await expect(paneConversation("own")).rejects.toMatchObject({ diagnostic: "copilot_report_missing", hint: undefined });
+  } finally {
+    snapshots.mockRestore(); environment.mockRestore(); info.mockRestore(); rpc.mockRestore();
+    forgetTranscriptState();
+    await own.close(); await peer.close();
+  }
+});
+
 it.skipIf(process.platform !== "linux")("keeps marker fallback through ordinary partial lines but rejects pending and completed revocation", async () => {
   const fixture = await logFixture([session]);
   const { root, log, environment, pid } = fixture;

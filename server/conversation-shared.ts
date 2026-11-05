@@ -35,12 +35,22 @@ const COPILOT_SETTLED = new Set<string>(["copilot_session_unregistered", "copilo
   "copilot_api_no_foreground", "copilot_api_foreground_changed"]);
 export const copilotRecoverable = (diagnostic: string | undefined): boolean =>
   diagnostic !== undefined && diagnostic.startsWith("copilot_") && !COPILOT_SETTLED.has(diagnostic);
+/**
+ * Whether a Copilot started with --ui-server would be read where this rejection stands: only when the
+ * process's log, held marker or herdr's report could not name its session. The API names it
+ * itself, but needs the same store and session directory, and its session can still be another
+ * pane's, have ended, or be unreadable.
+ */
+export const copilotUiServerWouldRead = (diagnostic: string): boolean =>
+  diagnostic.startsWith("copilot_log_") || diagnostic.startsWith("copilot_marker_")
+  || diagnostic === "copilot_report_missing" || diagnostic === "copilot_report_mismatch";
 /** Fixed stages a diagnostic may name: Copilot's rejections, and an agent pane herdr gives no folder. */
 export const UNAVAILABLE_DIAGNOSTICS = [...COPILOT_UNAVAILABLE_REASONS, "agent_cwd_missing", "devin_current_session_unverified"] as const;
 
 export class ConversationUnavailable extends Error {
   /** `screen`: the model and effort the agent's own live status line states (start-screen.ts), for the scrollback standing in */
-  constructor(reason: string, readonly screen?: ConversationMetadata, readonly diagnostic?: typeof UNAVAILABLE_DIAGNOSTICS[number]) {
+  /** `hint`: what the user could change for the pane to be read (ConversationResponse.hint) */
+  constructor(reason: string, readonly screen?: ConversationMetadata, readonly diagnostic?: typeof UNAVAILABLE_DIAGNOSTICS[number], readonly hint?: "copilot_ui_server") {
     super(reason);
     this.name = "ConversationUnavailable";
   }

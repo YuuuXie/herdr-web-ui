@@ -714,6 +714,11 @@ export interface ConversationResponse {
    */
   recovery?: "waiting";
   /**
+   * On a scrollback answer for a Copilot pane: its one Copilot was not started with `--ui-server`, and
+   * the files it leaves could not prove its session. Its own API would name that session.
+   */
+  hint?: "copilot_ui_server";
+  /**
    * Where the first turn sits in the transcript: pass it as `before` for the page
    * of turns before these (with `since`, never reaching back past that cursor), or
    * as `from` to keep polling from it. A `from` answer starts later than `from` when
