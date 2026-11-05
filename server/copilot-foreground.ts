@@ -164,9 +164,10 @@ class ForegroundClient {
     if (clients.get(this.expected.pid) === this) clients.delete(this.expected.pid);
   }
 
+  // Ownership reads the whole network-namespace TCP table, which can take hundreds of ms on a busy
+  // host, so it is proven once on connect and once at the end of each read, not around every request.
   private check(): void {
     if (this.failure !== null) throw this.failure;
-    unchanged(this.expected);
   }
 
   private receive(chunk: Buffer): void {
@@ -210,7 +211,6 @@ class ForegroundClient {
 
   private request(method: "connect" | "session.getForeground"): Promise<unknown> {
     this.check();
-    if (!acceptedByOwner(this.expected, this.socket)) throw new Unavailable("process_changed");
     return new Promise((resolve, reject) => {
       const id = ++this.sequence;
       const timer = setTimeout(() => this.close(new Unavailable("rpc_timeout")), 2000);
@@ -246,6 +246,7 @@ class ForegroundClient {
       const revision = this.revision;
       const second = await this.selection();
       this.check();
+      if (!acceptedByOwner(this.expected, this.socket)) throw new Unavailable("process_changed");
       if (first !== second || revision !== this.revision || this.bytes.length !== 0) throw new Unavailable("foreground_changed");
       return { state: "selected", sessionId: second, binding: `${this.generation}:${this.revision}` };
     }).finally(() => {
