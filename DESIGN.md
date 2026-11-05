@@ -688,15 +688,6 @@ The values are the ones in `src/styles.css`. Every token but `--fs-input` is `ca
   `fullAccess`, each a `--sandbox` and `--ask-for-approval` pair) become the `agent.args` the new
   workspace, tab and worktree dialogs send (src/lib/agentLaunchMode.ts). `default` (the default)
   adds nothing, so the agent's own configuration decides. Both are shared across devices.
-  `copilotApiEnabled` is a shared opt-in, off by default, that adds `--ui-server --port 0`
-  to new Copilot launches. It never restarts or resumes an existing session, or changes commands
-  typed in a shell. Enabling asks for confirmation that the local API's authentication remains
-  unverified, so it stays a warned opt-in: other programs of the same user on that PC may reach the
-  endpoint, and the default stays off until protected transport is established.
-  Off Linux, where Ovis cannot verify process/socket ownership, the bridge drops those arguments
-  and starts Copilot without the API. Like Claude Desktop's saved defaults for new local sessions
-  (https://code.claude.com/docs/en/desktop#choose-a-permission-mode), the choice applies to future
-  launches, not running sessions; unlike a permission preset, it opens an additional local endpoint.
   The viewer loads a Markdown file's first 256 KB through one bounded streaming reader, with abort
   on close or navigation and a 5 s deadline; any other text that fits 256 KB reads whole under the
   same budget, and a larger one reads up to 8 MB and 200 000 lines with a 30 s deadline

@@ -56,15 +56,4 @@ describe("agentLaunch", () => {
     expect((await launch("codex", codex, { platform: "win32", settingsDir: dir })).args).toBe(codex);
     expect(existsSync(dir)).toBe(false);
   });
-
-  it("passes the opted-in Copilot API arguments unchanged on Linux", async () => {
-    const args = ["--ui-server", "--port", "0"];
-    expect((await launch("copilot", args, { platform: "linux", settingsDir: settingsDir() })).args).toEqual(args);
-  });
-
-  it.each(["darwin", "win32"])("starts Copilot on %s without the shared API arguments, keeping the rest", async (platform) => {
-    expect((await launch("copilot", ["--ui-server", "--port", "0"], { platform, settingsDir: settingsDir() })).args).toBeUndefined();
-    starts.length = 0;
-    expect((await launch("copilot", ["--ui-server", "--port", "0", "--model", "gpt-5"], { platform, settingsDir: settingsDir() })).args).toEqual(["--model", "gpt-5"]);
-  });
 });

@@ -10,7 +10,7 @@
 export const SHARED_SETTING_KEYS = [
   "theme", "palette", "darkTheme", "lightTheme", "language", "sidebarRows", "agentOrder", "agentMarks", "autoSendQueued", "autoTabNames",
   "showThinking", "quickReplies", "showQuickReplies", "showUsage", "usageCount",
-  "usageGlance", "usageOrder", "usageHidden", "claudeLaunchMode", "codexLaunchMode", "copilotApiEnabled",
+  "usageGlance", "usageOrder", "usageHidden", "claudeLaunchMode", "codexLaunchMode",
 ] as const;
 export type SharedSettingKey = (typeof SHARED_SETTING_KEYS)[number];
 

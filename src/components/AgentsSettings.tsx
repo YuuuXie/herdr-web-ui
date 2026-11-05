@@ -64,7 +64,6 @@ function codexModeName(mode: CodexLaunchMode, t: Translate): string {
 function LaunchModesGroup() {
   const { settings, update } = useSettings();
   const t = useT();
-  const [confirmCopilotApi, setConfirmCopilotApi] = useState(false);
   return (
     <SettingsGroup title={t("New agents")} section="launch-modes" note={t("Applies to agents started from New workspace, New tab and New worktree. Agent default adds no flag, so the agent's own configuration decides.")}>
       <SettingsRow label="Claude Code" description={t("Permission mode")} htmlFor="settings-claude-launch-mode">
@@ -77,14 +76,6 @@ function LaunchModesGroup() {
           {CODEX_LAUNCH_MODES.map((mode) => <option key={mode} value={mode}>{codexModeName(mode, t)}</option>)}
         </SettingsSelect>
       </SettingsRow>
-      <SettingsRow label="GitHub Copilot" description={t("Experimental local API for new sessions on Linux. Existing sessions are unchanged.")} htmlFor="settings-copilot-api">
-        <Toggle id="settings-copilot-api" label={t("Copilot API")} checked={settings.copilotApiEnabled}
-          onChange={(enabled) => { if (enabled) setConfirmCopilotApi(true); else update({ copilotApiEnabled: false }); }} />
-      </SettingsRow>
-      {confirmCopilotApi && <ConfirmDialog title={t("Enable Copilot API?")}
-        body={t("New Copilot sessions will open a local API. Authentication has not been verified; other programs on that PC may access it. Do not expose or forward its port. This does not restart existing sessions.")}
-        confirmLabel={t("Enable")} onClose={() => setConfirmCopilotApi(false)}
-        onConfirm={async () => { update({ copilotApiEnabled: true }); setConfirmCopilotApi(false); }} />}
     </SettingsGroup>
   );
 }

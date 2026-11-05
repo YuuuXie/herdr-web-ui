@@ -1537,10 +1537,11 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
   // With `peerInfo`, peers' processes come from (and fill) that cache, while their
   // lifecycle logs are read again here, after this pane's own binding.
   let peerClaims: Promise<ReadonlySet<string>> | undefined = previousClaims === undefined ? undefined : Promise.resolve(previousClaims);
+  // Peers are asked at once: each API read may wait out its own deadline, and they must not add up.
   const gatherPeerClaims = async (): Promise<Set<string>> => {
     const claims = new Set<string>();
-    for (const peer of panes) {
-      if (peer.pane_id === pane.pane_id || peer.agent !== "copilot") continue;
+    await Promise.all(panes.map(async (peer) => {
+      if (peer.pane_id === pane.pane_id || peer.agent !== "copilot") return;
       const cached = peerInfo?.has(peer.pane_id) === true;
       const info = cached ? peerInfo!.get(peer.pane_id) : await paneProcessInfo(peer.pane_id).catch(() => null);
       peerInfo?.set(peer.pane_id, info ?? null);
@@ -1551,17 +1552,17 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
         const api = await readCopilotForeground(processes[0].pid);
         if (api.state === "selected") {
           claims.add(api.sessionId);
-          continue;
+          return;
         }
         // A peer whose API cannot answer still has its lifecycle log and report: one unreadable peer does not take Chat from this pane.
         const live = copilotProcessSession(processEnviron(processes[0].pid), processes[0].argv ?? [], processes[0].pid);
         if (live?.logged) {
           claims.add(live.sessionId);
-          continue;
+          return;
         }
       }
       if (peer.agent_session?.agent === "copilot" && peer.agent_session.kind === "id" && typeof peer.agent_session.value === "string") claims.add(peer.agent_session.value);
-    }
+    }));
     return claims;
   };
   const claimedByPeer = async (session: string): Promise<boolean> => (await (peerClaims ??= gatherPeerClaims())).has(session);
@@ -1582,13 +1583,14 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
     if (api.state === "selected") {
       const path = copilotApiTranscript(api.sessionId, processEnviron(foreground.pid), foreground.argv ?? []);
       if (path === null) throw new ConversationUnavailable("no_session_path", undefined, "copilot_api_transcript_unproved");
+      // API checks yield: peers are read after this pane's selection, not from the pre-read snapshot,
+      // and this pane's selection is read once more after them.
+      peerClaims = undefined;
+      if (await claimedByPeer(api.sessionId)) throw new ConversationUnavailable("no_session_path", undefined, "copilot_peer_conflict");
       const current = await readCopilotForeground(foreground.pid);
       if (current.state !== "selected" || current.binding !== api.binding || current.sessionId !== api.sessionId) {
         throw new ConversationUnavailable("no_session_path", undefined, "copilot_api_foreground_changed");
       }
-      // API checks yield: peers are read after this pane's last check, not from the pre-read snapshot.
-      peerClaims = undefined;
-      if (await claimedByPeer(api.sessionId)) throw new ConversationUnavailable("no_session_path", undefined, "copilot_peer_conflict");
       return { path, binding: `api:${foreground.pid}:${api.binding}`, peerClaims: await peerClaims! };
     }
     if (api.diagnostic !== "not_opted_in") throw new ConversationUnavailable("no_session_path", undefined, `copilot_api_${api.diagnostic}`);
