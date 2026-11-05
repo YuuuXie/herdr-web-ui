@@ -1553,7 +1553,7 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
           claims.add(api.sessionId);
           continue;
         }
-        if (api.diagnostic !== "not_opted_in") throw new ConversationUnavailable("no_session_path", undefined, `copilot_api_${api.diagnostic}`);
+        // A peer whose API cannot answer still has its lifecycle log and report: one unreadable peer does not take Chat from this pane.
         const live = copilotProcessSession(processEnviron(processes[0].pid), processes[0].argv ?? [], processes[0].pid);
         if (live?.logged) {
           claims.add(live.sessionId);
@@ -1580,15 +1580,15 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
   if (processes.length === 1) {
     const api = await readCopilotForeground(foreground.pid);
     if (api.state === "selected") {
-      // API checks yield: peer claims must be current, not the pre-read snapshot.
-      peerClaims = undefined;
-      if (await claimedByPeer(api.sessionId)) throw new ConversationUnavailable("no_session_path", undefined, "copilot_peer_conflict");
       const path = copilotApiTranscript(api.sessionId, processEnviron(foreground.pid), foreground.argv ?? []);
       if (path === null) throw new ConversationUnavailable("no_session_path", undefined, "copilot_api_transcript_unproved");
       const current = await readCopilotForeground(foreground.pid);
       if (current.state !== "selected" || current.binding !== api.binding || current.sessionId !== api.sessionId) {
         throw new ConversationUnavailable("no_session_path", undefined, "copilot_api_foreground_changed");
       }
+      // API checks yield: peers are read after this pane's last check, not from the pre-read snapshot.
+      peerClaims = undefined;
+      if (await claimedByPeer(api.sessionId)) throw new ConversationUnavailable("no_session_path", undefined, "copilot_peer_conflict");
       return { path, binding: `api:${foreground.pid}:${api.binding}`, peerClaims: await peerClaims! };
     }
     if (api.diagnostic !== "not_opted_in") throw new ConversationUnavailable("no_session_path", undefined, `copilot_api_${api.diagnostic}`);

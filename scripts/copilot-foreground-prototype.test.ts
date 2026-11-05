@@ -87,16 +87,23 @@ async function fixture(mode = "stable", flags = ["--ui-server"]) {
     await child.exited;
     rmSync(root, { recursive: true, force: true });
   };
-  try {
+  // a pipe may split a line across reads: read until the whole word has come (the test's timeout bounds the wait)
+  const lineWith = async (word: string) => {
     const reader = child.stdout.getReader();
-    expect(new TextDecoder().decode((await reader.read()).value)).toContain("ready");
-    reader.releaseLock();
-  } catch (error) { await close(); throw error; }
+    const decoder = new TextDecoder();
+    let text = "";
+    try {
+      while (!text.includes(word)) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error(`fixture output ended before "${word}": ${text}`);
+        text += decoder.decode(value, { stream: true });
+      }
+    } finally { reader.releaseLock(); }
+  };
+  try { await lineWith("ready"); } catch (error) { await close(); throw error; }
   const notify = async (type: string) => {
     child.stdin.write(`${type}\n`);
-    const reader = child.stdout.getReader();
-    try { expect(new TextDecoder().decode((await reader.read()).value)).toContain("ack"); }
-    finally { reader.releaseLock(); }
+    await lineWith("ack");
   };
   return { pid: child.pid, select, close, notify };
 }

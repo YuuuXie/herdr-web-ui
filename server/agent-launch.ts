@@ -24,6 +24,16 @@ export function agentFault(agent: AgentPayload | undefined): string | null {
   return agent.args === undefined ? null : launchArgsFault(agent.kind, agent.args as string[]);
 }
 
+const COPILOT_API_ARGS = ["--ui-server", "--port", "0"];
+
+/** `args` without the arguments the Copilot API setting adds (src/lib/agentLaunchMode.ts); undefined when none are left. */
+function withoutCopilotApi(args: string[]): string[] | undefined {
+  const at = args.findIndex((_, index) => COPILOT_API_ARGS.every((arg, offset) => args[index + offset] === arg));
+  if (at < 0) return args;
+  const rest = [...args.slice(0, at), ...args.slice(at + COPILOT_API_ARGS.length)];
+  return rest.length === 0 ? undefined : rest;
+}
+
 /**
  * Starts a checked `agent` in a pane herdr just made. A failure is answered, not thrown: the
  * workspace, tab or worktree around the pane is there either way. `launched` is told the pid of
@@ -34,10 +44,10 @@ export function agentFault(agent: AgentPayload | undefined): string | null {
 export async function agentLaunch(paneId: string, agent: AgentPayload, launched?: (pid: number) => void, locator?: ShellAgentLocator, options: { platform?: string; settingsDir?: string } = {}): Promise<{ agent_started: true } | { agent_started: false; error: { code: string; message: string } }> {
   try {
     const kind = agent.kind as string;
-    const args = agent.args as string[] | undefined;
-    if (kind === "copilot" && args?.includes("--ui-server") && (options.platform ?? process.platform) !== "linux") {
-      return { agent_started: false, error: { code: "copilot_api_unsupported_platform", message: "Ovis Copilot API identity requires Linux. Turn off Copilot API in Settings > Agents to launch without it." } };
-    }
+    let args = agent.args as string[] | undefined;
+    // The Copilot API setting is shared by every PC, but only Linux can prove who owns the endpoint:
+    // elsewhere Copilot starts as it would without it, rather than not at all.
+    if (kind === "copilot" && args !== undefined && (options.platform ?? process.platform) !== "linux") args = withoutCopilotApi(args);
     if (isShellAgentKind(kind)) {
       const pid = await startShellAgent(kind, paneId, args, locator ? { locator } : {});
       if (pid !== null) launched?.(pid);

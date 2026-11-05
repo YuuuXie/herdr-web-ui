@@ -693,8 +693,8 @@ The values are the ones in `src/styles.css`. Every token but `--fs-input` is `ca
   typed in a shell. Enabling asks for confirmation that the local API's authentication remains
   unverified, so it stays a warned opt-in: other programs of the same user on that PC may reach the
   endpoint, and the default stays off until protected transport is established.
-  The bridge refuses API-enabled launches off Linux, where Ovis cannot verify process/socket
-  ownership. Like Claude Desktop's saved defaults for new local sessions
+  Off Linux, where Ovis cannot verify process/socket ownership, the bridge drops those arguments
+  and starts Copilot without the API. Like Claude Desktop's saved defaults for new local sessions
   (https://code.claude.com/docs/en/desktop#choose-a-permission-mode), the choice applies to future
   launches, not running sessions; unlike a permission preset, it opens an additional local endpoint.
   The viewer loads a Markdown file's first 256 KB through one bounded streaming reader, with abort
