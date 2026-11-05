@@ -714,8 +714,9 @@ export interface ConversationResponse {
    */
   recovery?: "waiting";
   /**
-   * On a scrollback answer for a Copilot pane: its one Copilot was not started with `--ui-server`, and
-   * the files it leaves could not prove its session. Its own API would name that session.
+   * On a scrollback answer for a Copilot pane on Linux: its one Copilot process was not started with
+   * `--ui-server`, and Chat could not bind its session from the files and herdr's report; starting it
+   * with the flag may help.
    */
   hint?: "copilot_ui_server";
   /**

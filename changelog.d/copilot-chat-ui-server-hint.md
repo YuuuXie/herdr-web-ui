@@ -1,4 +1,4 @@
 ### Added
-- On Linux, when a Copilot pane's Chat shows terminal output because Copilot's log, held marker or
-  Herdr's report could not identify its session, a notice says Chat can follow a Copilot started
-  with `--ui-server --port=0`, and that its local API has no authentication.
+- On Linux, when Chat shows terminal output for a single Copilot process started without
+  `--ui-server`, a notice says starting it with `--ui-server --port=0` may help, and that its local
+  API has no authentication.

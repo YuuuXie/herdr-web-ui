@@ -1054,7 +1054,7 @@ it.skipIf(process.platform !== "linux")("keeps report-and-marker fallback for a 
   } finally { await fixture.close(); }
 });
 
-it.skipIf(process.platform !== "linux")("suggests --ui-server for an unreported held marker only while no peer claims its session", async () => {
+it.skipIf(process.platform !== "linux")("suggests --ui-server for any failure of a single Copilot started without it", async () => {
   const own = await logFixture([session]);
   const peer = await logFixture([]);
   const rpc = spyOn(herdr, "herdrRpc").mockResolvedValue({ process_info: { foreground_processes: [] } });
@@ -1068,10 +1068,11 @@ it.skipIf(process.platform !== "linux")("suggests --ui-server for an unreported 
     writeFileSync(own.log, "2026-10-23T00:00:00.000Z [INFO] CLI started\n");
     appendFileSync(peer.log, register(other));
     await expect(paneConversation("own")).rejects.toMatchObject({ diagnostic: "copilot_report_missing", hint: "copilot_ui_server" });
-    // the API would name the held session, which another pane holds
     appendFileSync(peer.log, register(session));
     forgetTranscriptState();
-    await expect(paneConversation("own")).rejects.toMatchObject({ diagnostic: "copilot_report_missing", hint: undefined });
+    await expect(paneConversation("own")).rejects.toMatchObject({ diagnostic: "copilot_report_missing", hint: "copilot_ui_server" });
+    (snapshot.panes[0] as { agent_session?: unknown }).agent_session = { agent: "copilot", kind: "id", source: "herdr:copilot", value: session };
+    await expect(paneConversation("own")).rejects.toMatchObject({ diagnostic: "copilot_peer_conflict", hint: "copilot_ui_server" });
   } finally {
     snapshots.mockRestore(); environment.mockRestore(); info.mockRestore(); rpc.mockRestore();
     forgetTranscriptState();

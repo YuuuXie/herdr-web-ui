@@ -1,6 +1,6 @@
 import { expect, it, spyOn } from "bun:test";
 import { ConversationDiagnostics } from "./conversation-diagnostics.ts";
-import { COPILOT_UNAVAILABLE_REASONS, ConversationReadPending, ConversationUnavailable, copilotUiServerWouldRead } from "./conversation-shared.ts";
+import { COPILOT_UNAVAILABLE_REASONS, ConversationReadPending, ConversationUnavailable } from "./conversation-shared.ts";
 
 function fixture() {
   let now = 0;
@@ -122,15 +122,4 @@ it("does not change response handling when its writer fails", () => {
   const diagnostics = new ConversationDiagnostics(() => { throw new Error("log unavailable"); });
   expect(() => diagnostics.unavailable("pane", new ConversationReadPending())).not.toThrow();
   expect(() => diagnostics.recovered("pane")).not.toThrow();
-});
-
-it("suggests --ui-server only where Copilot's own API would name the session the files could not", () => {
-  for (const reason of ["copilot_log_rewritten", "copilot_log_metadata_changed", "copilot_marker_missing", "copilot_report_missing", "copilot_report_mismatch"]) {
-    expect(copilotUiServerWouldRead(reason)).toBe(true);
-  }
-  // the API needs the same store and session directory, and its session can still be another pane's, ended or unreadable
-  for (const reason of ["copilot_store_unproved", "copilot_session_directory_unproved", "copilot_process_unproved", "copilot_peer_conflict",
-    "copilot_session_unregistered", "copilot_transcript_unreadable", "copilot_api_endpoint_unproved"]) {
-    expect(copilotUiServerWouldRead(reason)).toBe(false);
-  }
 });

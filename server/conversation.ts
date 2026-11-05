@@ -76,7 +76,7 @@ import { COPILOT_IMAGE_REF, copilotImage, copilotOffsetOutput, copilotOutput, co
 import { copilotApiTranscript, copilotExplicitResume, copilotHandoffSession, copilotProcessSession, copilotTranscriptFile, copilotUnwrittenSession, openCopilotFile, readCopilotProcessSession } from "./copilot-store.ts";
 import { forgetCopilotForeground, readCopilotForeground } from "./copilot-foreground.ts";
 import { claudeSetting, parseConversationMetadata } from "./conversation-metadata.ts";
-import { answerVersion, ConversationNotStarted, ConversationReadPending, ConversationUnavailable, copilotRecoverable, copilotUiServerWouldRead, type ConversationPage, HistoryChanged, type RecognizedConversation, type StreamSource, TRANSCRIPT_WINDOW_BYTES } from "./conversation-shared.ts";
+import { answerVersion, ConversationNotStarted, ConversationReadPending, ConversationUnavailable, copilotRecoverable, type ConversationPage, HistoryChanged, type RecognizedConversation, type StreamSource, TRANSCRIPT_WINDOW_BYTES } from "./conversation-shared.ts";
 import { forgetHermesTranscriptState, hermesConversationPage, hermesToolOutput, hermesTranscriptForPane } from "./hermes.ts";
 
 import { createOmpTranscriptParser, isContextClear, MAX_TURNS, omoTaskResults, parseOmpTranscript, PI_IMAGE_REF, PI_PROMPT_IMAGE_REF, piImageBlock, piMessage, piNotice, piPromptImages, piResults, type TranscriptParser } from "./transcript-records.ts";
@@ -1741,9 +1741,12 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
     }
     if (api.diagnostic !== "not_opted_in") throw new ConversationUnavailable("no_session_path", undefined, `copilot_api_${api.diagnostic}`);
   }
+  // Copilot's API answered that it was started without --ui-server; with it, Chat would ask it which
+  // session it shows rather than prove that from files, so any failure below may be helped by the flag.
+  const hint = processes.length === 1 ? "copilot_ui_server" as const : undefined;
   if (report != null && (report.agent !== "copilot" || report.kind !== "id"
     || report.source !== "herdr:copilot" || typeof report.value !== "string" || !SESSION_ID.test(report.value))) {
-    throw new ConversationUnavailable("no_session_id", undefined, "copilot_report_invalid");
+    throw new ConversationUnavailable("no_session_id", undefined, "copilot_report_invalid", hint);
   }
   if (processes.length === 2) {
     if (report == null) throw new ConversationUnavailable("no_session_id", undefined, "copilot_report_invalid");
@@ -1774,7 +1777,7 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
       return { path, binding: `${foreground.pid}:${logged.generation}`, peerClaims: await peerClaims! };
   }
   if (report != null) {
-    if (await claimedByPeer(report.value)) throw new ConversationUnavailable("no_session_id", undefined, "copilot_peer_conflict");
+    if (await claimedByPeer(report.value)) throw new ConversationUnavailable("no_session_id", undefined, "copilot_peer_conflict", hint);
     if (logged === null) {
       const path = copilotTranscriptFile(report.value, selected);
       if (path !== null && nodePath.basename(nodePath.dirname(path)) === report.value)
@@ -1790,10 +1793,6 @@ async function copilotTranscriptPath(pane: HerdrPane, panes: readonly HerdrPane[
     : logged !== null ? "copilot_transcript_unreadable"
     : report == null ? "copilot_report_missing"
     : selected?.sessionId !== report.value ? "copilot_report_mismatch" : "copilot_transcript_unreadable");
-  // Its API was not asked only because the flag is missing; it would answer where the files could not,
-  // unless the session it would name, the one the process holds, is another pane's.
-  const hint = copilotUiServerWouldRead(diagnostic) && !(selected != null && await claimedByPeer(selected.sessionId))
-    ? "copilot_ui_server" : undefined;
   throw new ConversationUnavailable(copilotExplicitResume(argv) ? "copilot_resume_unknown" : report == null ? "no_session_id" : "no_session_path",
     undefined, diagnostic, hint);
 }
