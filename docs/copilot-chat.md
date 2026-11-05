@@ -62,7 +62,15 @@ mtime and ctime were at least three seconds old at that check and the wall clock
 moved behind it; younger timestamps or a clock rollback trigger rehashing
 because a same-size rewrite may share their filesystem tick. Changed logs
 revalidate the entire consumed prefix in 64 KiB chunks, including bytes outside the catch-up
-window; logs over 64 MiB use Terminal without reading or hashing them.
+window; logs over 64 MiB use Terminal without reading or hashing them. Rehashed bytes that match
+keep a session the log already registered even when only the timestamps moved; a held marker's
+fallback still needs an untouched initial log.
+A reader that first meets a Copilot whose log has already rotated replays its `.N.log` copies,
+oldest first, when the oldest begins within five seconds of the start time in the log's name
+(no copy was pruned) and none moved while they were read; together they count against the
+64 MiB limit. A copy that ends inside a line is not replayed, and copies moved while being read
+are read again on the next lookup. Without such a chain the open log stands alone, as before. A log that shrinks below the
+size last seen, even by a partial line, is read again from its complete lines.
 This assumes filesystem timestamps trail this machine's clock by no more than that margin.
 A filesystem with greater timestamp lag, such as a skewed network mount, can retain a stale
 binding until the next append.

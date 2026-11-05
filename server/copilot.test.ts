@@ -215,6 +215,61 @@ for (const archive of ["continued", "continued past large older copies", "unregi
   });
 }
 
+for (const chain of ["proven", "pruned", "unterminated"] as const) {
+  it.skipIf(process.platform !== "linux")(`replays a ${chain} rotated log only when a fresh reader can prove it starts with the process`, async () => {
+    const fixture = await logFixture([]);
+    const { environment, log, pid } = fixture;
+    const copy = (index: number) => log.replace(/\.log$/, `.${index}.log`);
+    try {
+      // the fixture's log is named for millisecond 100 of the epoch
+      const first = chain === "pruned" ? "1970-01-01T00:00:06.000Z [INFO] later output\n" : "1970-01-01T00:00:00.104Z [INFO] CLI started\n";
+      writeFileSync(copy(2), first + register(other));
+      writeFileSync(copy(1), register(session) + (chain === "unterminated" ? "cut halfway" : "later output\n"));
+      appendFileSync(log, "after rotation\n");
+      const read = readCopilotProcessSession(environment, ["copilot"], pid);
+      if (chain === "proven") {
+        expect(read.session).toMatchObject({ sessionId: session, logged: true });
+        // the open file's own lines follow the copies, and later rotations follow from there
+        const before = fixture.binding();
+        appendFileSync(log, "more output\n");
+        expect(fixture.binding()).toEqual(before);
+        appendFileSync(log, register(session, "Unregistering"));
+        expect(readCopilotProcessSession(environment, ["copilot"], pid).diagnostic).toBe("copilot_session_unregistered");
+      } else {
+        // as before: the open file alone, here without lifecycle lines or a held marker
+        expect(read).toEqual({ session: null, diagnostic: "copilot_marker_missing" });
+        // and its own later registration still binds, while the copies stay as they are
+        appendFileSync(log, register(session));
+        expect(readCopilotProcessSession(environment, ["copilot"], pid).session).toMatchObject({ sessionId: session, logged: true });
+      }
+    } finally { await fixture.close(); }
+  });
+}
+
+it.skipIf(process.platform !== "linux")("keeps a logged binding when only the log's timestamps change", async () => {
+  const fixture = await logFixture([]);
+  const { environment, log, pid } = fixture;
+  try {
+    appendFileSync(log, register(session));
+    const before = fixture.binding();
+    expect(before?.sessionId).toBe(session);
+    const stat = statSync(log);
+    fs.utimesSync(log, stat.atime, new Date(stat.mtimeMs + 1000));
+    expect(fixture.binding()).toEqual(before);
+    // a partial line cut away again is not an unchanged log
+    appendFileSync(log, register(other).slice(0, 60));
+    expect(readCopilotProcessSession(environment, ["copilot"], pid).diagnostic).toBe("copilot_log_partial");
+    // read afresh from its complete lines, as after any truncation: a new binding, not the cached one
+    fs.truncateSync(log, register(session).length);
+    const reread = fixture.binding();
+    expect(reread?.sessionId).toBe(session);
+    expect(reread?.generation).not.toBe(before?.generation);
+    // same size, different bytes is still a rewrite
+    writeFileSync(log, "x".repeat(register(session).length - 1) + "\n");
+    expect(readCopilotProcessSession(environment, ["copilot"], pid).diagnostic).toBe("copilot_log_rewritten");
+  } finally { await fixture.close(); }
+});
+
 it.skipIf(process.platform !== "linux")("never replays a log copy older than the bytes already read", async () => {
   const fixture = await logFixture([session]);
   const { environment, log, pid } = fixture;
