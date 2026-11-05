@@ -2090,7 +2090,7 @@ export async function paneConversation(paneId: string, codexHome?: string, page:
         && (shown === undefined || !page.history_id.startsWith(shown.prefix) || (reported != null && reported !== shown.session));
       const waits = page.history_id !== undefined && copilotRecoverable(error.diagnostic) && !moved;
       if ((page.before !== undefined || page.since !== undefined || page.from !== undefined) && !waits) throw new HistoryChanged();
-      throw moved ? new ConversationUnavailable(error.message, error.screen, "copilot_report_mismatch") : error;
+      throw moved ? new ConversationUnavailable(error.message, error.screen, "copilot_report_mismatch", error.hint) : error;
     }
     // an agent this server started writes no session before its first message (launched-agents.ts)
     const launch = launchedAgents.notBegun(paneId, pane.agent_status);

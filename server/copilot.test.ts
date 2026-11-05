@@ -1068,6 +1068,8 @@ it.skipIf(process.platform !== "linux")("suggests --ui-server for any failure of
     writeFileSync(own.log, "2026-10-23T00:00:00.000Z [INFO] CLI started\n");
     appendFileSync(peer.log, register(other));
     await expect(paneConversation("own")).rejects.toMatchObject({ diagnostic: "copilot_report_missing", hint: "copilot_ui_server" });
+    // a chat whose shown history moved keeps it beside the rejection that says so
+    await expect(paneConversation("own", undefined, { history_id: "moved" })).rejects.toMatchObject({ diagnostic: "copilot_report_mismatch", hint: "copilot_ui_server" });
     appendFileSync(peer.log, register(session));
     forgetTranscriptState();
     await expect(paneConversation("own")).rejects.toMatchObject({ diagnostic: "copilot_report_missing", hint: "copilot_ui_server" });
