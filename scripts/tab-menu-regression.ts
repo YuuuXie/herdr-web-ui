@@ -631,11 +631,18 @@ async function checkPhone(browser: Browser, origin: string, first: string, secon
     await cancel.tap();
     await tabSheet.waitFor({ state: "detached" });
     // A zoom originating in another client must be reversible from the phone.
+    // The phone hears of it from its pushed roster; a sheet opened before that came lists Zoom, so
+    // the sheet is opened again until it offers Unzoom.
     await paneZoom(first, "on");
-    await touchMenu.tap();
-    await tabSheet.waitFor();
     const unzoom = tabSheet.getByRole("button", { name: "Unzoom pane", exact: true });
-    await unzoom.waitFor();
+    await until(async () => {
+      await touchMenu.tap();
+      await tabSheet.waitFor();
+      if (await unzoom.isVisible()) return true;
+      await cancel.tap();
+      await tabSheet.waitFor({ state: "detached" });
+      return false;
+    }, "the phone's tab sheet offers Unzoom for a zoom made elsewhere");
     await sheetsSettled(page);
     await screenshot(page, `unzoom-phone-${viewport.width}`);
     const unzoomed = page.waitForResponse((response) => response.request().method() === "POST" && new URL(response.url()).pathname.endsWith("/pane/zoom"));
@@ -690,7 +697,9 @@ export async function checkTabMenu(browser: Browser, origin: string): Promise<vo
     await paneRename(first, "canvas-first");
     await paneRename(second, "canvas-second");
     await checkDesktop(browser, origin, first, second, created.root_pane.tab_id);
-    for (const viewport of [{ width: 390, height: 844 }, { width: 320, height: 640 }]) await checkPhone(browser, origin, first, second, viewport);
+    // Both sizes keep a lone tab's row: compact-height phones exercise its replacement pane menu
+    // in phone-glass-header-demo-regression.ts instead.
+    for (const viewport of [{ width: 390, height: 844 }, { width: 320, height: 720 }]) await checkPhone(browser, origin, first, second, viewport);
     await checkTouchTablet(browser, origin, first);
     console.log("PASS native tab drag/keyboard/touch reorder, cancellation and failure handling, desktop context and keyboard tab menus, touch menu buttons, inactive-tab close, simultaneous split terminals, focus and input isolation, swap, split, divider drag, zoom and phone sheets");
   } finally {

@@ -2,12 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:te
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import { exportPublicKey, generateKeyPair } from "../../shared/relay-e2ee.ts";
-import { encodeOffer } from "../../shared/relay-offer.ts";
+import { decodeOffer, encodeOffer } from "../../shared/relay-offer.ts";
 import type { PairedDevice, RelayStatus } from "../../shared/protocol.ts";
 import { SettingsProvider } from "../lib/settings.ts";
 import type { RelayState } from "../lib/useRelay.ts";
 import { CodeRoute, defaultRoute, RelayRoute, sameNameRelayDevice } from "./ConnectPhoneDialog.tsx";
 import { PhonePanel } from "./PhonePanel.tsx";
+import { RelayPairing } from "./RelayPanel.tsx";
 import { QrCode } from "./QrCode.tsx";
 
 // Connect a phone on the phone itself: the QR codes wait behind Show QR code, a phone online with
@@ -24,8 +25,11 @@ describe("Connect a phone on a phone", () => {
   let requests: string[];
   let assigned: string[];
   let shellMeta: boolean;
+  /** the server's pending six-digit code; minting a typed code starts a new one, as server/relay/pair-code.ts does */
+  let pending: string;
 
   beforeEach(() => {
+    pending = "482913";
     requests = [];
     assigned = [];
     shellMeta = false;
@@ -48,8 +52,10 @@ describe("Connect a phone on a phone", () => {
     const fetch = async (input: string | URL | Request) => {
       const path = new URL(String(input instanceof Request ? input.url : input), "https://workstation.example.ts.net").pathname;
       requests.push(path);
-      if (path === "/api/relay/offer") return Response.json({ url: OFFER_URL, expires_at: new Date(Date.now() + 600_000).toISOString() });
-      if (path === "/api/devices/pair/start") return Response.json({ code: "482913", expires_at: new Date(Date.now() + 600_000).toISOString() });
+      const expires_at = new Date(Date.now() + 600_000).toISOString();
+      if (path === "/api/relay/offer") return Response.json({ url: pending === "482913" ? OFFER_URL : encodeOffer({ ...decodeOffer(OFFER_URL)!, code: pending }, APP), expires_at });
+      if (path === "/api/devices/pair/start") return Response.json({ code: pending, expires_at });
+      if (path === "/api/relay/code") { pending = "777111"; return Response.json({ code: "7K3QD-M2XHA", expires_at, server_id: SERVER_ID }); }
       return Response.json({ error: { code: "not_found", message: "no" } }, { status: 404 });
     };
     spyOn(globalThis, "fetch").mockImplementation(Object.assign(fetch, { preconnect: globalThis.fetch.preconnect }));
@@ -103,6 +109,26 @@ describe("Connect a phone on a phone", () => {
   it("keeps the desktop's pairing code QR code up front", async () => {
     await mount(<CodeRoute pairUrl="https://workstation.example.ts.net" startAtOnce />);
     expect(qrCodes()).toHaveLength(1);
+  });
+
+  it("keeps two relay QR codes on screen from replacing each other's code without end", async () => {
+    // the setup guide's and Settings' relay QR codes can be up at once
+    await mount(<><RelayPairing /><RelayPairing /></>);
+    for (let flush = 0; flush < 5; flush += 1) await act(async () => {});
+    // the server's offer reuses its pending code: both show it, and neither asks again for the other's
+    expect(requests.filter((path) => path === "/api/relay/offer").length).toBeLessThanOrEqual(3);
+    expect(qrCodes()).toHaveLength(2);
+    expect(renderer!.root.findAll((node) => node.type === "p" && text(node).includes("This code expired."))).toHaveLength(0);
+  });
+
+  it("a code to type starts a new six-digit code, and the pairing code shown beside it follows", async () => {
+    await mount(<><RelayPairing /><CodeRoute pairUrl="https://workstation.example.ts.net" startAtOnce={false} /></>);
+    for (let flush = 0; flush < 3; flush += 1) await act(async () => {});
+    const shown = () => renderer!.root.findAll((node) => node.type === "p" && typeof node.props.className === "string" && node.props.className.includes("devices-code")).map(text);
+    expect(shown()).toEqual(["482 913"]);
+    await act(async () => { await button("Show a code to type").props.onClick(); });
+    for (let flush = 0; flush < 3; flush += 1) await act(async () => {});
+    expect(shown()).toEqual(["777 111"]);
   });
 
   it("pairs this phone through the relay in one tap: its own offer opens in this browser", async () => {

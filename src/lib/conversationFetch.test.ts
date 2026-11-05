@@ -172,7 +172,7 @@ describe("conversation polling", () => {
 
 describe("conversation read started by a press", () => {
   // herdr reports each pane's session: only then is a press read started and taken
-  beforeEach(() => named("local", Object.fromEntries(["press:p1", "press:p2", "press:held", "press:again", "press:p3", "press:p4", "press:late"].map((pane) => [pane, "a"]))));
+  beforeEach(() => named("local", Object.fromEntries(["press:p1", "press:p2", "press:held", "press:again", "press:p3", "press:p4", "press:late", "press:failed"].map((pane) => [pane, "a"]))));
   /** every request the chat makes: its query and whether it revalidates */
   function answering(): { url: string; etag: string | null }[] {
     const sent: { url: string; etag: string | null }[] = [];
@@ -236,6 +236,30 @@ describe("conversation read started by a press", () => {
     // the very object drawn would tell the chat nothing was read: no presentation read, no finish proved
     expect(read).not.toBe(drawn);
     expect(read).toEqual(drawn!);
+  });
+
+  it("is not taken once it failed: the chat that mounts after it asks the server again (#2593)", async () => {
+    let status = 503;
+    let failed!: () => void;
+    const failure = new Promise<void>((resolve) => { failed = resolve; });
+    const sent: string[] = [];
+    globalThis.fetch = (async (url: string) => {
+      sent.push(String(url));
+      if (status === 200) return Response.json({ source: "claude-transcript", history_id: "history-a", cursor: null, turns: [] }, { headers: { etag: '"a"' } });
+      const response = Response.json({ error: { code: "conversation_read_pending", message: "retry" } }, { status });
+      const body = response.json.bind(response);
+      // the press read has its error once this body is read; the rest of its failure is promise turns
+      response.json = async () => { try { return await body(); } finally { failed(); } };
+      return response;
+    }) as typeof fetch;
+    prefetchPaneConversation("press:failed", "local", 10);
+    await failure;
+    await new Promise((resolve) => setImmediate(resolve));
+    // the bridge is back before the chat mounts, within PRESS_READ_MS of the press
+    status = 200;
+    const mounted = await fetchPaneConversation("press:failed", "local", { prompts: 10, fresh: true });
+    expect(mounted.history_id).toBe("history-a");
+    expect(sent).toHaveLength(2);
   });
 
   it("starts nothing for a pane whose chat is mounted: a cached tab reads no more than before", () => {
@@ -751,6 +775,31 @@ describe("conversation invalidation refresh", () => {
     expect(starts).toEqual([0, 200]);
     clock.advance(1800);
     expect(starts).toEqual([0, 200]);
+    refresh.stop();
+  });
+
+  it("gives up a newest read sent before a reconnect and reads again at once, not after its deadline", async () => {
+    refreshClock();
+    const refresh = pushedRefresh();
+    const signals: AbortSignal[] = [];
+    // the first read went out on a connection that died silently: only an abort ends it
+    refresh.setRead(async (signal) => {
+      signals.push(signal);
+      if (signals.length === 1) await new Promise<void>((done) => signal.addEventListener("abort", () => done(), { once: true }));
+    });
+    refresh.refresh();
+    // the reply's push waits behind it
+    refresh.invalidate();
+    expect(signals).toHaveLength(1);
+    refresh.restart();
+    await settleRefresh();
+    expect(signals).toHaveLength(2);
+    expect(signals[0]!.aborted).toBe(true);
+    expect(signals[1]!.aborted).toBe(false);
+    // with no read in flight, a reconnect reads once
+    refresh.restart();
+    await settleRefresh();
+    expect(signals).toHaveLength(3);
     refresh.stop();
   });
 

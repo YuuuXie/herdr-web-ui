@@ -1,6 +1,15 @@
 import type { IBuffer, ILink, ILinkDecorations, ILinkProvider } from "@xterm/xterm";
 import { fileUriPath } from "../../shared/fileUri.ts";
 import { isCodeName } from "./filePaths.ts";
+import { inMacApp, inNativeApp } from "./nativeApp.ts";
+
+/**
+ * Whether this page can keep a browser tab to reuse. The iOS, Android, Mac and desktop apps hand an
+ * external address to the system browser, so the window they give back is never that tab.
+ */
+export function canReuseExternalLinkTab(): boolean {
+  return !inNativeApp() && !inMacApp() && !(typeof navigator !== "undefined" && /\bElectron\//.test(navigator.userAgent));
+}
 
 /** what a name is made of: letters, digits and the marks that complete them (a decomposed `é` is two) */
 const NAME = "\\p{L}\\p{N}\\p{M}_";
@@ -10,9 +19,10 @@ const NAME = "\\p{L}\\p{N}\\p{M}_";
  * Cmd+click, Ctrl+click off a Mac (`bareNameLinks`): a terminal is full of them (`ls`, `git status`, a
  * compiler's output), a tap or a click to focus the pane lands on one, and the file viewer
  * would open over the terminal for it. A chat's plain text is read the same way (BARE_PATH in
- * filePaths.ts).
+ * filePaths.ts). The character before it is matched too, not looked behind at
+ * (shared/lookbehind.ts): group 1 is the link, group 2 its path.
  */
-const FILE_PATH = new RegExp(`(?<![${NAME}/.@~:-])((?:~\\/|\\.{1,2}\\/|\\/)?(?:[${NAME}@.+-]+\\/)*[${NAME}@+-][${NAME}@.+-]*\\.[A-Za-z0-9]{1,8})(?::\\d+(?::\\d+)?|#L\\d+(?:-L?\\d+)?)?(?![${NAME}/])`, "gu");
+const FILE_PATH = new RegExp(`(?:^|[^${NAME}/.@~:-])(((?:~\\/|\\.{1,2}\\/|\\/)?(?:[${NAME}@.+-]+\\/)*[${NAME}@+-][${NAME}@.+-]*\\.[A-Za-z0-9]{1,8})(?::\\d+(?::\\d+)?|#L\\d+(?:-L?\\d+)?)?)(?![${NAME}/])`, "gu");
 /** `name.ext(` is a call, not a file, unless the parenthesis holds a compiler's line and column: `App.tsx(120,8)` */
 const CALL = /\s*\((?!\d+(?:,\d+)?\))/y;
 const FILE_URI = /file:\/\/\/[^\s<>"`]+/gi;
@@ -29,16 +39,42 @@ export function isWebLink(uri: string): boolean {
 }
 
 /**
- * Opens an http(s) address in a new tab, as a chat link does: a link's own click, with no opener
- * and no referrer. window.open with a features string (even "noopener") opens a popup window instead.
+ * Makes an http(s) link opener. Each instance owns at most one reusable tab. A browser lets a page
+ * steer a tab of another site only as its opener, so the reused tab keeps its opener: the site in it
+ * can see and navigate this tab. That is why reuse is a setting, off by default; a new tab has none.
  */
-export function openWebLink(uri: string): void {
-  const link = document.createElement("a");
-  link.href = uri;
-  link.target = "_blank";
-  link.rel = "noopener noreferrer";
-  link.click();
+export function createWebLinkOpener(): (uri: string, reuse: boolean) => void {
+  let reusable: Window | null = null;
+  const newTab = (uri: string): void => {
+    const link = document.createElement("a");
+    link.href = uri;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.click();
+  };
+  return (uri, reuse) => {
+    if (!reuse || !canReuseExternalLinkTab()) {
+      newTab(uri);
+      return;
+    }
+    try {
+      if (reusable === null || reusable.closed) {
+        reusable = window.open(uri, "_blank");
+        if (reusable === null) newTab(uri);
+        return;
+      }
+      reusable.location.href = uri;
+      reusable.focus();
+    } catch {
+      // the browser refused to open or steer that tab (say, it no longer counts this page as its opener): a click never does nothing
+      reusable = null;
+      newTab(uri);
+    }
+  };
 }
+
+/** Opens links from coding-agent chat and terminal output. */
+export const openWebLink = createWebLinkOpener();
 
 /**
  * The OSC 8 handler that keeps a hyperlink this app cannot open from being drawn as one (#739).
@@ -197,8 +233,10 @@ export function terminalFileLinks(buffer: IBuffer, lineNumber: number, open: (pa
   // Web addresses belong to WebLinksAddon, and a file URI was read above.
   const spans = addresses(text);
   let span = 0;
-  for (const match of text.matchAll(FILE_PATH)) {
-    const path = match[1];
+  for (const found of text.matchAll(FILE_PATH)) {
+    const linked = found[1]!;
+    const match = { index: found.index! + found[0].length - linked.length, 0: linked };
+    const path = found[2];
     const folder = path?.includes("/") === true;
     if (!path || (!folder && !bare) || !/\p{L}/u.test(path.replace(/\.[A-Za-z0-9]{1,8}$/, ""))) continue;
     if (/^v?\d+(?:\.\d+)+$/.test(path) || (!folder && isCodeName(path))) continue;

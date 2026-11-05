@@ -350,6 +350,18 @@ describe("a Portal that signs its visitors in", () => {
     }
   });
 
+  it("refuses a saved-drive visitor an alert webhook, which would keep its alerts after access ends", async () => {
+    const portal = serving(undefined, true);
+    const visitor = { ...identity, "x-portal-proof": await portal.start(credential), "content-type": "application/json" };
+    for (const [method, target] of [["PUT", "/api/alerts/webhook"], ["DELETE", "/api/alerts/webhook"], ["POST", "/api/alerts/webhook/test"]] as const) {
+      const denied = await fetch(`${portal.main}${target}`, {
+        method, headers: { ...visitor, origin: `https://${HOST}`, "x-herdr-update": "1" }, body: JSON.stringify({ preset: "json", url: "https://example.com/hook" }),
+      });
+      expect(denied.status, `${method} ${target}`).toBe(403);
+      expect(await denied.json()).toMatchObject({ error: { code: "owner_only" } });
+    }
+  });
+
   it("refuses push status before handling a Portal visitor's subscription", async () => {
     const portal = serving();
     const visitor = { ...identity, "x-portal-proof": await portal.start(credential), "content-type": "application/json" };
@@ -381,6 +393,16 @@ describe("a Portal that signs its visitors in", () => {
     // the token still means the token, and without either it is refused
     expect(await health(portal.main, { ...vouched, ...portal.owner })).toMatchObject({ via: "token", role: "drive" });
     expect(await health(portal.main, {})).toMatchObject(refused);
+  });
+
+  it("says a request Portal vouched for came through Portal, the token's and a paired device's too, and no request without the proof", async () => {
+    const portal = serving();
+    const vouched = { ...identity, "x-portal-proof": await portal.start(credential) };
+    const ingress = async (headers: Record<string, string>) =>
+      ((await (await fetch(`${portal.main}/api/health?scope=bridge`, { headers })).json()) as { security?: { observed_ingress: string } }).security?.observed_ingress;
+    expect(await ingress({ ...vouched, ...portal.owner })).toBe("portal");
+    expect(await ingress(vouched)).toBe("portal");
+    expect(await ingress({ ...identity, "x-portal-proof": "0".repeat(64), ...portal.owner })).toBe("proxy");
   });
 
   it("believes nothing of those headers without the proof, from loopback or through another proxy, whatever Host or forwarding headers come with them", async () => {

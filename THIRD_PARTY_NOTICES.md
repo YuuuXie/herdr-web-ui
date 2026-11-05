@@ -59,6 +59,30 @@ the reading of a tool result's JSON envelope and `tool denied:` / `tool failed:`
 Copyright (c) 2026 Altan Sarisin. The MIT license text below applies. The session binding in
 `server/muse-store.ts` is Ovis's own.
 
+## Ovis for the desktop
+
+The desktop app (`app/electron`) ships these programs unmodified, downloaded at build time from
+their official releases and checked against the SHA-256 pinned in `app/electron/scripts/runtimes.ts`.
+None of them is in this repository.
+
+- [herdr-core](https://github.com/herdrdev/herdr-core) 0.1.17 (`hc`), under Apache-2.0, from
+  `releases.herdr.dev`. Its `LICENSE` and `THIRD-PARTY-NOTICES` ship beside it, in the app's
+  `resources/ovis/licenses/herdr-core/`.
+- [Bun](https://github.com/oven-sh/bun) 1.4.2, under MIT. Its `LICENSE.md` ships beside it, in
+  `resources/ovis/licenses/bun/`. Bun statically links JavaScriptCore and WebKit (LGPL-2) and the
+  other libraries that file lists; the sources of the WebKit it links are at
+  [oven-sh/WebKit](https://github.com/oven-sh/WebKit).
+- [Electron](https://github.com/electron/electron) 45, under MIT, Copyright (c) Electron
+  contributors and GitHub Inc. Its `LICENSE` and Chromium's `LICENSES.chromium.html` ship in the
+  app as electron-builder puts them there.
+
+The app's main process bundles [electron-updater](https://github.com/electron-userland/electron-builder)
+6.8.11 (MIT) and the packages it uses: builder-util-runtime, debug, fs-extra, has-flag, js-yaml,
+jsonfile, lazy-val, lodash.escaperegexp, lodash.isequal, ms, supports-color and universalify (MIT),
+graceful-fs and semver (ISC), and sax (Blue Oak Model License 1.0.0). Their license texts, with
+their copyright notices, ship in the app as `out/THIRD_PARTY_LICENSES.txt`, which
+`app/electron/scripts/build.ts` writes from the packages the bundle took in.
+
 ## oh-my-pi figure tokens
 
 `src/lib/svgFigure.ts` adapts the figure token vocabulary and the token and root-tag resolution of
@@ -1492,6 +1516,105 @@ INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
 DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
 FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
+```
+
+## libghostty-vt
+
+`src/lib/ghostty/ghostty-vt.wasm` is libghostty-vt from [Ghostty](https://github.com/ghostty-org/ghostty) at
+commit e95bed6, built for wasm32 by `scripts/ghostty-vt/build.sh` with the small change in
+`scripts/ghostty-vt/kitty-on-wasm.patch` (Kitty graphics on, file media off). It draws a terminal when
+Settings > Terminal > Draw with libghostty is on, under the MIT License below. The module links two
+packages Ghostty's build brings in: [Wuffs](https://github.com/google/wuffs) 0.4.0-alpha.10, which decodes
+Kitty PNG pictures, under the MIT License (it is offered under MIT or Apache-2.0), and
+[uucode](https://github.com/jacobsandlund/uucode) 0.2.0, Unicode tables, under the MIT License.
+
+```
+MIT License
+
+Copyright (c) 2024 Mitchell Hashimoto, Ghostty contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+Wuffs:
+
+```
+Copyright 2023 The Wuffs Authors
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+uucode:
+
+```
+# uucode license
+
+MIT License
+
+Copyright (c) 2026 Jacob Sandlund
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+## Other licenses
+
+See [./licenses](./licenses) for licenses of code being used in the repo:
+
+* [LICENSE_Bjoern_Hoehrmann](./licenses/LICENSE_Bjoern_Hoehrmann)
+* [LICENSE_unicode](./licenses/LICENSE_unicode)
 ```
 
 ## JetBrains Mono

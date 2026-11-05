@@ -3,9 +3,11 @@ import { act } from "react";
 import { create, type ReactTestRenderer } from "react-test-renderer";
 
 import type { Machine } from "../../shared/machines.ts";
+import type { AgentStatus } from "../../shared/protocol.ts";
 import machinesFixture from "../../site/demo/fixtures/machines.json";
 import { currentAgentRowTokens, setAgentRowTokens } from "../lib/agentRowTokens.ts";
 import { SettingsProvider } from "../lib/settings.ts";
+import { SidebarActivityProvider } from "../lib/sidebarActivity.tsx";
 import type { SidebarFilter } from "../lib/sidebarFilter.ts";
 import { SidebarFilterProvider } from "../lib/sidebarFilterContext.ts";
 import { AgentSidebar } from "./AgentSidebar.tsx";
@@ -111,6 +113,20 @@ describe("AgentSidebar phone sheet live row", () => {
     await update(roster({ quota: "40%" }));
     // Then the sheet shows the new value without reopening.
     expect(mounted.root.findByProps({ className: "row-sheet-detail" }).children).toEqual(["40%"]);
+  });
+
+  it("says a blocked agent's whole reason in the open sheet, which has no tooltip", async () => {
+    const { mounted, update } = await open();
+    // When herdr-core reports the agent blocked on a permission, with its message.
+    await update(roster().map((machine) => ({
+      ...machine,
+      snapshot: machine.snapshot === null ? null : {
+        ...machine.snapshot,
+        panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: "blocked" as const, agent_kind: "permission", agent_message: "Allow bash?" } : pane),
+      },
+    })));
+    // Then the sheet gives the reason in full before the plugin values.
+    expect(mounted.root.findByProps({ className: "row-sheet-detail" }).children).toEqual(["Needs permission: Allow bash? \u00b7 95%"]);
   });
 
   it("removes the sheet detail when a token is deleted", async () => {
@@ -296,5 +312,87 @@ describe("AgentSidebar fold memory", () => {
     // Then nothing is stored, and the list comes back with the screen's default.
     expect(writes).toEqual([]);
     expect((await sidebar.remount(inactive)).expanded()).toBe(true);
+  });
+
+  it("draws the groups in one list, so a row whose state changes moves to its new group instead of being drawn anew", async () => {
+    // Given grouping on for this device.
+    stored.set("ovis:agent-groups", "true");
+    const blockedRoster = (blocked: boolean) => roster().map((machine) => ({
+      ...machine,
+      snapshot: machine.snapshot === null ? null : { ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => pane.pane_id === paneId ? { ...pane, agent_status: blocked ? "blocked" as const : "working" as const } : pane) },
+    }));
+    const grouped = (machines: Machine[]) => <SettingsProvider>
+      <SidebarFilterProvider value={{ filter: inactive, reportBranches: () => {} }}>
+        <AgentSidebar machines={machines} selectedMachineId="local" selectedPaneId={null} stateWord={(machine) => machine.state} onSelect={() => {}} />
+      </SidebarFilterProvider>
+    </SettingsProvider>;
+    await act(async () => { renderer = create(grouped(blockedRoster(false))); });
+    const mounted = renderer!;
+    const list = () => mounted.root.findByProps({ className: "agent-list agent-list-grouped" });
+    // the group a row stands under: the last heading before it in the one list
+    const groupOf = (pane: string): string | undefined => {
+      let group: string | undefined;
+      for (const child of list().children) {
+        if (typeof child === "string") continue;
+        if (child.props.className === "agent-group-label") group = child.props["data-group"];
+        if (child.props["data-pane"] === pane) return group;
+      }
+      return undefined;
+    };
+    expect(groupOf(paneId)).toBe("working");
+    // When the agent becomes blocked, its row is still a child of the same list, now under Needs you.
+    await act(async () => { mounted.update(grouped(blockedRoster(true))); });
+    expect(groupOf(paneId)).toBe("blocked");
+    expect(mounted.root.findAllByProps({ className: "agent-list" })).toHaveLength(0);
+  });
+
+  it("keeps a background row's element when it becomes blocked and moves up, so its focus and open menu stay", async () => {
+    // Given an opened background part holding the agent, which works, and another background agent.
+    stored.set("ovis:agents-background-collapsed", "0");
+    const tagged = (blocked: boolean) => roster().map((machine) => ({
+      ...machine,
+      snapshot: machine.snapshot === null ? null : { ...machine.snapshot, panes: machine.snapshot.panes.map((pane) =>
+        pane.pane_id === paneId ? { ...pane, tokens: { role: "background" }, agent_status: blocked ? "blocked" as const : "working" as const }
+        : pane.pane_id === "w1E:p1" ? { ...pane, tokens: { role: "background" } } : pane) },
+    }));
+    const view = (machines: Machine[]) => <SettingsProvider>
+      <SidebarFilterProvider value={{ filter: inactive, reportBranches: () => {} }}>
+        <AgentSidebar machines={machines} selectedMachineId="local" selectedPaneId={null} stateWord={(machine) => machine.state} onSelect={() => {}} />
+      </SidebarFilterProvider>
+    </SettingsProvider>;
+    await act(async () => { renderer = create(view(tagged(false))); });
+    const mounted = renderer!;
+    const row = () => mounted.root.find((node) => node.type === "li" && node.props["data-pane"] === paneId);
+    const order = () => mounted.root.findAll((node) => node.type === "li" && (node.props["data-pane"] !== undefined || node.props.className === "agent-background-label")).map((node) => node.props["data-pane"] ?? "BG");
+    expect(order().indexOf(paneId)).toBeGreaterThan(order().indexOf("BG"));
+    const before = row();
+    // When it becomes blocked, it stands above the background heading as the same element.
+    await act(async () => { mounted.update(view(tagged(true))); });
+    expect(order().indexOf(paneId)).toBeLessThan(order().indexOf("BG"));
+    expect(row()).toBe(before);
+  });
+
+  it("orders the groups the same whichever Agents order is chosen: ties keep herdr's order, not Activity's", async () => {
+    // Given grouping on, ordered by name, and two idle agents with the same name (w1F changed after w1E).
+    stored.set("ovis:agent-groups", "true");
+    stored.set("ovis:agent-group-sort", JSON.stringify("name"));
+    const sameNames = roster().map((machine) => ({
+      ...machine,
+      snapshot: machine.snapshot === null ? null : { ...machine.snapshot, panes: machine.snapshot.panes.map((pane) => pane.pane_id === "w1E:p1" || pane.pane_id === "w1F:p1" ? { ...pane, label: "Same" } : pane) },
+    }));
+    const seqs = new Map([["w1E:p1", 43], ["w1F:p1", 44]]);
+    const activity = { seqs: () => seqs, status: (_machineId: string, pane: { agent_status?: AgentStatus }) => pane.agent_status };
+    const order = async (agentOrder: string): Promise<string[]> => {
+      stored.set("ovis:settings", JSON.stringify({ agentOrder }));
+      await act(async () => { renderer?.unmount(); });
+      await act(async () => { renderer = create(<SettingsProvider><SidebarActivityProvider value={activity}>
+        <SidebarFilterProvider value={{ filter: inactive, reportBranches: () => {} }}>
+          <AgentSidebar machines={sameNames} selectedMachineId="local" selectedPaneId={null} stateWord={(machine) => machine.state} onSelect={() => {}} />
+        </SidebarFilterProvider>
+      </SidebarActivityProvider></SettingsProvider>); });
+      return renderer!.root.findAll((node) => typeof node.type === "string" && node.props["data-pane"] !== undefined).map((node) => node.props["data-pane"]);
+    };
+    // Then Activity, which puts w1F first by its later change, does not leak into the grouped order.
+    expect(await order("activity")).toEqual(await order("workspace"));
   });
 });

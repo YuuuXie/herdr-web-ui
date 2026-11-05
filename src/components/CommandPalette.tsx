@@ -1,3 +1,4 @@
+import { moveDestinations } from "../lib/layoutTargets.ts";
 import { useAppLayout, MachineContext, useMachineApi, useMachineId } from "../lib/machineContext.tsx";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { Bell, Columns2, CornerLeftUp, Folder, FolderInput, FolderOpen, FolderSearch, History, ListFilter, LoaderCircle, Maximize2, MessageSquarePlus, Minimize2, Monitor, PanelLeft, Pencil, Pin, Plus, Puzzle, RefreshCw, Rows2, Settings, SunMoon, SwitchCamera, X } from "lucide-react";
@@ -26,7 +27,6 @@ import { useT } from "../lib/i18n.ts";
 import { useFocusTrap } from "../lib/useFocusTrap.ts";
 import { useSheetSwipe } from "../lib/sheets.ts";
 import { usePhoneSheetBack } from "../lib/sheetHistory.ts";
-import { CRAMPED_QUERY, loneTabHidden } from "../lib/paneCanvas.ts";
 import { useMediaQuery } from "../lib/useMediaQuery.ts";
 import { useWorktreeBranches } from "../lib/useWorktreeBranches.ts";
 import { worktreeLabel } from "../lib/worktreeName.ts";
@@ -159,7 +159,6 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
   const machineId = useMachineId();
   const api = useMachineApi();
   const touch = useMediaQuery("(pointer: coarse)");
-  const cramped = useMediaQuery(CRAMPED_QUERY);
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<PaletteStatusFilter>("all");
   const [selection, setSelection] = useState<PaletteSelection>(NO_SELECTION);
@@ -302,23 +301,23 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
   // the mode the zoom item names, never a toggle (lib/layoutMap.ts): herdr focuses the pane and
   // then sets the tab's flag, so a toggle on a pane other than the one shown alone would unzoom the tab
   const zoom = tabLayout !== undefined && selectedPaneId !== null ? zoomMode(tabLayout, selectedPaneId) : null;
-  // on a PC the Herdr app's window lays out (lib/machineContext.tsx) the tab's name and workspace are the
-  // app's; App already gives no split or zoom there (lib/layoutActions.ts)
-  const appLayout = useAppLayout();
+  // a tab's name and workspace change only where the PC's herdr answers it (lib/machineContext.tsx); App
+  // already gives no split or zoom where it does not (lib/layoutActions.ts)
+  const { rename: renameOffered, move: moveOffered } = useAppLayout();
   const splitPane = actions.splitPane;
   const zoomPane = actions.zoomPane;
   // browsing starts in the selected pane's folder, home without one
   const selectedPane = snapshot?.panes.find((pane) => pane.pane_id === selectedPaneId);
   const browseStart = selectedPane && panePath(selectedPane) ? panePath(selectedPane) : null;
-  // Rename tab opens the tab strip's name field: not offered where the strip is left out (a lone tab on a cramped screen)
-  const tabCount = selectedPane ? snapshot?.tabs.filter((tab) => tab.workspace_id === selectedPane.workspace_id).length ?? 0 : 0;
-  const stripDrawn = selectedPane !== undefined && !loneTabHidden(cramped, tabCount);
+  // Rename tab opens the tab strip's name field, or, where the strip is left out (a lone tab on a
+  // cramped screen), the dialog that stands in for it (PaneCanvas)
+  const tabShown = selectedPane !== undefined;
 
   const paletteActions = useMemo<PaletteAction[]>(() => [
     { id: "new", label: t("New workspace"), icon: MessageSquarePlus, shortcut: "new-session", run: actions.openNewSession },
     // in the selected pane's workspace: nothing to add a tab to without one
     ...(selectedPaneId !== null ? [{ id: "new-tab", label: t("New tab"), icon: Plus, shortcut: "new-tab", run: () => actions.openNewTab() }] satisfies PaletteAction[] : []),
-    ...(selectedPaneId !== null && stripDrawn && !appLayout ? [{ id: "rename-tab", label: t("Rename tab"), icon: Pencil, shortcut: "rename-tab", run: actions.renameTab }] satisfies PaletteAction[] : []),
+    ...(selectedPaneId !== null && tabShown && renameOffered ? [{ id: "rename-tab", label: t("Rename tab"), icon: Pencil, shortcut: "rename-tab", run: actions.renameTab }] satisfies PaletteAction[] : []),
     // herdr's prefix+v and prefix+-: the new pane is opened here only when asked, as herdr's --focus
     ...(splitPane ? [
       { id: "split-right", label: t("Split pane right"), icon: Columns2, shortcut: "split-right", run: () => splitPane("right") },
@@ -326,7 +325,7 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
       { id: "split-right-open", label: t("Split pane right and open it"), icon: Columns2, run: () => splitPane("right", true) },
       { id: "split-down-open", label: t("Split pane down and open it"), icon: Rows2, run: () => splitPane("down", true) },
     ] satisfies PaletteAction[] : []),
-    ...(zoomPane && zoom && tabPanes > 1 ? [{ id: "zoom", label: t(zoom === "off" ? "Unzoom pane" : "Zoom pane"), icon: zoom === "off" ? Minimize2 : Maximize2, run: () => zoomPane(zoom) }] : []),
+    ...(zoomPane && zoom && tabPanes > 1 ? [{ id: "zoom", label: t(zoom === "off" ? "Unzoom pane" : "Zoom pane"), icon: zoom === "off" ? Minimize2 : Maximize2, shortcut: "zoom-pane" as const, run: () => zoomPane(zoom) }] : []),
     { id: "view", label: t(view === "chat" ? "Switch to terminal" : "Switch to chat"), icon: SwitchCamera, shortcut: "toggle-view", run: actions.toggleView },
     { id: "sidebar", label: t("Toggle sidebar"), icon: PanelLeft, shortcut: "toggle-sidebar", run: actions.toggleSidebar },
     // the sidebar's Filter field, also where Settings → Appearance → Sidebar filter leaves it out
@@ -338,7 +337,7 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
     ...(actions.openFiles ? [{ id: "files", label: t("Browse files"), icon: FolderOpen, run: actions.openFiles }] : []),
     ...(online ? [{ id: "browse-folders", label: t("Browse folders"), icon: FolderSearch, keepOpen: true, run: () => browseTo(browseStart ?? home ?? "~") }] : []),
     { id: "refresh", label: t("Refresh"), icon: RefreshCw, run: actions.refresh },
-  ], [actions, splitPane, zoomPane, tabPanes, zoom, view, t, selectedPaneId, stripDrawn, appLayout, online, browseTo, browseStart, home]);
+  ], [actions, splitPane, zoomPane, tabPanes, zoom, view, t, selectedPaneId, tabShown, renameOffered, online, browseTo, browseStart, home]);
 
   // Settings pages and groups are found by a query only, and open on the page itself, a group's
   // scrolled to and focused: the dialog reads the request as it mounts
@@ -357,12 +356,11 @@ export function CommandPalette({ open, initialQuery = "", onClose, machines, onS
   const aliasesByAction = useMemo(() => actionAliases(t), [t]);
   // the selected one-pane tab to another workspace of its PC, one row each, found by a query only as Settings pages are
   const selectedWorkspace = selectedPane?.workspace_id ?? null;
-  const moveActions = useMemo<PaletteAction[]>(() => selectedTab === null || tabPanes !== 1 || appLayout ? [] : (snapshot?.workspaces ?? [])
-    .filter((entry) => entry.workspace_id !== selectedWorkspace)
+  const moveActions = useMemo<PaletteAction[]>(() => selectedTab === null || selectedWorkspace === null || tabPanes !== 1 || !moveOffered ? [] : moveDestinations(snapshot?.workspaces ?? [], selectedPane, selectedWorkspace)
     .map((entry) => ({ id: `move-tab-${entry.workspace_id}`, label: t("Move tab to {workspace}", { workspace: entry.label }), icon: FolderInput,
       // a refusal is said over the pane (App): the palette has closed by then
       run: () => { void actions.moveTabToWorkspace({ machineId, tabId: selectedTab, workspaceId: entry.workspace_id, notice: true }).catch(() => undefined); } })),
-  [actions, appLayout, machineId, selectedTab, selectedWorkspace, snapshot?.workspaces, t, tabPanes]);
+  [actions, moveOffered, machineId, selectedTab, selectedWorkspace, selectedPane, snapshot?.workspaces, t, tabPanes]);
 
   const allPanes = useMemo(() => machines.flatMap((machine) => machine.state === "connected" ? machine.snapshot?.panes ?? [] : []), [machines]);
   const multiMachine = machines.length > 1;

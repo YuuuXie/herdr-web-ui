@@ -26,6 +26,7 @@ const MIME: Record<string, string> = {
   ".ico": "image/x-icon",
   ".woff": "font/woff",
   ".woff2": "font/woff2",
+  ".wasm": "application/wasm",
 };
 
 /** Files whose URL never changes but whose contents decide what the app becomes. */
@@ -62,7 +63,10 @@ function cacheControlFor(pathname: string): string {
  * - `script-src 'self'`: both entry points are Vite modules (index.html), nothing in the
  *   app evaluates a string, and there is no inline handler attribute. This is the
  *   directive that matters: KaTeX output and the agent marks are the two places that put
- *   third-party HTML into the page.
+ *   third-party HTML into the page. `'wasm-unsafe-eval'` lets the page compile WebAssembly
+ *   and nothing else (no eval, no string to script): the terminal's sixel decoder
+ *   (@xterm/addon-image, Settings -> Pictures in the terminal) and libghostty-vt (Settings ->
+ *   Draw with libghostty) are modules bundled in the app.
  * - `style-src 'self' 'unsafe-inline'`: inline style attributes are how measured layout
  *   reaches the DOM (AgentPicker, RowMenu, Droplet, UsageMeters), and KaTeX writes one on
  *   every expression it cannot render. It is also load-bearing for the terminal itself:
@@ -98,7 +102,7 @@ function cacheControlFor(pathname: string): string {
  */
 const CSP_DIRECTIVES = [
   "default-src 'self'",
-  "script-src 'self'",
+  "script-src 'self' 'wasm-unsafe-eval'",
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: blob:",
   "font-src 'self' data:",
@@ -113,7 +117,8 @@ const CSP_DIRECTIVES = [
 ];
 
 /**
- * The policy both headers carry. A browser script that serves a build of its own sends it as it is:
+ * The policy both headers carry, before contentSecurityPolicy() adds the request's host to `frame-src`
+ * and the account service to `connect-src`. A browser script that serves a build of its own sends it as it is:
  * serveStatic reads only this checkout's dist/, and sends no policy before that is built.
  */
 export const CONTENT_SECURITY_POLICY = CSP_DIRECTIVES.join("; ");
@@ -127,17 +132,23 @@ export const CONTENT_SECURITY_POLICY = CSP_DIRECTIVES.join("; ");
  * 'unsafe-inline'` and `font-src 'self' data:` among them, stays for the reasons given above.
  */
 const SHELL_SOURCES: Record<string, string> = {
-  "connect-src": "'self' wss:",
+  // the account service the shell signs in to (docs/account.md); a self-hosted one is not added yet
+  "connect-src": "'self' wss: https://account.ovis.sh",
   "media-src": "'self' blob:",
   "frame-src": "'self' blob:",
 };
 
-/** The hosted shell's policy: `CONTENT_SECURITY_POLICY` with only the transport-related sources changed (SHELL_SOURCES). */
-export function shellContentSecurityPolicy(): string {
+/**
+ * The hosted shell's policy: `CONTENT_SECURITY_POLICY` with only the transport-related sources
+ * changed (SHELL_SOURCES). `connect` adds origins the shell may fetch from: the hosted build passes
+ * the regional copies of the app, whose build its first script compares (scripts/shell-build.ts).
+ */
+export function shellContentSecurityPolicy(connect: readonly string[] = []): string {
   return CSP_DIRECTIVES.map((directive) => {
     const name = directive.slice(0, directive.indexOf(" "));
     const sources = SHELL_SOURCES[name];
-    return sources === undefined ? directive : `${name} ${sources}`;
+    if (sources === undefined) return directive;
+    return name === "connect-src" && connect.length ? `${name} ${sources} ${connect.join(" ")}` : `${name} ${sources}`;
   }).join("; ");
 }
 
@@ -145,6 +156,21 @@ export function shellContentSecurityPolicy(): string {
 const FRAMEABLE_HOST = /^(?:[a-z0-9-]+(?:\.[a-z0-9-]+)*|\[[0-9a-f:.]+\])$/i;
 
 /** The policy for a request from `origin` (requestOrigin): its host's other ports may be framed. */
+/** The account service when OVIS_ACCOUNT_SERVICE_URL is unset; `OVIS_ACCOUNT_SERVICE_URL=off` names none. */
+export const DEFAULT_ACCOUNT_SERVICE = "https://account.ovis.sh";
+
+/**
+ * The account service the PC's own pages sign in to: OVIS_ACCOUNT_SERVICE_URL's origin when it is
+ * https, account.ovis.sh when it is unset, and none when it is `off` or not https.
+ */
+export function accountServiceOrigin(value = process.env["OVIS_ACCOUNT_SERVICE_URL"] ?? DEFAULT_ACCOUNT_SERVICE): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && /^[a-z0-9.-]+(?::[0-9]+)?$/i.test(url.host) ? url.origin : null;
+  } catch { return null; }
+}
+
 export function contentSecurityPolicy(origin?: string): string {
   let host: string | null = null;
   try {
@@ -152,8 +178,13 @@ export function contentSecurityPolicy(origin?: string): string {
   } catch {
     host = null;
   }
-  if (host === null || !FRAMEABLE_HOST.test(host)) return CONTENT_SECURITY_POLICY;
-  return CSP_DIRECTIVES.map((directive) => directive === "frame-src 'self'" ? `frame-src 'self' http://${host}:* https://${host}:*` : directive).join("; ");
+  const frameable = host !== null && FRAMEABLE_HOST.test(host);
+  const account = accountServiceOrigin();
+  return CSP_DIRECTIVES.map((directive) => {
+    if (directive === "frame-src 'self'" && frameable) return `frame-src 'self' http://${host}:* https://${host}:*`;
+    if (directive === "connect-src 'self'" && account !== null) return `connect-src 'self' ${account}`;
+    return directive;
+  }).join("; ");
 }
 
 /**
@@ -256,9 +287,9 @@ export async function serveStatic(pathname: string, acceptEncoding?: string | nu
   if (candidate.startsWith(DIST_DIR) && relative !== "/" && existsSync(candidate)) {
     const file = Bun.file(candidate);
     if ((await file.exists()) && !(await file.stat()).isDirectory()) {
-      // Only immutable JS/CSS get build-time sidecars. Never compress user/API
-      // data, the service worker, or the shell on a request's hot path.
-      if (pathname.startsWith("/assets/") && /\.(?:js|css)$/.test(pathname)) {
+      // Only immutable JS/CSS/WebAssembly get build-time sidecars (scripts/compressed-assets.ts).
+      // Never compress user/API data, the service worker, or the shell on a request's hot path.
+      if (pathname.startsWith("/assets/") && /\.(?:js|css|wasm)$/.test(pathname)) {
         for (const encoding of encodings(acceptEncoding)) {
           const body = encoding === "identity" ? file : Bun.file(`${candidate}.${encoding === "br" ? "br" : "gz"}`);
           if (!await body.exists()) continue;

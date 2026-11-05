@@ -62,7 +62,7 @@ Neither command updates itself; only `bun run start` and the plugin run the upda
 **Fast checks** is these, one by one; none needs herdr:
 
 ```bash
-bun run generate:types --check   # shared/herdr-api.generated.ts matches scripts/herdr-schema.json
+bun run generate:types --check   # herdr's and hc's generated types match scripts/*-schema.json
 bun run generate:themes --check  # theme copies match the theme blocks of src/styles.css
 bun run typecheck
 bun run build
@@ -111,14 +111,16 @@ the context does not make it clear. The dialog that makes a workspace is
   `*.contract.test.ts`.
 - **Stored formats:** a change to the structure of a stored browser record or state-directory
   file follows the [stored-format rules](docs/development.md#stored-format-changes).
-- **herdr wire types:** never edit `shared/herdr-api.generated.ts`; run `bun run generate:types`.
+- **herdr wire types:** never edit `shared/herdr-api.generated.ts` or
+  `server/herdr-core/hc-api.generated.ts`; run `bun run generate:types`.
 - **Theme colors:** edit them only in the theme blocks of `src/styles.css`. Never edit
   `src/lib/themes.generated.ts` or the generated copies in DESIGN.md, `index.html` and
   `public/manifest.webmanifest`; run `bun run generate:themes`.
 - **UI text:** every new `t("…")` string needs a Korean, Japanese and Simplified Chinese entry with
   the same placeholders. A string that only one feature's files use goes in that feature's files in
   `src/lib/i18n/` when it has them (`settings.ko.ts`, `settings.ja.ts` and `settings.zh.ts` for the
-  Settings dialog; each file's header lists its feature's files). Any other string goes in
+  Settings dialog, with its Access rows in `settings-access.*.ts`; each file's header lists its
+  feature's files). Any other string goes in
   `src/lib/i18n.ko.ts`, `i18n.ja.ts` and `i18n.zh.ts`, and so does a feature's string once another
   feature uses it too. `bun run test:unit` fails on a missing, unused or untranslated entry, and on one
   kept in the wrong file or in different files across the three languages.

@@ -748,7 +748,7 @@
   --status-blocked-tint: rgba(144, 0, 27, 0.12);
   --status-done-tint: rgba(54, 80, 19, 0.12);
   --danger-tint: rgba(144, 0, 27, 0.1);
-  --notice: #8c6c3e;
+  --notice: #674f2e;
   --danger-text: #90001b;
   --scrim: rgba(39, 77, 171, 0.35);
   --term-bg: #e1e2e7;
@@ -858,7 +858,7 @@
   --status-blocked-tint: rgba(157, 0, 6, 0.12);
   --status-done-tint: rgba(93, 87, 0, 0.12);
   --danger-tint: rgba(157, 0, 6, 0.1);
-  --notice: #b57614;
+  --notice: #84560f;
   --danger-text: #9d0006;
   --scrim: rgba(60, 56, 54, 0.35);
   --term-bg: #fbf1c7;
@@ -968,7 +968,7 @@
   --status-blocked-tint: rgba(165, 17, 16, 0.12);
   --status-done-tint: rgba(1, 98, 11, 0.12);
   --danger-tint: rgba(165, 17, 16, 0.1);
-  --notice: #c18401;
+  --notice: #916301;
   --danger-text: #a51110;
   --scrim: rgba(56, 58, 66, 0.35);
   --term-bg: #fafafa;
@@ -1031,7 +1031,7 @@
   --status-blocked-tint: rgba(255, 188, 170, 0.14);
   --status-done-tint: rgba(194, 216, 93, 0.14);
   --danger-tint: rgba(255, 188, 170, 0.12);
-  --notice: #b58900;
+  --notice: #c29300;
   --danger-text: #ffbcaa;
   --scrim: rgba(0, 43, 54, 0.5);
   --term-bg: #002b36;
@@ -1078,7 +1078,7 @@
   --status-blocked-tint: rgba(182, 0, 6, 0.12);
   --status-done-tint: rgba(83, 99, 0, 0.12);
   --danger-tint: rgba(182, 0, 6, 0.1);
-  --notice: #b58900;
+  --notice: #826200;
   --danger-text: #b60006;
   --scrim: rgba(85, 106, 114, 0.35);
   --term-bg: #fdf6e3;
@@ -1188,7 +1188,7 @@
   --status-blocked-tint: rgba(149, 0, 43, 0.12);
   --status-done-tint: rgba(59, 82, 23, 0.12);
   --danger-tint: rgba(149, 0, 43, 0.1);
-  --notice: #77713f;
+  --notice: #605c33;
   --danger-text: #95002b;
   --scrim: rgba(84, 84, 100, 0.35);
   --term-bg: #f2ecbc;
@@ -1298,7 +1298,7 @@
   --status-blocked-tint: rgba(135, 58, 82, 0.12);
   --status-done-tint: rgba(22, 90, 116, 0.12);
   --danger-tint: rgba(135, 58, 82, 0.1);
-  --notice: #ea9d34;
+  --notice: #945c0f;
   --danger-text: #873a52;
   --scrim: rgba(70, 66, 97, 0.35);
   --term-bg: #faf4ed;
@@ -1949,6 +1949,30 @@ button {
   white-space: nowrap;
 }
 
+/* the chat's session totals after the crumb (lib/sessionStats.ts): an item of its own, so it wraps out
+   of sight first, whole or not at all like the crumb. A phone's header line is the title's: there the
+   More menu says them */
+.context-session {
+  gap: var(--space-2);
+}
+
+.context-session-goal {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.context-session-goal svg {
+  width: 1em;
+  height: 1em;
+}
+
+@media (max-width: 768px) {
+  .context-session {
+    display: none;
+  }
+}
+
 /* the PC's name is whole in the crumb, like the rest of it: the crumb fits or is not drawn.
    Its cap (Machines.css) is for the header with no pane, where it sits beside the brand. */
 .context-sub .machine-context-name {
@@ -2042,6 +2066,157 @@ button {
   font-size: var(--fs-xs);
 }
 
+/* how this device reaches Ovis (components/ConnectionRouteMark.tsx): a quiet glyph and a short word,
+   always there, never a button and never wrapped */
+.conn-route {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: var(--chip-h);
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+
+.conn-route svg {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+}
+
+/* a phone gives the pane title the room: the glyph alone says the route there, except the relay,
+   whose word is the one most asked for; below 360px the relay's word goes too. The sentence stays
+   as the mark's title and accessible text. */
+@media (max-width: 480px) {
+  .conn-route:not([data-route="relay"], [data-route="portal"]) .conn-route-word {
+    display: none;
+  }
+}
+
+@media (max-width: 359px) {
+  .conn-route .conn-route-word {
+    display: none;
+  }
+}
+
+/* the selected tab's place in its workspace's strip (App.tsx): after the title, quieter than it, and
+   kept whole while the title shortens */
+.context-position {
+  flex: 0 0 auto;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+
+/* the PC's sessions by state (components/HeaderSessions.tsx): a figure per state that has any, in the
+   sidebar's status colours, tabular so a count that changes moves nothing. They stay whole: the pane
+   title is the header's one item that shortens */
+.header-sessions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.header-session-count {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  height: var(--chip-h);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  color: var(--text-dim);
+}
+
+.header-session-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-pill);
+}
+
+.header-session-count.is-working .header-session-dot {
+  background: var(--status-working);
+}
+
+.header-session-count.is-done .header-session-dot {
+  background: var(--status-done);
+}
+
+.header-session-mark {
+  font-weight: var(--fw-bold);
+  color: var(--status-blocked);
+}
+
+/* the waiting figure opens the next session that waits: drawn as a figure, with the state's tint
+   behind it so it reads as the one to press */
+button.header-session-count {
+  position: relative;
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--status-blocked) 14%, transparent);
+  color: var(--text-strong);
+  font-family: inherit;
+  cursor: pointer;
+}
+
+/* with no other session waiting it stays a button for the keyboard's sake, but nothing to press */
+button.header-session-count[aria-disabled="true"] {
+  cursor: default;
+}
+
+@media (hover: hover) {
+  button.header-session-count:not([aria-disabled="true"]):hover {
+    background: color-mix(in srgb, var(--status-blocked) 24%, transparent);
+  }
+}
+
+/* a phone reaches the header's thumb target through an invisible expander, as the lens buttons do */
+@media (max-width: 768px) {
+  button.header-session-count::before {
+    content: "";
+    position: absolute;
+    top: calc((var(--chip-h) - var(--touch-target-header)) / 2);
+    bottom: calc((var(--chip-h) - var(--touch-target-header)) / 2);
+    left: 50%;
+    width: max(100%, var(--touch-target-header));
+    transform: translateX(-50%);
+  }
+}
+
+/* a phone's header line is the title's (App.tsx): the sessions' one pill sits at the end of the tab
+   row under it, tinted with its state like the waiting button, and the tab's place, which that row
+   shows, leaves the header below 420px */
+.tab-strip-sessions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 1 0 auto;
+  padding: 0 var(--space-3);
+}
+
+.header-sessions.is-compact .header-session-count {
+  padding: 0 var(--space-2);
+  border-radius: var(--radius-pill);
+}
+
+.header-sessions.is-compact .header-session-count.is-working {
+  background: color-mix(in srgb, var(--status-working) 14%, transparent);
+}
+
+.header-sessions.is-compact .header-session-count.is-done {
+  background: color-mix(in srgb, var(--status-done) 14%, transparent);
+}
+
+@media (max-width: 419px) {
+  .context-position {
+    display: none;
+  }
+}
+
 /* one chip for the connection, drawn only while the bridge is not live; the herdr version lives
    in its tooltip and in Settings */
 .conn {
@@ -2126,6 +2301,11 @@ button {
 
 /* alerts are off on this device: the one state of the menu worth a glance. The button's name
    and the Alerts item say it in words. */
+/* a session waiting where no tab row carries the sessions' pill (App.tsx): More's first item opens it */
+.header-more-dot.is-waiting {
+  background: var(--status-blocked);
+}
+
 .header-more-dot {
   position: absolute;
   top: var(--space-1);
@@ -2156,6 +2336,13 @@ button {
   color: var(--text);
   font-family: var(--font-mono);
   white-space: pre-wrap;
+}
+
+/* the selected chat's totals and goal under the path (lib/sessionStats.ts), at every width */
+.header-more-session {
+  display: flex;
+  flex-direction: column;
+  margin-top: var(--space-1);
 }
 
 /* From 769px the header is two zones. Over the sidebar, the sidebar's own top row (its toggle

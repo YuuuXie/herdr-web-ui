@@ -46,6 +46,7 @@ export const MACHINES_KO: Record<string, string> = {
   "This PC runs a bridge from a different version of Ovis. Update it to reconnect; herdr sessions keep running.": "이 PC의 브리지가 다른 버전의 Ovis입니다. 업데이트하면 다시 연결됩니다. herdr 세션은 계속 돕니다.",
   "Saved in herdr": "herdr에 저장됨",
   "Connect once to enable automatic reconnection. Installation and startup need separate approval.": "한 번 연결하면 이후 자동으로 다시 연결됩니다. 설치 및 시작에는 별도의 승인이 필요합니다.",
+  "A machine of herdr-core. Add, rename or remove it with hc machine or in the Herdr app.": "herdr-core의 머신입니다. 추가, 이름 변경, 삭제는 hc machine 명령이나 Herdr 앱에서 하세요.",
   "Managed by herdr. Rename, disable or remove it there.": "herdr에서 관리합니다. 이름 변경, 비활성화 또는 삭제는 herdr에서 하세요.",
   "Browser access uses a bridge on this PC. Review any installation or startup changes before connecting.": "브라우저 접근에는 이 PC의 브리지가 사용됩니다. 연결하기 전에 설치 또는 시작에 따른 변경 사항을 확인하세요.",
   "Update bridge": "브리지 업데이트",
@@ -118,4 +119,5 @@ export const MACHINES_KO: Record<string, string> = {
   "Update this PC's Ovis and connect": "이 PC의 Ovis를 업데이트하고 연결",
   "Updating {name}'s own Ovis": "{name}의 Ovis 업데이트 중",
   "That PC's own updater installs it there. Existing herdr sessions keep running.": "그 PC의 자체 업데이터가 그곳에 설치합니다. 기존 herdr 세션은 계속 돕니다.",
+  "Removes this PC here. To end its access too, revoke it under Phone & devices on that PC.": "이 PC에서만 지웁니다. 접근까지 끊으려면 그 PC의 폰 및 기기에서 취소하세요.",
 };

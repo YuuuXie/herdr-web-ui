@@ -372,6 +372,59 @@ describe("Ovis-origin Pi transcript receipts", () => {
     await f.socket.wait((frame) => frame.type === "pending-messages" && frame.removed?.some((item: any) => item.id === receipt.id && item.outcome === "consumed"), from);
   }, 20_000);
 
+  it("keeps no receipt for a command Pi runs, which it never records as sent", async () => {
+    const transcript = piFile("pi-command");
+    const f = await setup("pi-command", "pi", "› Message\n", {}, false, transcript);
+    f.socket.send({ type: "conversation-watch", pane_id: f.pane, enabled: true });
+    const from = f.socket.seen.length;
+    // a builtin, sent now and queued for the next turn: Pi writes no user record of either
+    f.socket.send({ type: "submit", id: 905, pane_id: f.pane, text: "/model", payload: "/model", delivery: "immediate" });
+    expect((await f.socket.result(905)).ok).toBe(true);
+    await f.waitBytes(`${paste("/model")}\r`);
+    await f.queue(906, "/thinking high");
+    await f.state("idle");
+    await f.waitBytes(`${paste("/thinking high")}\r`);
+    // a shell command, recorded as its output
+    f.socket.send({ type: "submit", id: 908, pane_id: f.pane, text: "!git status", payload: "!git status", delivery: "immediate" });
+    expect((await f.socket.result(908)).ok).toBe(true);
+    await f.waitBytes(`${paste("!git status")}\r`);
+    // an unknown name is a message to Pi, recorded as typed: it keeps its receipt
+    f.socket.send({ type: "submit", id: 907, pane_id: f.pane, text: "/not-a-pi-command", payload: "/not-a-pi-command", delivery: "immediate" });
+    expect((await f.socket.result(907)).ok).toBe(true);
+    await f.socket.wait((frame) => frame.type === "pending-messages" && frame.pane_id === f.pane
+      && frame.messages.some((item: PendingMessage) => item.request_id === 907 && item.error?.code === "pi_transcript_pending"), from);
+    const receipts = f.socket.seen.slice(from).flatMap((frame) => frame.type === "pending-messages" ? frame.messages as PendingMessage[] : []);
+    // the queued row itself shows while it waits; only a receipt after Enter carries a transcript code
+    expect(receipts.filter((item) => ["/model", "/thinking high", "!git status"].includes(item.text) && item.error?.code?.includes("transcript"))).toEqual([]);
+  }, 20_000);
+
+  it("confirms a receipt queued behind a Pi command once its record lands, each sent once and in order", async () => {
+    const transcript = piFile("pi-command-queue");
+    const f = await setup("pi-command-queue", "pi", "› Message\n", {}, false, transcript);
+    f.socket.send({ type: "conversation-watch", pane_id: f.pane, enabled: true });
+    const command = await f.queue(910, "/model sonnet");
+    const message = await f.queue(911, "after the switch");
+    const from = f.socket.seen.length;
+    await f.state("idle");
+    await f.removed(command.id, "sent");
+    await f.waitBytes(`${paste("/model sonnet")}\r`);
+    // the queue advances one message per turn
+    await f.state("working"); await f.state("idle");
+    await f.removed(message.id, "sent");
+    // the command left no receipt to wait for, so the message behind it is not held back
+    const sent = await f.socket.wait((frame) => frame.type === "pending-messages" && frame.pane_id === f.pane
+      && frame.messages.some((item: PendingMessage) => item.text === "after the switch" && item.error?.code === "pi_transcript_pending"), from);
+    const receipt = sent.messages.find((item: PendingMessage) => item.text === "after the switch" && item.error?.code === "pi_transcript_pending");
+    expect(receipt.id).not.toBe(message.id);
+    expect(f.bytes()).toBe(`${paste("/model sonnet")}\r${paste("after the switch")}\r`);
+    const receipts = f.socket.seen.slice(from).flatMap((frame) => frame.type === "pending-messages" ? frame.messages as PendingMessage[] : []);
+    expect(receipts.filter((item) => item.text === "/model sonnet" && item.error?.code?.includes("transcript"))).toEqual([]);
+    // Pi records the switch as nothing a user typed, and the message as typed
+    appendFileSync(transcript, piLine("u1", "a0", "user", "after the switch"));
+    await f.removed(receipt.id, "consumed");
+    expect(f.bytes()).toBe(`${paste("/model sonnet")}\r${paste("after the switch")}\r`);
+  }, 20_000);
+
   it("keeps explicit Send now non-resendable while Pi works", async () => {
     const transcript = piFile("pi-send-now");
     const f = await setup("pi-send-now", "pi", "› Message\n", {}, false, transcript);
@@ -1911,7 +1964,8 @@ describe("a create request's first message", () => {
     expect(res.status).toBe(200);
     const tab = await res.json() as { pane_id: string; agent_started: boolean; first_message: { id: string } | null };
     expect(tab.agent_started).toBeTrue();
-    expect(tab.first_message).not.toBeNull();
+    // queued for the page that asked: nothing says held
+    expect(tab.first_message).toEqual({ id: expect.any(String) });
     expect(launches.at(-1)).toBe("claude");
     const pane = tab.pane_id;
     // the case's own control: the route queued it while herdr named no agent in the pane
@@ -1936,6 +1990,27 @@ describe("a create request's first message", () => {
     await sent;
     await written(() => f.bytes().endsWith(`${paste("FIRST-first-launched")}\r`), "input timeout", 8_000);
     expect(f.bytes()).toBe(`${paste("FIRST-first-launched")}\r`);
+  }, 30_000);
+
+  it("asked for with no page connection, the create route's answer says it is held (#2743)", async () => {
+    const created = await herdrRpc<{ workspace: { workspace_id: string } }>("workspace.create", { label: "ovis-test-pending-first-unattended-answer", cwd: root, focus: false });
+    const entry: (typeof active)[number] = { stop: () => {}, sockets: [], workspace: created.workspace.workspace_id }; active.push(entry);
+    const server = createServer({ port: 0, stateDir: join(root, "state-first-unattended-answer") });
+    entry.stop = server.stop;
+    standInLaunch = true;
+    const res = await fetch(`http://localhost:${server.port}/api/tab/create`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workspace_id: created.workspace.workspace_id, cwd: root, agent: { kind: "claude" }, first_message: "FIRST-NO-PAGE" }),
+    }).finally(() => { standInLaunch = false; });
+    expect(res.status).toBe(200);
+    const tab = await res.json() as { pane_id: string; agent_started: boolean; first_message: { id: string; held?: string } };
+    expect(tab.agent_started).toBeTrue();
+    expect(tab.first_message).toEqual({ id: expect.any(String), held: "first_message_unattended" });
+    // what the answer says is what the pane's list says
+    const socket = new Socket(server.port); entry.sockets.push(socket);
+    await socket.attach(tab.pane_id);
+    const held = await listed(socket, tab.pane_id, tab.first_message.id, "held");
+    expect(held.messages.find((item: PendingMessage) => item.id === tab.first_message.id).error.code).toBe("first_message_unattended");
   }, 30_000);
 
   it("queued for one launched agent, is held, not typed, when another agent comes up in its terminal", async () => {

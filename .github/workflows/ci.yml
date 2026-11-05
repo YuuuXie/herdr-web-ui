@@ -27,8 +27,13 @@ concurrency:
 jobs:
   changes:
     name: Detect changes
-    runs-on: ubuntu-24.04
+    # light: same-repository runs take the self-hosted pool, fork pull requests stay GitHub-hosted (scripts/light-runner-workflow.test.ts)
+    runs-on: ${{ github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || fromJSON(github.ref == 'refs/heads/main' && vars.CI_MAIN_SELF_HOSTED_LABELS || vars.CI_LIGHT_LABELS || vars.CI_SELF_HOSTED_LABELS || '["self-hosted","self-hosted-ovis"]') }}
     timeout-minutes: 5
+    # actions: read lets the route count the self-hosted runners' queued and running jobs
+    permissions:
+      contents: read
+      actions: read
     outputs:
       code: ${{ steps.filter.outputs.code }}
       draft: ${{ steps.filter.outputs.draft }}
@@ -49,6 +54,8 @@ jobs:
           REQUESTED_LABELS: ${{ inputs.self_hosted_labels }}
           CONFIGURED_LABELS: ${{ vars.CI_SELF_HOSTED_LABELS }}
           MAIN_LABELS: ${{ vars.CI_MAIN_SELF_HOSTED_LABELS }}
+          SELF_HOSTED_CAPACITY: ${{ vars.CI_SELF_HOSTED_CAPACITY }}
+          GH_TOKEN: ${{ github.token }}
         run: bash scripts/ci-runner-route.sh >> "$GITHUB_OUTPUT"
       - id: filter
         env:
@@ -109,7 +116,7 @@ jobs:
         if: needs.changes.outputs.draft != 'true'
       - run: bun run build
         if: needs.changes.outputs.draft != 'true'
-      - run: bun test ./scripts/windows-plugin.test.ts ./scripts/plugin-runtime.test.ts ./scripts/phone-setup.test.ts ./server/windows-native.test.ts ./server/omp-images.test.ts
+      - run: bun test ./scripts/windows-plugin.test.ts ./scripts/plugin-runtime.test.ts ./scripts/phone-setup.test.ts ./server/windows-native.test.ts ./server/omp-images.test.ts ./server/claude-command-history.test.ts
         if: needs.changes.outputs.draft != 'true'
   macos-session:
     name: Native macOS session identity
@@ -183,7 +190,8 @@ jobs:
     name: herdr-core live contract
     needs: changes
     if: needs.changes.outputs.code == 'true'
-    runs-on: ubuntu-24.04
+    # light: same-repository runs take the self-hosted pool, fork pull requests stay GitHub-hosted (scripts/light-runner-workflow.test.ts)
+    runs-on: ${{ github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || fromJSON(github.ref == 'refs/heads/main' && vars.CI_MAIN_SELF_HOSTED_LABELS || vars.CI_LIGHT_LABELS || vars.CI_SELF_HOSTED_LABELS || '["self-hosted","self-hosted-ovis"]') }}
     timeout-minutes: 10
     env:
       HERDR_TEST_MODE: unit
@@ -283,7 +291,7 @@ jobs:
       # The herdr-backed lanes of every runner on the self-hosted PC share check.ts's slots
       # (scripts/self-hosted-runner/run.sh): at most CHECK_MAX_RUNS at once, and a lane that finds
       # them taken waits its turn instead of failing. A hosted runner has the slots to itself.
-      CHECK_MAX_RUNS: 3
+      CHECK_MAX_RUNS: 6
       CHECK_WAIT_SECONDS: 2400
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -330,7 +338,7 @@ jobs:
       # The herdr-backed lanes of every runner on the self-hosted PC share check.ts's slots
       # (scripts/self-hosted-runner/run.sh): at most CHECK_MAX_RUNS at once, and a lane that finds
       # them taken waits its turn instead of failing. A hosted runner has the slots to itself.
-      CHECK_MAX_RUNS: 3
+      CHECK_MAX_RUNS: 6
       CHECK_WAIT_SECONDS: 2400
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -381,10 +389,17 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
   browser-other:
-    name: Browser regression (other scripts)
+    name: Browser regression (other scripts${{ strategy.job-total > 1 && format(' {0}/{1}', matrix.shard, strategy.job-total) || '' }})
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ${{ fromJSON(needs.changes.outputs.linux) }}
+    # A hosted runner has 4 CPUs: one job running every script there took about 28 minutes, and
+    # frame-timing checks failed under the load. So hosted runs split the scripts over four jobs
+    # (scripts/ci-browser-parallel.ts's BROWSER_SHARD); a self-hosted run keeps one job.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(contains(needs.changes.outputs.linux, 'self-hosted') && '[1]' || '[1,2,3,4]') }}
     # a wait for a slot counts against it
     timeout-minutes: 50
     env:
@@ -392,7 +407,7 @@ jobs:
       # The herdr-backed lanes of every runner on the self-hosted PC share check.ts's slots
       # (scripts/self-hosted-runner/run.sh): at most CHECK_MAX_RUNS at once, and a lane that finds
       # them taken waits its turn instead of failing. A hosted runner has the slots to itself.
-      CHECK_MAX_RUNS: 3
+      CHECK_MAX_RUNS: 6
       CHECK_WAIT_SECONDS: 2400
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -437,7 +452,8 @@ jobs:
         env:
           # Every script of scripts/ci-browser.sh except the two browser-main runs.
           BROWSER_EXCLUDE: scripts/ui-regression.ts,scripts/ui-contexts-regression.ts
-          BROWSER_WORKERS: ${{ runner.environment == 'self-hosted' && '6' || '4' }}
+          BROWSER_SHARD: ${{ matrix.shard }}/${{ strategy.job-total }}
+          BROWSER_WORKERS: ${{ runner.environment == 'self-hosted' && '6' || '3' }}
         run: bun run check run -- bun scripts/ci-browser-parallel.ts
       # About 2,000 screenshots of a green run cost ~50 s to upload on the job that ends a run last,
       # so they go up only when the job failed; the report and every script's log always do.
@@ -445,7 +461,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: browser-other-${{ github.run_id }}-${{ github.run_attempt }}
+          name: browser-other-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             .ci/report.json
             .ci/browser-logs/**
@@ -455,7 +471,7 @@ jobs:
         if: failure() || cancelled()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: browser-other-${{ github.run_id }}-${{ github.run_attempt }}
+          name: browser-other-${{ matrix.shard }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             .ci/report.json
             .ci/browser-logs/**
@@ -468,7 +484,8 @@ jobs:
     name: Integration and browser
     needs: [changes, integration, browser-main, browser-other]
     if: always()
-    runs-on: ubuntu-24.04
+    # light: same-repository runs take the self-hosted pool, fork pull requests stay GitHub-hosted (scripts/light-runner-workflow.test.ts)
+    runs-on: ${{ github.event.pull_request && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-24.04' || fromJSON(github.ref == 'refs/heads/main' && vars.CI_MAIN_SELF_HOSTED_LABELS || vars.CI_LIGHT_LABELS || vars.CI_SELF_HOSTED_LABELS || '["self-hosted","self-hosted-ovis"]') }}
     timeout-minutes: 5
     steps:
       - name: Check results

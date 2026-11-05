@@ -18,7 +18,10 @@ import { NO_AGENT_MESSAGE } from "../../shared/submit-outcome.ts";
 import type { AgentIntegration, AgentStatus, CommandForm, CommandOutcome, ConversationTurn, DevicePairedEvent, DevicesRevokedAll, HealthAuth, IntegrationsResponse, Machine, MachineEvent, OmoActivity, OmoTask, PairedDevice, PairingCode, PaneBackgroundAgentDetail, PaneDirection, PaneFindMatch, PaneFindRequest, PanePlan, PaneResized, PaneSplit, PaneSwapped, PaneZoomed, PendingMessage, PlanStep, PluginActionResult, PluginActions, PluginActionsResponse, PortalStatus, RelayStatus, SecuritySummary, ServerMessage, SessionSnapshot, SlashCommand, TabMoved, TabMovedToWorkspace, UsageReport, WorkspaceCreated, WorkspaceInfo, WorktreeEntry, WorktreeListing, WorktreeOpened, WorktreeRemoved } from "../../shared/protocol.ts";
 import type { PushSubscriptionStatus, RepoBranchComparison, RepoDiffFile, RepoDiffFileList, RepoDiffFilePatch, RepoDiffRefs, RepoDiffRepository, RepoDiffScope, SessionHistoryAgent, SessionHistoryResponse, SessionResumeResponse } from "../../shared/protocol.ts";
 import { nextTabLabels, normalizeThemeChange, sharedPreferencesBody, type SharedPreferences } from "../../shared/preferences.ts";
+import type { PullRequestCheckLog, PullRequestView } from "../../shared/pull-request.ts";
 import { VOICE_DEFAULTS, type VoiceStatus } from "../../shared/voice.ts";
+import { ALERT_WEBHOOK_PRESETS, type AlertWebhookSave, type AlertWebhookView } from "../../shared/alert-webhook.ts";
+import { DEFAULT_ALERTS } from "../../shared/notify-policy.ts";
 import { isAgentName } from "../../shared/agent-name.ts";
 import { skillSyntax } from "../../shared/skill-syntax.ts";
 import { firstMessageFault } from "../../shared/launch-rules.ts";
@@ -977,6 +980,52 @@ const DEMO_DIFF: { file: RepoDiffFile; patch: string | null }[] = [
  */
 const DEMO_HEAD = "4f2a9c1d7e3b5a8c6d0e1f2a3b4c5d6e7f8a9b0c";
 const DEMO_MAIN = "7a3e5c19b2d84f06a1c3e5b7d9f1a3c5e7b9d1f3";
+/**
+ * The pull request a worktree's branch has in the demo (GET /api/workspace/pr): one failing check
+ * whose log Send to agent reads, one still running, the rest passed, and two open review threads.
+ * Merge stays off (a required check failed), as GitHub would keep it.
+ */
+const DEMO_PR: PullRequestView = {
+  number: 128,
+  title: "Retry webhook deliveries with backoff",
+  url: "https://github.com/demo/checkout-api/pull/128",
+  state: "open",
+  draft: false,
+  head_ref: "",
+  base_ref: "main",
+  head_oid: DEMO_HEAD,
+  merge_state: "blocked",
+  merge_queue: false,
+  mergeable: false,
+  merge_method: "squash",
+  checks: [
+    { name: "test (node 22)", workflow: "CI", state: "fail", url: "https://github.com/demo/checkout-api/actions/runs/7001/job/9003", job_id: "9003" },
+    { name: "e2e", workflow: "CI", state: "pending", url: "https://github.com/demo/checkout-api/actions/runs/7001/job/9004", job_id: "9004" },
+    { name: "lint", workflow: "CI", state: "pass", url: "https://github.com/demo/checkout-api/actions/runs/7001/job/9001", job_id: "9001" },
+    { name: "typecheck", workflow: "CI", state: "pass", url: "https://github.com/demo/checkout-api/actions/runs/7001/job/9002", job_id: "9002" },
+  ],
+  threads: [
+    { path: "src/webhooks/retry.ts", line: 42, outdated: false, author: "mira", body: "Cap the backoff: after eight tries this waits over four minutes between attempts.", comments: 2, url: "https://github.com/demo/checkout-api/pull/128#discussion_r1" },
+    { path: "src/webhooks/queue.ts", line: 17, outdated: false, author: "jonas", body: "Can a delivery be retried twice if two workers pick it up?", comments: 1, url: "https://github.com/demo/checkout-api/pull/128#discussion_r2" },
+  ],
+  threads_truncated: false,
+};
+const DEMO_PR_LOG = [
+  "> checkout-api@2.4.0 test",
+  "> bun test",
+  "",
+  "src/webhooks/retry.test.ts:",
+  "(pass) retries a failed delivery [3.10ms]",
+  "(fail) gives up after the last attempt [1.42ms]",
+  "  expect(received).toBe(expected)",
+  "  Expected: \"failed\"",
+  "  Received: \"retrying\"",
+  "",
+  " 11 pass",
+  " 1 fail",
+  "error: script \"test\" exited with code 1",
+].join("\n");
+
 const DEMO_REFS: RepoDiffRefs["refs"] = [
   { name: "refs/heads/main", oid: DEMO_MAIN },
   { name: "refs/remotes/origin/main", oid: DEMO_MAIN },
@@ -1016,6 +1065,7 @@ const DEMO_BRANCH_DIFF: { file: RepoDiffFile; patch: string | null }[] = [
  * token that has not expired), offering the status line until it is turned on.
  */
 let demoStatusline = false;
+const removedUsageAccounts = new Set<string>();
 const USAGE_STATE = new URLSearchParams(location.search).get("demo_usage");
 
 /** Settings → Agents' accounts on the demo: plans as the workstation's CLIs might report them, resets counted from now. */
@@ -1026,7 +1076,7 @@ const USAGE_STATE = new URLSearchParams(location.search).get("demo_usage");
  * and code, and signs in after a few reads. Without the switch the demo runs no login.
  */
 const SIGN_IN_DEMO = new URLSearchParams(location.search).get("demo_sign_in") === "1";
-const signInDemo = { panes: new Map<string, { provider: "claude" | "codex"; reads: number; code: boolean }>(), signedIn: new Set<string>(), next: 1 };
+const signInDemo = { panes: new Map<string, { provider: "claude" | "codex"; account: string; reads: number; code: boolean }>(), signedIn: new Set<string>(), next: 1 };
 const CLAUDE_SIGN_IN_URL = "https://claude.com/cai/oauth/authorize?code=true&client_id=9d1c250a-e61b-44d9-88ed-5944d1962f5e&response_type=code&redirect_uri=https%3A%2F%2Fplatform.claude.com%2Foauth%2Fcode%2Fcallback&scope=user%3Ainference&code_challenge=demo&code_challenge_method=S256&state=demo";
 
 function usageReport(): UsageReport {
@@ -1287,10 +1337,24 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
   if (path === "/api/herdr/update") return json({ supported: false, phase: "idle", server_version: null, binary_version: null, stale: false, output: null, finished_at: null }, 200, { "cache-control": "no-store" });
   if (path === "/api/portal") return json(demoPortal(), 200, { "cache-control": "no-store" });
   if (path === "/api/relay") return json(demoRelayStatus(), 200, { "cache-control": "no-store" });
-  if (path === "/api/relay/start" || path === "/api/relay/stop" || path === "/api/relay/offer" || path === "/api/relay/reset-identity") {
+  if (path === "/api/relay/start" || path === "/api/relay/stop" || path === "/api/relay/offer" || path === "/api/relay/reset-identity"
+    || path === "/api/relay/link" || path === "/api/relay/pairing" || path === "/api/relay/code" || path === "/api/relay/code/cancel") {
     if (method !== "POST") return error("method_not_allowed", "Use GET for status and POST for relay actions.", 405);
     if (demoAuth.role === "watch") return error("read_only", "this device can only watch", 403);
     if (path === "/api/relay/offer") return demoRelayOffer();
+    if (path === "/api/relay/link") {
+      if (!demoRelayOnline) return error("relay_off", "Start the relay before pairing.", 409);
+      return json({ url: encodeOffer({ v: 1, server_id: demoRelayServerId(), server_public_key: DEMO_RELAY_PUBLIC_KEY, relay: DEMO_RELAY }, DEMO_RELAY_APP) }, 200, { "cache-control": "no-store" });
+    }
+    // a made-up code: no device can find the demo with it, as no relay holds it
+    if (path === "/api/relay/code") {
+      if (!demoRelayOnline) return error("relay_off", "Start the relay before pairing.", 409);
+      const pairing = startDemoPairing();
+      return json({ code: "7K3QD-M2XHA", expires_at: pairing.expires_at, server_id: demoRelayServerId() }, 200, { "cache-control": "no-store" });
+    }
+    if (path === "/api/relay/code/cancel") return json({ ok: true }, 200, { "cache-control": "no-store" });
+    // no phone ever compares digits with the demo, so none is waiting to be approved
+    if (path === "/api/relay/pairing") return error("relay_pairing_gone", "That phone is no longer waiting: it left, was decided, or its time ran out.", 404);
     if (path === "/api/relay/start") demoRelayOnline = true;
     else if (path === "/api/relay/stop") demoRelayOnline = false;
     // a new identity: the offers made so far name a PC that no longer exists; the link stays as it was
@@ -1300,7 +1364,23 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
   if (path === "/api/portal/start" || path === "/api/portal/stop" || path === "/api/portal/invite") return error("portal_unsupported", "The demo opens no public address.", 409);
   if (path === "/api/herdr-ui") return json({ copy_on_select: true }, 200, { "cache-control": "no-store" });
   if (path === "/api/access") return json({ port: 7317, relay: demoRelayStatus(), tailscale: { state: "running", dns_name: "workstation.example.ts.net", serving_url: "https://workstation.example.ts.net", serve_command: null, serve_url: null } });
-  if (path === "/api/usage") return json(usageReport(), 200, { "cache-control": "no-store" });
+  if (path === "/api/usage") {
+    const report = usageReport();
+    const removed = report.providers.filter((account) => removedUsageAccounts.has(account.key));
+    return json({ ...report, providers: report.providers.filter((account) => !removedUsageAccounts.has(account.key)), ...(removed.length > 0 ? { removed } : {}) }, 200, { "cache-control": "no-store" });
+  }
+  if (path === "/api/usage/accounts") {
+    if (method !== "DELETE" && method !== "POST") return error("method_not_allowed", "Use DELETE or POST /api/usage/accounts", 405);
+    if (demoAuth.role === "watch") return error("read_only", "this device can only watch", 403);
+    let body: unknown;
+    try { body = JSON.parse(String(init?.body ?? "{}")); } catch { return error("invalid_json", "The body is not JSON", 400); }
+    if (typeof body !== "object" || body === null || !("account" in body) || typeof body.account !== "string" || body.account === "") return error("invalid_account", "Name one listed account", 400);
+    const key = body.account;
+    if (method === "POST") { removedUsageAccounts.delete(key); return new Response(null, { status: 204 }); }
+    if (!usageReport().providers.some((account) => account.key === key)) return error("account_not_found", "This PC no longer lists that account", 404);
+    removedUsageAccounts.add(key);
+    return new Response(null, { status: 204 });
+  }
   if (path === "/api/usage/statusline") {
     if (method === "POST") {
       let raw: unknown;
@@ -1315,7 +1395,7 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     if (login === undefined) return error("login_not_found", "No sign-in this server started runs in that pane", 404);
     login.reads += 1;
     const ended = login.provider === "claude" ? login.code : login.reads > 3;
-    if (ended) signInDemo.signedIn.add(login.provider);
+    if (ended) { signInDemo.signedIn.add(login.provider); removedUsageAccounts.delete(login.account); }
     if (ended) return json({ provider: login.provider, url: null, user_code: null, wants_code: false, ended: true, succeeded: true, account: login.provider === "claude" ? "me@example.test" : "codex@example.test" }, 200, { "cache-control": "no-store" });
     return json(login.provider === "claude"
       ? { provider: "claude", url: CLAUDE_SIGN_IN_URL, user_code: null, wants_code: true, ended: false }
@@ -1336,10 +1416,11 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
   }
   if (path === "/api/usage/login") {
     if (SIGN_IN_DEMO && method === "POST") {
-      const body = JSON.parse(String(init?.body ?? "{}")) as { provider?: string; follow?: boolean };
+      const body = JSON.parse(String(init?.body ?? "{}")) as { provider?: string; follow?: boolean; account?: string };
       if (!body.follow || (body.provider !== "claude" && body.provider !== "codex")) return error("demo", "This demo follows Claude Code and Codex only.", 409);
+      if (body.account !== undefined && !body.account.startsWith(`${body.provider}:`)) return error("account_not_found", "This PC no longer lists that account. Refresh and try again.", 404);
       const login = `demo-login-${signInDemo.next++}`;
-      signInDemo.panes.set(login, { provider: body.provider, reads: 0, code: false });
+      signInDemo.panes.set(login, { provider: body.provider, account: body.account ?? (body.provider === "claude" ? "claude:demo-claude" : "codex:demo-codex-home"), reads: 0, code: false });
       return json({ login_id: login, device_auth: body.provider === "codex" });
     }
     if (method === "GET") {
@@ -1368,6 +1449,7 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
   }
   if (path === "/api/cliproxy/login" || path === "/api/cliproxy/callback") return error("demo", "Sign in from an installed server, not the public demo.", 409);
   if (path === "/api/push" || path.startsWith("/api/push/")) return pushRoute(path, method, init);
+  if (path === "/api/alerts/webhook" || path === "/api/alerts/webhook/test") return alertWebhookRoute(path, method, init);
   if (path === "/api/machines/settings") return json({ auto_update_bridges: true });
   if (path.startsWith("/api/machines/")) return error("demo", "remote PCs need a real machine", 404);
 
@@ -2019,6 +2101,15 @@ async function route(url: URL, method: string, init: RequestInit | undefined, in
     if (!entry) return error("not_found", "nothing changed at that path in this comparison", 404);
     return json({ ...shared, file: entry.file, patch: entry.patch, unavailable: entry.patch === null ? "binary" : null, truncated: false, limits: { max_patch_bytes: DEMO_DIFF_LIMITS.max_patch_bytes, context_lines: DEMO_DIFF_LIMITS.context_lines } } satisfies RepoDiffFilePatch);
   }
+  if (path === "/api/workspace/pr" || path === "/api/workspace/pr/log" || path === "/api/workspace/pr/merge") {
+    const root = snapshot().panes.find((pane) => pane.pane_id === paneId)?.cwd ?? query.get("directory") ?? "/home/demo/checkout-api";
+    const branch = [...repositories.values()].flatMap((repo) => repo.checkouts).find((checkout) => checkout.path === root)?.branch ?? "main";
+    // a worktree's branch has a pull request in the demo; main has none
+    if (branch === "main") return error("no_pull_request", "This branch has no pull request", 404);
+    if (path === "/api/workspace/pr/merge") return error("merge_refused", "The demo merges nothing.", 409);
+    if (path === "/api/workspace/pr/log") return json({ job_id: query.get("job_id") ?? "", text: DEMO_PR_LOG, truncated: true } satisfies PullRequestCheckLog);
+    return json({ ...DEMO_PR, head_ref: branch } satisfies PullRequestView, 200, { "cache-control": "no-store" });
+  }
   if (path.startsWith("/api/fs/")) return error("not_found", "the demo has no files to open", 404);
   return error("demo", `${method} ${path} is not part of the demo`, 404);
 }
@@ -2082,6 +2173,32 @@ async function pushRoute(path: string, method: string, init: RequestInit | undef
     return notFound();
   }
   return error("method_not_allowed", `${method} is not supported on ${path}`, 400);
+}
+
+/** Settings → Alerts → Also send to: kept in this page only, and never posted anywhere. */
+const NO_WEBHOOK: AlertWebhookView = { configured: false, preset: null, target: null, chat_id: null, alerts: DEFAULT_ALERTS, last_success_at: null, last_failure_at: null, last_error: null };
+let demoWebhook: AlertWebhookView = NO_WEBHOOK;
+const demoMask = (preset: string, secret: string): string => { if (preset === "telegram") return "…"; try { return `${new URL(secret).host}/…`; } catch { return "…"; } };
+
+function alertWebhookRoute(path: string, method: string, init: RequestInit | undefined): Response {
+  if (path === "/api/alerts/webhook/test" && method === "POST") {
+    if (!demoWebhook.configured) return error("webhook_not_configured", "no destination is set", 404);
+    demoWebhook = { ...demoWebhook, last_success_at: new Date().toISOString(), last_error: null };
+    return new Response(null, { status: 204 });
+  }
+  if (path !== "/api/alerts/webhook") return error("method_not_allowed", `${method} is not supported on ${path}`, 400);
+  if (method === "GET") return json(demoWebhook, 200, { "cache-control": "no-store" });
+  if (method === "DELETE") { demoWebhook = NO_WEBHOOK; return new Response(null, { status: 204 }); }
+  if (method !== "PUT") return error("method_not_allowed", `${method} is not supported on ${path}`, 400);
+  const body = (typeof init?.body === "string" ? JSON.parse(init.body) : {}) as Partial<AlertWebhookSave>;
+  const preset = body.preset;
+  if (!preset || !(ALERT_WEBHOOK_PRESETS as readonly string[]).includes(preset)) return error("invalid_webhook", "unknown destination", 400);
+  const secret = preset === "telegram" ? body.token : body.url;
+  const same = demoWebhook.configured && demoWebhook.preset === preset;
+  if (!secret && !same) return error("invalid_webhook", preset === "telegram" ? "a bot token is required" : "a URL is required", 400);
+  demoWebhook = { ...NO_WEBHOOK, configured: true, preset, target: secret ? demoMask(preset, secret) : demoWebhook.target,
+    chat_id: preset === "telegram" ? body.chat_id ?? null : null, alerts: body.alerts ?? demoWebhook.alerts };
+  return json(demoWebhook, 200, { "cache-control": "no-store" });
 }
 
 const realFetch = window.fetch.bind(window);
@@ -2273,6 +2390,9 @@ class DemoSocket extends EventTarget {
       if (this.requests.size > 128) this.requests.delete(this.requests.keys().next().value!);
     }
     switch (message.type) {
+      case "machine-events":
+        // Not advertised by the demo: its machine document still arrives through its SSE stand-in.
+        break;
       case "role":
         this.mode = message.mode === "observe" ? "observe" : "interact";
         if (this.mode === "observe") this.holdPending(undefined, "read_only", "This connection now only watches. Pending messages will not be sent automatically.");

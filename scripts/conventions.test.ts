@@ -129,11 +129,19 @@ describe("demo transport", () => {
    * (server to server, or behind a state the demo never reaches).
    */
   const DEMO_404: Record<string, string> = {
+    "/api/account/enroll": "account linking: no screen of the app asks for it yet (the account screens come with their own demo answers)",
+    "/api/account/introduce": "account linking: no screen of the app asks for it yet (the account screens come with their own demo answers)",
+    "/api/account/introduction": "account linking: no screen of the app asks for it yet (the account screens come with their own demo answers)",
+    "/api/account/link": "account linking: no screen of the app asks for it yet (the account screens come with their own demo answers)",
+    "/api/account/records": "account linking: no screen of the app asks for it yet (the account screens come with their own demo answers)",
+    "/api/account/status": "account linking: no screen of the app asks for it yet (the account screens come with their own demo answers)",
     "/api/auth": "the demo is never locked (/api/health says authenticated), so neither the token form nor sign-out runs",
     "/api/bridge": "a remote PC's bridge endpoint, asked by another server, never by the browser",
+    "/api/runtime": "switching the runtime: the demo's health carries no herdr_runtime, so Settings offers no Switch",
     "/api/event": "OpenCode v2's own service's event stream, read by this server (opencode-service.ts), never by the browser",
     "/api/info": "OpenCode v2's own service's identity, checked by this server (opencode-service.ts), never by the browser",
     "/api/devices/pair": "pairing a device: the demo is never locked, so the pairing form does not run",
+    "/api/relay/pairings": "the waiting relay pairings, read by `plugin.ts pair --approve` in the PC's terminal; the browser hears of them on its event stream",
     "/api/pane/conversation/image": "an image in a chat turn: the demo's transcripts carry none (listed when this guard was added)",
     "/api/pane/conversation/tool-output": "a tool call's full output: not part of the demo (listed when this guard was added)",
     "/api/pane/image": "pasting an image: the demo stores no files (listed when this guard was added)",
@@ -187,6 +195,7 @@ describe("names from before Ovis", () => {
     "server/pty/host.test.ts": "tests that both PTY hosts keep the token from the command under either name",
     "server/remote-host.ts": "a remote bundle published before the rename reads the old name",
     "install.sh": "reads the old settings of an earlier install",
+    "scripts/install-herdr-core.test.ts": "tests that install.sh replaces an earlier install's runtime under its old name",
     "install.ps1": "reads the old settings of an earlier install",
     "app/windows/src/Setup.cs": "reads the token of an earlier install's settings, as install.ps1 does",
     "app/windows/tests/SetupTests.cs": "tests that read",

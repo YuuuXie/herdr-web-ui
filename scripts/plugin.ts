@@ -34,7 +34,7 @@ import qrcode from "qrcode-generator";
 import { DEFAULT_PORT } from "../shared/protocol.ts";
 import { decodeOffer } from "../shared/relay-offer.ts";
 import type { RemoteAccess } from "../shared/protocol.ts";
-import { canBind, FALLBACK_PORTS, freePort, savedPort } from "./plugin-port.ts";
+import { canServe, FALLBACK_PORTS, freePort, savedPort } from "./plugin-port.ts";
 import { activePluginScript } from "./plugin-runtime.ts";
 import { herdrStateDir } from "./plugin-state.ts";
 import { HTTPS_PORT_VARIABLE, HTTPS_PORTS, httpsPorts, parseTailscale, parseTailscaleIp, parseTailscaleOwner, readTailscale, tailscaleBinary } from "../server/tailscale.ts";
@@ -173,6 +173,7 @@ const PORT_FILE = join(APP_STATE_DIR, "plugin-port");
 const portSet = (env["PORT"] ?? "") !== "";
 let port = portSet ? Number(env["PORT"]) : savedPort(PORT_FILE) ?? DEFAULT_PORT;
 const host = env["HOST"] ?? "127.0.0.1";
+const ipv6Loopback = env["OVIS_IPV6_LOOPBACK"] === "1";
 const originOf = (value: number): string => `http://${host === "0.0.0.0" ? "127.0.0.1" : host}:${value}`;
 let origin = originOf(port);
 
@@ -412,7 +413,7 @@ function keepPreviousLog(): void {
  * was held by a server of ours that came up meanwhile.
  */
 async function settlePort(): Promise<"ready" | "running" | "failed"> {
-  if (await canBind(host, port)) return "ready";
+  if (await canServe(host, port, ipv6Loopback)) return "ready";
   // a start still coming up holds the port: wait for it rather than open a second server beside it
   const deadline = Date.now() + READY_TIMEOUT_MS;
   while (recordedPid() !== null && Date.now() < deadline) {
@@ -442,7 +443,7 @@ async function settlePort(): Promise<"ready" | "running" | "failed"> {
     failStart(`${blocked} Set another PORT in ${settings}`);
     return "failed";
   }
-  const free = await freePort(port, DEFAULT_PORT, (candidate) => canBind(host, candidate));
+  const free = await freePort(port, DEFAULT_PORT, (candidate) => canServe(host, candidate, ipv6Loopback));
   if (free === null) {
     failStart(`${blocked} Neither can ${[DEFAULT_PORT, ...FALLBACK_PORTS].filter((candidate) => candidate !== port).join(", ")}. Put PORT=<a free port> in ${settings}`);
     return "failed";
@@ -782,6 +783,7 @@ async function stopInTurn(dependencies: StopDependencies): Promise<number> {
  * phone opens (when Tailscale serves one), and that address as a QR code for a screen to scan.
  */
 async function pair(): Promise<number> {
+  if (process.argv.includes("--approve")) return approvePairings();
   if (!(await health())) {
     process.stderr.write(`Ovis is not running at ${origin}; start it first\n`);
     return 1;
@@ -836,6 +838,40 @@ async function pair(): Promise<number> {
     process.stderr.write(`Could not read Ovis relay pairing: ${error instanceof Error ? error.message : String(error)}\n`);
   }
   process.stdout.write(out.join("\n") + "\n");
+  return 0;
+}
+
+/**
+ * `pair --approve`: the devices waiting to pair through the relay by comparing digits, one by one,
+ * with the digits their screens show, approved or declined here. The PC's terminal is the PC
+ * itself, so this is approval on this PC (docs/account.md, "Who may admit a device").
+ */
+async function approvePairings(): Promise<number> {
+  if (!(await health())) {
+    process.stderr.write(`Ovis is not running at ${origin}; start it first\n`);
+    return 1;
+  }
+  const headers: Record<string, string> = { "content-type": "application/json", "x-herdr-machine": "1", "x-herdr-update": "1", origin };
+  if ((env["OVIS_TOKEN"] ?? "") !== "") headers["authorization"] = `Bearer ${env["OVIS_TOKEN"]}`;
+  const listed = await fetch(`${origin}/api/relay/pairings`, { headers });
+  if (!listed.ok) {
+    process.stderr.write(`could not read the waiting pairings (${listed.status}): ${await listed.text()}\n`);
+    return 1;
+  }
+  const { pairings } = (await listed.json()) as { pairings: { id: string; label: string; digits: string; intent?: string }[] };
+  if (pairings.length === 0) {
+    process.stdout.write("No device is waiting to pair.\n");
+    return 0;
+  }
+  const lines = console[Symbol.asyncIterator]();
+  for (const pairing of pairings) {
+    const what = pairing.intent === "account" ? "join your account" : "pair with this PC";
+    process.stdout.write(`${pairing.label} wants to ${what}. Approve it only if its screen shows ${pairing.digits.slice(0, 3)} ${pairing.digits.slice(3)}. Approve? [y/N] `);
+    const answer = await lines.next();
+    const decision = !answer.done && /^y(es)?$/i.test(answer.value.trim()) ? "approve" : "decline";
+    const decided = await fetch(`${origin}/api/relay/pairing`, { method: "POST", headers, body: JSON.stringify({ id: pairing.id, decision }) });
+    process.stdout.write(decided.ok ? `${decision === "approve" ? "Approved" : "Declined"}.\n` : `${pairing.label} is no longer waiting.\n`);
+  }
   return 0;
 }
 

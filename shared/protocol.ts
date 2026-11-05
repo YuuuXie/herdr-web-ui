@@ -1,3 +1,4 @@
+import type { MachineEvent } from "./machines.ts";
 /**
  * Ovis's own HTTP/WebSocket contract, shared by the Bun server and the React client.
  *
@@ -45,9 +46,29 @@ export type HerdrTab = TabInfo;
  * `background_tasks`: an OmO pane's `task` children, or a Claude Code pane's subagents and background commands, still running, counted by the server; absent when none.
  * `background_wait`: the pane is at rest while work its turn started still runs, and the turn goes on when it ends (server/background-wait.ts); absent when not.
  * `plan`: how far the pane's agent's task list or checklist has progressed; absent when it keeps none.
+ *
+ * What herdr-core (server/herdr-core/snapshot.ts) reports about the terminal, each absent where it
+ * reported nothing (and always on herdr's TUI runtime):
+ * `parent_pane_id`: the pane of the terminal that started this one (hc's `parent`), when that pane is shown.
+ * `own_tab`: the pane is in a tab of its own terminal (in Other terminals, or a helper's under its
+ * parent's tab), which herdr-core does not split.
+ * `agent_kind`, `agent_message`, `agent_progress`: the program's own OSC 7501 report: what a blocked
+ * agent waits for (`permission`, `question`, `auth`), its message in its own words (never
+ * translated), and how far it is, 0 to 100.
  */
 export type HerdrPane = PaneInfo & {
   background_tasks?: number; background_wait?: true; plan?: PlanSummary;
+  parent_pane_id?: string;
+  own_tab?: true;
+  agent_kind?: string;
+  agent_message?: string;
+  agent_progress?: number;
+  /**
+   * herdr-core only: the terminal's own grid. Its layout rects are shares of a fixed area there
+   * (server/herdr-core/layout-doc.ts), not cells, so an attach that must not resize the terminal
+   * (an observer, a chat lens) starts at this size instead.
+   */
+  grid?: { cols: number; rows: number };
   /** This bridge's counter of transitions into displayed DONE, scoped by finish_epoch. */
   finish_id?: number;
 };
@@ -74,10 +95,10 @@ export type SessionSnapshot = Omit<HerdrSnapshot, "panes"> & {
 };
 export type { WorkspaceMoved } from "./workspace-lifecycle.ts";
 
-export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarget, SetupJob, SetupRequest, SetupAction, BridgeIdentity, BridgeHealth } from "./machines.ts";
+export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairingRequest, RelayPairingsEvent, RemotePairingRequest, RemotePairingsEvent, Machine, MachineEvent, MachineRoster, PaneTarget, SetupJob, SetupRequest, SetupAction, BridgeIdentity, BridgeHealth } from "./machines.ts";
 
 /** Machine API (same token gate; mutations require X-Herdr-Machine: 1 + same origin)
- * GET /api/health?scope=bridge -> BridgeHealth, never waits for herdr
+ * GET /api/health?scope=bridge -> BridgeHealth, never waits for herdr (a driving owner is told herdr_runtime too)
  * GET /api/bridge -> authenticated BridgeIdentity (socket + runtime compatibility)
  * GET /api/machines -> MachineRoster { machines: Machine[] }; GET /api/machines/events -> MachineEvent SSE
  * GET /api/machines?verify_source_boot=:id -> MachineRoster with verified_source_boot { machine_id, boot_id }:
@@ -104,12 +125,18 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *  GET    /api/health                    -> { ok: true, herdr: HerdrIdentity (shared/machines.ts; terminal_attach false on a
  *                                          Windows herdr and on a bridge that cannot run the PTY sidecar; terminal_mirror: its
  *                                          terminal lens is the pane's screen, repainted; /api/bridge tells the same herdr), auth: HealthAuth,
- *                                          web_ui: { boot_id: string, revision: string | null },
+ *                                          web_ui: { boot_id: string, revision: string | null, server_id?: string (its relay ID,
+ *                                          authenticated only, where it has one: Machine.server_id) },
  *                                          security?: SecuritySummary (authenticated only, no-store),
  *                                          herdr_core?: HerdrCoreFacts (shared/machines.ts; authenticated only, absent until
- *                                          the server's first look for hc has ended) } (boot_id: this server
+ *                                          the server's first look for hc has ended), herdr_runtime?: HerdrRuntimeFacts (a driving owner
+ *                                          only: which runtime this server serves and what Settings may switch it to) } (boot_id: this server
  *                                          lifetime's id, the supervisor's when managed; older servers sent null unmanaged)
  *  GET    /api/session                   -> { snapshot: SessionSnapshot }
+ *  POST   /api/runtime                   -> 202 { accepted: true }; body { runtime: "herdr" | "herdr-core" }, X-Herdr-Update: 1,
+ *         a driving owner only (not watch, not an open install's stranger): saves the choice (runtime-<port>.json) and has
+ *         the launcher restart the server on it (server/herdr-core/runtime-choice.ts); 409 runtime_locked (OVIS_RUNTIME,
+ *         no launcher, the OS), runtime_unavailable (this PC lacks it, or serves it already), runtime_switching
  *  GET    /api/herdr-ui                  -> HerdrUiConfig (this server PC's herdr [ui] copy_on_select,
  *         for local and remote panes alike), no-store
  *  GET    /api/access                    -> RemoteAccess (how a phone can reach this server: what
@@ -136,6 +163,11 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *  POST   /api/relay/stop                -> RelayStatus; closes sessions with shutdown and WS 1001
  *  POST   /api/relay/offer               -> { url, expires_at }; an offer carrying the active one-time pairing code
  *         (the one Devices shows, else a new one); 409 relay_off while off, relay_offline in error
+ *  POST   /api/relay/link                -> { url }; a pairing link without a code, for pairing by comparing
+ *         digits (docs/relay.md); 409 relay_off while off
+ *  POST   /api/relay/pairing             -> { ok: true }; JSON { id, decision: "approve" | "decline" } for a phone
+ *         waiting with the same digits (`relay-pairings` on /api/machines/events); 400 invalid_relay_pairing,
+ *         404 relay_pairing_gone once it left, was decided or ran out of time
  *  POST   /api/relay/reset-identity      -> RelayStatus; revokes relay devices and reconnects if enabled
  *         Relay mutations require drive role, same origin and X-Herdr-Update: 1, and a direct connection
  *         (403 local_required over the relay); a Portal visitor gets 403 owner_only (see Access).
@@ -323,6 +355,20 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *  GET    /api/workspace/diff/refs?pane_id=&directory= -> RepoDiffRefs (the local and remote
  *         branches of that repository, as full refnames with their commits, for choosing a base:
  *         at most `limits.max_refs`, sorted, a remote's symbolic HEAD left out; nothing is fetched)
+ *  GET    /api/workspace/pr?pane_id=&directory= -> PullRequestView (shared/pull-request.ts: the
+ *         pull request of the branch checked out in the pane's folder, or `directory`, read through
+ *         that PC's own `gh` sign-in: title, state, checks failing first with their Actions job ids,
+ *         the unresolved review threads, whether GitHub would merge now and with which default
+ *         method. 409 gh_missing / gh_signed_out / no_github_remote / not_a_repository, 404
+ *         no_pull_request, 502 gh_failed, 504 gh_timeout. A watching device is refused, as for diffs)
+ *  GET    /api/workspace/pr/log?pane_id=&directory=&job_id=&host= -> PullRequestCheckLog (the last
+ *         lines of that Actions job's log, timestamps and colour codes removed, asked of the pull
+ *         request's host: github.com when absent; 400 invalid_job / invalid_host)
+ *  POST   /api/workspace/pr/merge { pane_id?, directory?, number, head_oid, base_ref, method } -> { ok: true }
+ *         (`gh pr merge --<method> --match-head-commit <head_oid>`: only the head the view showed is
+ *         merged, into the base it showed (read again first: 409 pull_request_changed), the branch
+ *         is kept; 400 invalid_body, 409 merge_queue (a base merged through a merge queue, where gh
+ *         would only queue it), 409 merge_refused with GitHub's reason)
  *  GET    /api/pane/prompt?pane_id=     -> PanePromptResponse
  *         (the agent's TUI question/approval menu currently on screen, parsed from the visible pane
  *         text; with no menu, the next prompt Claude Code suggests, grey in its empty input box, and
@@ -330,14 +376,16 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *         as it does for a send cancelled before any reply; older servers send neither)
  *  POST   /api/pane/prompt/answer { pane_id, prompt_id, option_index?, option_indices?, custom_text? }
  *         -> { ok: true } | 409 prompt_changed (the screen no longer shows that prompt)
- *  POST   /api/workspace/create { cwd?, label?, agent?: { kind, name?, args? } }
+ *  POST   /api/workspace/create { cwd?, label?, agent?: { kind, name?, args? }, env? }
  *         -> WorkspaceCreated (workspace.create, then agent.start in the root pane when `agent` is given;
  *         omo, gjc and dsh-tui, which herdr cannot start, are typed into the root pane's shell)
- *  POST   /api/tab/create { workspace_id, cwd?, label?, agent?: { kind, name?, args? }, first_message?, first_message_connection? }
+ *  POST   /api/tab/create { workspace_id, cwd?, label?, agent?: { kind, name?, args? }, first_message?, first_message_connection?, env? }
  *         -> TabCreated (tab.create in that workspace, then the same agent launch in the tab's root
  *         pane; without cwd herdr uses the workspace's folder, without label the tab's number)
  *         Both creates trim `label`; a blank one counts as not given, one over MAX_LABEL_CHARS
- *         (shared/labels.ts) is refused with 400 label_too_long.
+ *         (shared/labels.ts) is refused with 400 label_too_long. `env` ({ NAME: value }) is set in the
+ *         new pane's shell, and so in an agent it starts: names are shell identifiers, values text
+ *         without control characters, at most 64 names and 32 KiB in all (else 400 invalid_env).
  *  POST   /api/tab/rename { tab_id, label } -> { ok: true } (tab.rename; an empty label is refused:
  *         herdr would keep it as the name; over MAX_LABEL_CHARS: 400 label_too_long)
  *  POST   /api/tab/move { tab_id, insert_index } -> TabMoved
@@ -372,7 +420,10 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *  POST   /api/devices/pair/start        -> PairingCode: a six-digit code good for ten minutes, replacing any pending one
  *         (X-Herdr-Machine: 1 + same origin, from a client with full access)
  *  POST   /api/devices/pair { code, label? } -> 204 + Set-Cookie ovis_device (public, like /api/auth;
- *         401 invalid_code when the code is wrong, spent after five tries, or expired)
+ *         401 invalid_code when the code is wrong, spent after five tries, or expired). With
+ *         `Accept: application/json` (a script, never the browser app): 200 DevicePairToken + the same
+ *         Set-Cookie; the script then sends `Authorization: Device <token>` in place of the cookie,
+ *         under the same role, last-seen and revocation
  *  PATCH  /api/devices/:id  { label }    -> PairedDevice;  DELETE /api/devices/:id -> 204 (revoked at its next request)
  *  POST   /api/devices/revoke-all        -> DevicesRevokedAll + Set-Cookie clearing ovis_device and its old name
  *         (X-Herdr-Machine: 1 + same origin, a client that can drive: 403 invalid_origin / read_only;
@@ -389,6 +440,8 @@ export type { DevicePairedEvent, Machine, MachineEvent, MachineRoster, PaneTarge
  *         and one whose keys do not match, so nothing is enumerated; 403 status_unavailable to the open LAN, which
  *         signs in as no device and so owns no record (asked before any subscription is looked at)
  *  GET    /api/usage[?refresh=1]         -> UsageReport (plan limits of the AI subscriptions signed in on this PC)
+ *  DELETE /api/usage/accounts { account } -> 204 (removed from Ovis, CLI sign-in untouched) | 404 account_not_found
+ *  POST   /api/usage/accounts { account } -> 204 (a removed account listed again)
  *  Errors: non-2xx with { error: { code, message } }
  *
  *  Access: every route above except /api/health, /api/auth and /api/devices/pair, plus the
@@ -459,6 +512,11 @@ export interface RelayStatus {
   readonly error: string | null;
 }
 
+/** POST /api/devices/pair's answer to a request that accepts JSON: the device's own credential. */
+export interface DevicePairToken {
+  readonly token: string;
+}
+
 /**
  * POST /api/devices/revoke-all: every paired device lost its pairing access in one durable write,
  * the caller's own included (its device cookie is cleared by the answer). Only pairing ends: the
@@ -470,7 +528,7 @@ export interface DevicesRevokedAll {
   readonly revoked: number;
 }
 
-export type { PushDeliveryFailure, PushKey, PushPayload, PushSubscriptionStatus } from "./push.ts";
+export type { PushAction, PushDeliveryFailure, PushKey, PushPayload, PushSubscriptionStatus } from "./push.ts";
 
 /** One turn of a structured agent conversation (the chat lens source). */
 export interface ConversationTurn {
@@ -585,7 +643,13 @@ export interface ConversationResponse {
   activity?: "thinking" | "working" | "idle";
   /** Stable across appends; changes on transcript replacement or native context clear. */
   history_id?: string;
-  source: "dsh-transcript" | "copilot-transcript" | "grok-transcript" | "agy-transcript" | "muse-transcript" | "letta-transcript" | "claude-transcript" | "omp-transcript" | "omo-transcript" | "gjc-transcript" | "pi-transcript" | "cmd-transcript" | "codex-transcript" | "devin-transcript" | "opencode-transcript" | "hermes-transcript" | "scrollback";
+  /**
+   * The PC's clock as it answered, which the turns' times are on (ISO time): the browser's clock runs
+   * ahead of it by no more than the time the answer was in hand less this. Absent on a scrollback
+   * fallback and from older bridges.
+   */
+  server_time?: string;
+  source: "dsh-transcript" | "copilot-transcript" | "grok-transcript" | "agy-transcript" | "muse-transcript" | "letta-transcript" | "kimi-transcript" | "claude-transcript" | "omp-transcript" | "omo-transcript" | "gjc-transcript" | "pi-transcript" | "cmd-transcript" | "codex-transcript" | "devin-transcript" | "opencode-transcript" | "hermes-transcript" | "scrollback";
   turns: ConversationTurn[];
   metadata?: ConversationMetadata;
   /**
@@ -594,6 +658,12 @@ export interface ConversationResponse {
    * and the pane's output can change it, so the chat re-reads on terminal output.
    */
   screen?: true;
+  /**
+   * On a scrollback answer to a refresh that named the history shown (`history_id`): the reader lost
+   * its proof of the conversation without seeing it end. Keep the turns shown, append nothing, and
+   * read again on the pane's next activity rather than on a timer.
+   */
+  recovery?: "waiting";
   /**
    * Where the first turn sits in the transcript: pass it as `before` for the page
    * of turns before these (with `since`, never reaching back past that cursor), or
@@ -616,6 +686,12 @@ export interface ConversationResponse {
    * agent that keeps no entry tree.
    */
   abandoned?: { count: number; branches: number; summary: string | null };
+  /**
+   * The size in bytes of the transcript file the newest page was read from (Codex: its rollout), as
+   * the read saw it; absent from an older page and from stores that are not one file (OpenCode,
+   * Devin, Hermes, dsh), where the chat says the size is unknown.
+   */
+  transcript_bytes?: number;
 }
 
 export type { PluginActionContext, PluginAction, PluginActions, PluginActionsResponse, PluginActionRequest, PluginActionResult } from "./plugins.ts";
@@ -862,7 +938,7 @@ export interface PromptAnswer {
  *    | insert {id, pane_id, text}
  *  Server -> client frames: snapshot | pty-data | pty-exit | pane-geometry | role-ack
  *    | pane-status | pane-exited | session-changed | conversation-changed | secret-result
- *    | insert-result | watch-data | watch-end | error
+ *    | insert-result | input-result | watch-data | watch-end | error
  *
  *  attach {flow_control:"ack"} opts into per-subscription output credit.
  *  pty-data.flow carries a stream_id and cumulative UTF-8 payload offset;
@@ -904,6 +980,8 @@ export interface PendingMessage {
 }
 
 export type ClientMessage =
+  /** Subscribe to this connection server's authorized machine document; requires machine-events. */
+  | { type: "machine-events"; enabled: boolean }
   /** keep_size: the grid is covered (the chat lens), so the attach leaves the shared pty's size as it is */
   | { type: "attach"; pane_id: string; cols: number; rows: number; flow_control?: "ack"; keep_size?: boolean; /** Opaque browser UUID for device-bound Pi presentation receipts only; never input authority. */ receipt_resume_id?: string }
   | { type: "detach"; pane_id: string }
@@ -913,8 +991,13 @@ export type ClientMessage =
   /** a pane another web bridge holds (`attach_held`): take herdr's attach slot from it, here, now */
   | { type: "take-over"; pane_id: string }
   /** `stop`: the composer's Stop (text a lone ESC). The bridge sends it in the pane's turn, after typing
-   * still on its way, and a message sent next waits for it; an older bridge types it like any key. */
-  | { type: "input"; pane_id: string; text: string; stop?: true }
+   * still on its way, and a message sent next waits for it; an older bridge types it like any key.
+   * `automatic`: the browser's terminal made the text itself (an answer to the program's query), nobody
+   * typed it. On herdr-core it reaches the program as hc's automatic input where hc confirmed it, so it
+   * does not make this viewer the active one; everywhere else, and on an older bridge, it is typed as before.
+   * `id` (feature "input-receipt"): a per-connection integer the bridge answers with an input-result once the
+   * text was written or refused. Without it no input-result comes, as on an older bridge. */
+  | { type: "input"; pane_id: string; text: string; stop?: true; automatic?: true; id?: number }
   | { type: "keys"; pane_id: string; keys: string[] }
   /** a composer message, sent to servers whose snapshot lists "submit": the server types it and
    * its own Enter after a short gap, and answers with a submit-result of the same id. `text` is
@@ -1028,10 +1111,18 @@ export interface ClientConnectionTrace {
   events: ClientConnectionEvent[];
 }
 
-/** What a server supports beyond the base protocol, listed in its `features` frame and its first snapshot; older bridges list nothing. */
-export type ServerFeature = "submit" | "pending-input" | "pending-hold" | "secret-input" | "input-ready" | "take-over" | "watch" | "conversation-watch" | "ping" | "terminal-insert" | "agent-only";
+/**
+ * What a server supports beyond the base protocol, listed in its `features` frame and its first snapshot; older bridges list nothing.
+ * `terminal-history` (herdr-core, which has no viewport to scroll): each attach clears the client's scrollback and replays
+ * the pane's last TERMINAL_HISTORY_LINES lines, so the client keeps the scrollback and scrolls it itself. Without it herdr
+ * owns the scrollback and the client keeps none.
+ */
+export type ServerFeature = "submit" | "pending-input" | "pending-hold" | "secret-input" | "input-ready" | "take-over" | "watch" | "conversation-watch" | "ping" | "terminal-insert" | "agent-only" | "machine-events" | "terminal-history" | "input-receipt";
 
 export type ServerMessage =
+  | { type: "machine-event"; event: MachineEvent }
+  /** the subscription ended because a machine event would overrun this socket's output budget: the page takes them over SSE until its next connection */
+  | { type: "machine-events-ended" }
   /** the first frame of a connection, before the snapshot that can wait seconds on herdr: what this server
    * supports and this socket's `connection` id (the snapshot names the same), and the herdr it reads now
    * (`herdr_lifetime` as a snapshot names it; absent when unproven). A page acts on it before the snapshot only
@@ -1074,6 +1165,10 @@ export type ServerMessage =
    * took or ran them; a refusal names why and nothing was typed, except `insert_failed`, whose bytes
    * may or may not have arrived. Older bridges never send it. */
   | { type: "insert-result"; id: number; pane_id: string; ok: boolean; code?: string; message?: string }
+  /** the answer to an `input` with an `id` (feature "input-receipt"): ok once its bytes were written to the pty or
+   * herdr took them, never that the program read them; a refusal names why (an error frame says it to the user too).
+   * Input whose connection ended before its turn is never typed, and nothing answers it. */
+  | { type: "input-result"; id: number; pane_id: string; ok: boolean; code?: string }
   /** Owner-only receipt and state; only an explicit removed outcome permits deleting a retained client message.
    * `dismissed` removes an uncertain copy, never proves withdrawal or delivery. Existing clients
    * remove owned IDs for any explicit outcome; Edit restores only `discarded`. */
@@ -1087,6 +1182,13 @@ export type ServerMessage =
   | { type: "pane-exited"; pane_id: string }
   /** session structure changed (pane created/closed): refetch /api/session */
   | { type: "session-changed" }
+  /**
+   * herdr moved pane `from` to another workspace under the new ID `to`, wherever the move was made. Sent
+   * before the `session-changed` of that move. The server's own state follows it: pending messages are
+   * under `to` (held for an explicit send), and a terminal attached as `from` ended (`pty-exit`): attach
+   * `to` instead. Older bridges never send it; older clients ignore it.
+   */
+  | { type: "pane-moved"; from: string; to: string }
   /** herdr's own focus moved to this pane (its `pane.focused`, also sent for a tab or workspace brought
    * to the front), whoever moved it: its TUI, its CLI or a script. A browser follows it only when
    * asked to (Settings → Terminal); an older bridge never sends it */

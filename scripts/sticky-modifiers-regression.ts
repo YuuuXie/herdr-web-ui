@@ -53,7 +53,13 @@ try {
         if (message.type === "error") console.log("terminal error", message);
         socket.send(raw);
       });
-      socket.onMessage((raw) => { frames.push(JSON.parse(String(raw))); remote.send(raw); });
+      // the typing frames each key produced, in order: a ping that confirms typing (#2587) can go out
+      // after any of them, once the pong of the one before comes back
+      socket.onMessage((raw) => {
+        const frame = JSON.parse(String(raw));
+        if (frame.type === "input" || frame.type === "keys") frames.push(frame);
+        remote.send(raw);
+      });
     });
     await page.goto(`http://127.0.0.1:${server.port}/?pane=${encodeURIComponent(pane)}`);
     const settingsShortcut = await page.evaluate(() => /Mac|iPhone|iPad|iPod/i.test(navigator.platform || navigator.userAgent))
@@ -66,9 +72,13 @@ try {
     await input.focus();
     let previousMask = 0;
     const held = async (mask: number) => {
+      // locked (two taps from off, one back to off), so each stays held across every key below
       for (const [bit, key] of [[4, "Control"], [2, "Alt"], [1, "Shift"]] as const) {
-        if ((mask & bit) !== (previousMask & bit)) await page.locator(`[data-key="${key}"]`).tap();
-        assert.equal(await page.locator(`[data-key="${key}"]`).getAttribute("aria-pressed"), String(!!(mask & bit)));
+        const button = page.locator(`[data-key="${key}"]`);
+        if ((mask & bit) && !(previousMask & bit)) { await button.tap(); await button.tap(); }
+        else if (!(mask & bit) && (previousMask & bit)) await button.tap();
+        assert.equal(await button.getAttribute("aria-pressed"), String(!!(mask & bit)));
+        assert.equal(await button.getAttribute("data-latch"), mask & bit ? "locked" : null);
       }
       previousMask = mask;
       assert.equal(await input.evaluate((element) => document.activeElement === element), true, "touch toggle keeps typing focus");

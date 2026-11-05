@@ -11,7 +11,7 @@ import { FONT_FAMILY_MAX_CHARS } from "./fontFamily.ts";
 import { DEFAULT_KEY_BAR_ITEMS, migrateKeyBarItems } from "./keyBar.ts";
 import { SHARED_SETTING_KEYS } from "../../shared/preferences.ts";
 import { NOTICE_VERSION, TELEMETRY_SETTINGS_KEYS, TELEMETRY_THEME_SIDE_KEYS, telemetrySettings } from "../../shared/telemetry.ts";
-import { SETTING_SCOPE, telemetrySettingsSnapshot, alertPrefs, CHAT_FONT_MAX, CHAT_FONT_MIN, CHAT_LANE_MAX_REM, CHAT_LANE_MIN, CHAT_WIDTHS, chatFontSize, chatLaneLength, chatLaneWidth, DEFAULT_SETTINGS, MARKDOWN_WIDTHS, QUICK_REPLIES_MAX, QUICK_REPLY_MAX_CHARS, quickReplyButtons, sanitizeSettings, terminalTheme, forgetPaneViews, DICTATION_LANGUAGES, VOICE_BUTTONS, wantsVoiceInput } from "./settings.ts";
+import { SETTING_SCOPE, telemetrySettingsSnapshot, alertPrefs, CHAT_FONT_MAX, CHAT_FONT_MIN, CHAT_LANE_MAX_REM, CHAT_LANE_MIN, CHAT_WIDTHS, chatFontSize, chatLaneLength, chatLaneWidth, DEFAULT_SETTINGS, MARKDOWN_WIDTHS, QUICK_REPLIES_MAX, QUICK_REPLY_MAX_CHARS, quickReplyButtons, sanitizeSettings, terminalTheme, forgetPaneViews, DICTATION_LANGUAGES, VOICE_BUTTONS, VOICE_ENGINES, wantsVoiceInput } from "./settings.ts";
 import { applyToDocument, loadSettings, saveSettings } from "./settings.ts";
 import { sanitizeSettings as oldSanitizeSettings, saveSettings as oldSaveSettings } from "./settings.legacy-fixture.ts";
 import { themeFor } from "./themeFor.ts";
@@ -37,16 +37,6 @@ describe("saved theme migration", () => {
   const protectedThemes = "ovis:themes";
   const putOld = (record: object) => records.set(main, JSON.stringify(record));
   const readOld = () => oldSanitizeSettings(JSON.parse(records.get(main) ?? "{}"));
-
-  it("keeps the Copilot API off unless explicitly enabled and persists either choice", () => {
-    expect(loadSettings().copilotApiEnabled).toBe(false);
-    for (const bad of ["true", 1, null, [], {}]) expect(sanitizeSettings({ copilotApiEnabled: bad }).copilotApiEnabled).toBe(false);
-    saveSettings({ ...loadSettings(), copilotApiEnabled: true });
-    expect(loadSettings().copilotApiEnabled).toBe(true);
-    saveSettings({ ...loadSettings(), copilotApiEnabled: false });
-    expect(loadSettings().copilotApiEnabled).toBe(false);
-    expect(telemetrySettingsSnapshot(sanitizeSettings({ copilotApiEnabled: true }))).not.toHaveProperty("copilotApiEnabled");
-  });
 
   it.each([
     [{ theme: "dark", palette: "catppuccin" }, "catppuccin", "catppuccin"],
@@ -136,6 +126,27 @@ describe("saved theme migration", () => {
     expect(loadSettings().sidebarFilter).toBe(true);
   });
 
+  it("keeps the agent groups off until chosen, in keys of their own, out of an old tab's whole-record save", () => {
+    expect(loadSettings()).toMatchObject({ agentGroups: false, agentGroupSort: "wait" });
+    saveSettings(sanitizeSettings({ agentGroups: true, agentGroupSort: "name" }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("agentGroups");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings()).toMatchObject({ agentGroups: true, agentGroupSort: "name", terminalFontSize: 18 });
+    expect(SETTING_SCOPE.agentGroups).toBe("device");
+    expect(sanitizeSettings({ agentGroups: "on", agentGroupSort: "oldest" })).toMatchObject({ agentGroups: false, agentGroupSort: "wait" });
+  });
+
+  it("keeps the speech recognition in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().voiceEngine).toBe("auto");
+    saveSettings(sanitizeSettings({ voiceEngine: "browser" }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("voiceEngine");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().voiceEngine).toBe("browser");
+    expect(loadSettings().terminalFontSize).toBe(18);
+    records.set("ovis:voice-engine", "not json");
+    expect(loadSettings().voiceEngine).toBe("auto");
+  });
+
   it("keeps the history page size in its own key, out of an old tab's whole-record save", () => {
     expect(loadSettings().historyPrompts).toBe(10);
     saveSettings(sanitizeSettings({ historyPrompts: 50 }));
@@ -147,6 +158,32 @@ describe("saved theme migration", () => {
     expect(loadSettings().historyPrompts).toBe(10);
     records.set("ovis:history-prompts", "not json");
     expect(loadSettings().historyPrompts).toBe(10);
+  });
+
+  it("keeps Pictures in the terminal in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().terminalImages).toBe(false);
+    saveSettings(sanitizeSettings({ terminalImages: true }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("terminalImages");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().terminalImages).toBe(true);
+    expect(loadSettings().terminalFontSize).toBe(18);
+    saveSettings({ ...loadSettings(), terminalImages: false });
+    expect(loadSettings().terminalImages).toBe(false);
+    records.set("ovis:terminal-images", "\"true\"");
+    expect(loadSettings().terminalImages).toBe(false);
+  });
+
+  it("keeps Draw with libghostty in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().terminalGhostty).toBe(false);
+    saveSettings(sanitizeSettings({ terminalGhostty: true }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("terminalGhostty");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().terminalGhostty).toBe(true);
+    expect(loadSettings().terminalFontSize).toBe(18);
+    saveSettings({ ...loadSettings(), terminalGhostty: false });
+    expect(loadSettings().terminalGhostty).toBe(false);
+    records.set("ovis:terminal-ghostty", "\"true\"");
+    expect(loadSettings().terminalGhostty).toBe(false);
   });
 
   it("keeps the composer's Artifacts chip in its own key, out of an old tab's whole-record save", () => {
@@ -164,6 +201,15 @@ describe("saved theme migration", () => {
     expect(loadSettings().composerArtifacts).toBe(false);
   });
 
+  it("keeps the composer's Paste and send button in its own key, out of an old tab's whole-record save (#2493)", () => {
+    saveSettings(sanitizeSettings({ composerPasteSend: true }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("composerPasteSend");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().composerPasteSend).toBe(true);
+    records.set("ovis:composer-paste-send", "\"true\"");
+    expect(loadSettings().composerPasteSend).toBe(false);
+  });
+
   it("keeps Expand thinking and Collapse work in keys of their own, out of an old tab's whole-record save", () => {
     for (const [key, stored] of [["expandThinking", "ovis:expand-thinking"], ["foldWork", "ovis:fold-work"]] as const) {
       expect(loadSettings()[key]).toBe(false);
@@ -179,6 +225,19 @@ describe("saved theme migration", () => {
       records.set(stored, "not json");
       expect(loadSettings()[key]).toBe(false);
     }
+  });
+
+  it("keeps Reuse tab for external links in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().reuseExternalLinkTab).toBe(false);
+    saveSettings(sanitizeSettings({ reuseExternalLinkTab: true }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("reuseExternalLinkTab");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().reuseExternalLinkTab).toBe(true);
+    expect(loadSettings().terminalFontSize).toBe(18);
+    saveSettings({ ...loadSettings(), reuseExternalLinkTab: false });
+    expect(loadSettings().reuseExternalLinkTab).toBe(false);
+    records.set("ovis:reuse-external-link-tab", "\"true\"");
+    expect(loadSettings().reuseExternalLinkTab).toBe(false);
   });
 
   it("survives repeated stale saves from an already-open old tab (f1)", () => {
@@ -284,6 +343,13 @@ it("keeps the composer's Artifacts chip off until this device turns it on, and k
   expect(sanitizeSettings({ composerArtifacts: true }).composerArtifacts).toBe(true);
   expect(sanitizeSettings({ composerArtifacts: "true" }).composerArtifacts).toBe(false);
   expect(SETTING_SCOPE.composerArtifacts).toBe("device");
+});
+
+it("keeps the composer's Paste and send button off until this device turns it on, and keeps that choice its own (#2493)", () => {
+  expect(sanitizeSettings({}).composerPasteSend).toBe(false);
+  expect(sanitizeSettings({ composerPasteSend: true }).composerPasteSend).toBe(true);
+  expect(sanitizeSettings({ composerPasteSend: "true" }).composerPasteSend).toBe(false);
+  expect(SETTING_SCOPE.composerPasteSend).toBe("device");
 });
 
 it("keeps the chat's folds as they always started until this device chooses Expand thinking or Collapse work, and keeps that choice its own", () => {
@@ -519,6 +585,20 @@ describe("clipboard from a pane", () => {
     expect(sanitizeSettings({ ...reloaded, theme: "dark" }).paneClipboard).toBe(false);
     expect(sanitizeSettings({ paneClipboard: "false" }).paneClipboard).toBe(true);
   });
+});
+
+it("draws no terminal pictures until this device turns them on", () => {
+  expect(sanitizeSettings({}).terminalImages).toBe(false);
+  expect(sanitizeSettings({ terminalImages: "true" }).terminalImages).toBe(false);
+  expect(sanitizeSettings(JSON.parse(JSON.stringify(sanitizeSettings({ terminalImages: true })))).terminalImages).toBe(true);
+  expect(SETTING_SCOPE.terminalImages).toBe("device");
+});
+
+it("draws with xterm until this device turns libghostty on", () => {
+  expect(sanitizeSettings({}).terminalGhostty).toBe(false);
+  expect(sanitizeSettings({ terminalGhostty: "true" }).terminalGhostty).toBe(false);
+  expect(sanitizeSettings(JSON.parse(JSON.stringify(sanitizeSettings({ terminalGhostty: true })))).terminalGhostty).toBe(true);
+  expect(SETTING_SCOPE.terminalGhostty).toBe("device");
 });
 
 it("drops the folder grouping an older version stored", () => {
@@ -787,6 +867,13 @@ describe("microphone button", () => {
     expect(sanitizeSettings({}).voiceLanguage).toBe("auto");
     for (const voiceLanguage of DICTATION_LANGUAGES) expect(sanitizeSettings({ voiceLanguage }).voiceLanguage).toBe(voiceLanguage);
     for (const voiceLanguage of [null, 1, "", "hu", "hu-hu", "xx-XX", "auto "]) expect(sanitizeSettings({ voiceLanguage }).voiceLanguage).toBe("auto");
+  });
+
+  it("keeps the chosen speech recognition per device, auto until one is chosen", () => {
+    expect(DEFAULT_SETTINGS.voiceEngine).toBe("auto");
+    expect(SETTING_SCOPE.voiceEngine).toBe("device");
+    for (const voiceEngine of VOICE_ENGINES) expect(sanitizeSettings({ voiceEngine }).voiceEngine).toBe(voiceEngine);
+    for (const voiceEngine of [null, 1, "", "openai", "Browser"]) expect(sanitizeSettings({ voiceEngine }).voiceEngine).toBe("auto");
   });
 
   it("is asked for in the chat off a phone on auto, everywhere when on and nowhere when off", () => {
@@ -1128,11 +1215,14 @@ it("keeps the Markdown preview's width to readable or full, readable by default"
 
 it("keeps where web links open to a tab or the panel, a tab by default", () => {
   expect(DEFAULT_SETTINGS.webLinks).toBe("tab");
+  expect(DEFAULT_SETTINGS.reuseExternalLinkTab).toBe(false);
   expect(DEFAULT_SETTINGS.fileOpen).toBe("popup");
   expect(sanitizeSettings({ fileOpen: "panel" }).fileOpen).toBe("panel");
   for (const bad of ["tab", "", null, true]) expect(sanitizeSettings({ fileOpen: bad }).fileOpen).toBe("popup");
   expect(sanitizeSettings({ webLinks: "panel" }).webLinks).toBe("panel");
   for (const bad of ["popup", "", null, true]) expect(sanitizeSettings({ webLinks: bad }).webLinks).toBe("tab");
+  expect(sanitizeSettings({ reuseExternalLinkTab: true }).reuseExternalLinkTab).toBe(true);
+  for (const bad of ["true", 1, null]) expect(sanitizeSettings({ reuseExternalLinkTab: bad }).reuseExternalLinkTab).toBe(false);
   // an agent's start mode never widens by accident: anything unknown starts it with no flag
   expect(DEFAULT_SETTINGS.claudeLaunchMode).toBe("default");
   expect(DEFAULT_SETTINGS.codexLaunchMode).toBe("default");
@@ -1150,3 +1240,4 @@ describe("shared settings", () => {
     expect(Object.keys(SETTING_SCOPE).sort()).toEqual(Object.keys(DEFAULT_SETTINGS).sort());
   });
 });
+

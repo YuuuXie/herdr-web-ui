@@ -1,5 +1,5 @@
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bell, Ellipsis, FolderOpen, Link, Menu, MessageSquare, PanelLeft, Search, SquareTerminal, X } from "lucide-react";
+import { Bell, CircleHelp, Ellipsis, FolderOpen, Link, Menu, MessageSquare, PanelLeft, Search, SquareTerminal, Target, X } from "lucide-react";
 
 import type { HerdrPane } from "../shared/protocol.ts";
 import { authenticate, createTab, moveTabToWorkspace, paneSessionKey, shareSeen, swapPaneWith } from "./lib/api.ts";
@@ -36,7 +36,7 @@ import { CommandPalette } from "./components/CommandPalette.tsx";
 import { AppLayoutContext, appLayoutOf, MachineContext } from "./lib/machineContext.tsx";
 import { MachineActionBanner, MachineSidebar } from "./components/MachineSidebar.tsx";
 import { SidebarResizer } from "./components/SidebarResizer.tsx";
-import { useSidebarActivityState } from "./lib/sidebarActivity.tsx";
+import { type PanePresence, useSidebarActivityState } from "./lib/sidebarActivity.tsx";
 import { FilePanelResizer } from "./components/FilePanelResizer.tsx";
 import { openPresentation } from "./lib/filePresentation.ts";
 import { MachineDialog } from "./components/MachineDialog.tsx";
@@ -55,7 +55,7 @@ import { useShownMachines } from "./lib/hiddenMachines.ts";
 import { formatKeys, shortcutDisplayKeys, useShortcuts } from "./lib/shortcuts.ts";
 import { useMediaQuery } from "./lib/useMediaQuery.ts";
 import { useAnnouncedText } from "./lib/useAnnouncedText.ts";
-import { paneContextPress } from "./lib/paneCanvas.ts";
+import { CRAMPED_QUERY, loneTabHidden, paneContextPress } from "./lib/paneCanvas.ts";
 import type { AppActions, PaneView, PaneControls } from "./lib/actions.ts";
 import { removePushSubscription } from "./lib/push.ts";
 import { resetPushHealth } from "./lib/pushHealth.ts";
@@ -63,7 +63,10 @@ import { useUpdates } from "./lib/updates.ts";
 import { UpdateNotice } from "./components/UpdateControls.tsx";
 import { LanExposureNotice } from "./components/LanExposureNotice.tsx";
 import { PushHealthNotice } from "./components/PushHealthNotice.tsx";
-import { DevicePairedNotice } from "./components/DevicePairedNotice.tsx";
+import { InstallHint } from "./components/InstallHint.tsx";
+import { DevicePairedNotice, DeviceRemovedNotice } from "./components/DevicePairedNotice.tsx";
+import { RelayPairingPrompt } from "./components/RelayPairingPrompt.tsx";
+import { AccountApprovals } from "./components/AccountApprovals.tsx";
 import { TelemetryNotice } from "./components/TelemetryControls.tsx";
 import { FilesDialog } from "./components/FilesDialog.tsx";
 import { folderQueryFor } from "./lib/paletteFolders.ts";
@@ -86,8 +89,11 @@ import { usePaneCoverage } from "./lib/usePaneCoverage.ts";
 import { useT } from "./lib/i18n.ts";
 import { useConnectionChip, useServerMessageHandler } from "./lib/useConnectionChip.ts";
 import { useHeaderConnection } from "./lib/headerConnection.ts";
+import { ConnectionRouteMark } from "./components/ConnectionRouteMark.tsx";
+import { HeaderSessions } from "./components/HeaderSessions.tsx";
+import { nextWaitingPane, sessionCounts, tabPosition } from "./lib/headerSessions.ts";
 import { selectionStill } from "./lib/selectionMark.ts";
-import { carryPaneState } from "./lib/paneMove.ts";
+import { carryMovedPane, movedView } from "./lib/paneMove.ts";
 import { useScreenWakeLock } from "./lib/wakeLock.ts";
 import { useSidebarLayout } from "./lib/useSidebarLayout.ts";
 import { useAlertPrefs, useAlertRefs } from "./lib/useAlerts.ts";
@@ -96,7 +102,7 @@ import { useNotificationState, useNotificationSwitch } from "./lib/useNotificati
 import { alertsBell } from "./lib/alertsBell.ts";
 import { Droplet } from "./components/Droplet.tsx";
 import { MarkdownLinkMenu } from "./components/MarkdownLinkMenu.tsx";
-import { paneDragData, PANE_DRAG_TYPE, sameTarget, slotSide, type SplitSlot, type SplitTarget } from "./lib/split.ts";
+import { paneDragData, PANE_DRAG_TYPE, slotSide, type SplitSlot, type SplitTarget } from "./lib/split.ts";
 import { useLayoutNotice, useLayoutRefused, useMoveRefused } from "./lib/useLayoutNotice.ts";
 import { PaneFollowContext, PanePressContext } from "./lib/paneSubmitContext.ts";
 import { SplitDropPreview } from "./components/SplitDropPreview.tsx";
@@ -106,6 +112,7 @@ import { lensOwner, storedView, usePaneLens, usePaneLensState, usePaneViewPicks 
 import { useSplitLayout, useSplitRecheck, useSplitState } from "./lib/useSplitView.ts";
 import { linkSelects, useLinkLanding, useMachineGone, useNotificationTargets, useSelectedLayout, useSelectedMachine, useSelectedPane, useSelectionMark, useSelectionState, useSelectPane, useSelectTarget } from "./lib/useSelection.ts";
 import { useAddressBar } from "./lib/useAddressBar.ts";
+import { goalStatusWord, sessionMenuLines, sizeWords, useSessionStats, workedWords } from "./lib/sessionStats.ts";
 
 const APP_TITLE = "Ovis";
 /** how soon after a key press a focus counts as the user's own (lastKeyAtRef) */
@@ -170,7 +177,7 @@ export function App() {
   const apple = /Mac|iPhone|iPad/.test(navigator.platform);
   const { settings, resolvedTheme, resolvedEntry, update: updateSettings } = useSettings();
   const { alerts, alertsRef, alertsOn, alertsOnRef } = useAlertPrefs({ settings });
-  const { machines, setMachines, machineRosterLoaded, setMachineRosterLoaded } = useRosterState();
+  const { machineSessions, machines, setMachines, machineRosterLoaded, setMachineRosterLoaded } = useRosterState();
   // the place the address names, read once at load: a link wins over this window's last selection
   const [initialLink] = useState(() => {
     // a link's lens is drawn over its pane's own, as a tapped notification's is (notificationViewTarget below)
@@ -190,7 +197,7 @@ export function App() {
   const { error, setError } = useRosterError();
   const { layoutNotice, setLayoutNotice } = useLayoutNotice();
   const { locked, setLocked, lockReason, pairCode, consumePairCode, pairingUnconfirmed, onPaired, auth, canSignOut, security, readBridgeHealth } = useAccessState();
-  const { pairedNotices, setPairedNotices, dismissPairedNotice } = usePairedNotices();
+  const { pairedNotices, setPairedNotices, dismissPairedNotice, relayPairings, setRelayPairings, remotePairings, setRemotePairings, removedNotices, setRemovedNotices, dismissRemovedNotice } = usePairedNotices();
   const updates = useUpdates(locked === false);
   const { selectedPaneId, setSelectedPaneId, notificationViewTarget, setNotificationViewTarget, terminalPeek, setTerminalPeek, endPeek, pendingLink, linkLanded, setLinkLanded, rosterSeq, linkSince, selectionSince, rosterTick, setRosterTick, linkTick, setLinkTick } = useSelectionState({ initialLink });
   const { otherRecheck, otherRosterTick, setOtherRosterTick } = useSplitRecheck();
@@ -212,7 +219,7 @@ export function App() {
   const { filesOpen, setFilesOpen, viewing, openFile, closeFile, releaseFile, diffViewing, openDiff, closeDiff, releaseDiff, presentation, fileDocked, webPage, closeWebPage, openWebPage, openDiffFile, reportFileKind, toggleFilePresentation, viewFile } = useFilePanels({ settings, filePanelAvailable, selectedPaneId, selectedMachineId });
   // a diff's line notes go to its own pane: none while this window only watches that pane
   const diffPaneObserving = usePaneObserving(diffViewing?.paneId ? paneStorageId(diffViewing.machineId, diffViewing.paneId) : null);
-  const { settingsOpen, setSettingsOpen, settingsLinkPage, setSettingsLinkPage, settingsLinkSection, settingsPage, settingsSection, setSettingsSection, closeSettings, onSettingsPage } = useSettingsDialog(initialLink);
+  const { settingsOpen, setSettingsOpen, settingsLinkPage, setSettingsLinkPage, settingsLinkSection, setSettingsLinkSection, settingsPage, settingsSection, setSettingsSection, closeSettings, onSettingsPage } = useSettingsDialog(initialLink);
   const { newSessionOpen, setNewSessionOpen, newPrefill, setNewPrefill, newFields, setNewFields, pendingCreate, newTab, setNewTab, sessionHistory, setSessionHistory } = useNewSessionState({ initialLink });
   const { connected, setConnected, connectedBefore, setConnectedBefore, paneLost, outputStopped, setOutputStopped, reportedBy, setReportedBy } = useConnectionChip();
   const { notifications, setNotifications, pushOn, setPushOn, pushOnRef } = useNotificationState();
@@ -243,11 +250,12 @@ export function App() {
     await readLocalHealth();
   }, []);
   usePairFromAddress({ locked, pairCode, auth, consumePairCode, onPaired, loadHealth });
-  const { snapshotRequests, reorderCoordinator, load, scheduleRefetch } = useRosterLoader({ rosterIn, setMachines, setMachineRosterLoaded, setError, setLocked, loadHealth, lockedRef, refetchTimer });
+  const { snapshotRequests, reorderCoordinator, load, scheduleRefetch, onRosterStream } = useRosterLoader({ locked, healthFailing: localFreshness === "unknown" || localFreshness === "unavailable", rosterIn, setMachines, setMachineRosterLoaded, setError, setLocked, loadHealth, lockedRef, refetchTimer });
 
   const { dropIn, chime, onRoster, onPaneStatus, onPaneExited } = useAlertSignals({ settings, selectionRef, drawerOpenRef, splitRef, splitShownRef, machinesRef, alertsRef, alertsOnRef, pushOnRef, statusRef, turnStartRef, lastTurnRef, alertInAppRef, alertSoundRef });
 
-  useRosterEvents({ locked, receivePreferencesRef, snapshotRequests, onRoster, reorderCoordinator, setMachines, rosterIn, setMachineRosterLoaded, machinesRef, onPaneStatus, onPaneExited, followFocusRef, selectionRef, splitShownRef, splitRef, pendingLink, selectionHint, setSelectedPaneId, setNotificationViewTarget, setTerminalPeek, setAutoSelected, scheduleRefetch, preferencesResubscribedRef, preferencesDisconnectedRef, preferencesClosedRef, dropIn, chime, setPairedNotices, getTakeNotificationTargetRef: () => takeNotificationTargetRef });
+  // herdr moved a pane under a new ID, from anywhere (the server's pane-moved): followPaneMove below, called at the event
+  useRosterEvents({ onPaneMoved: (machineId, from, to) => followPaneMove(machineId, from, to), machineSessions, locked, onRosterStream, receivePreferencesRef, snapshotRequests, onRoster, reorderCoordinator, setMachines, rosterIn, setMachineRosterLoaded, machinesRef, onPaneStatus, onPaneExited, followFocusRef, selectionRef, splitShownRef, splitRef, pendingLink, selectionHint, setSelectedPaneId, setNotificationViewTarget, setTerminalPeek, setAutoSelected, scheduleRefetch, preferencesResubscribedRef, preferencesDisconnectedRef, preferencesClosedRef, dropIn, chime, setPairedNotices, setRelayPairings, setRemotePairings, setRemovedNotices, getTakeNotificationTargetRef: () => takeNotificationTargetRef });
 
   const handleServerMessage = useServerMessageHandler(setOutputStopped);
 
@@ -325,6 +333,14 @@ export function App() {
     }).catch((err) => layoutRefused("pane swap failed", err));
   };
 
+  // what this browser keeps under the moved pane's ID goes to its new ID (lib/paneMove.ts), and wherever the old ID is
+  // shown, in either half, the view goes with it (#1503). Nothing is sent: held text waits for its Send or Discard
+  const followPaneMove = (machineId: string, from: string, to: string): void => {
+    carryMovedPane(machineId, from, to);
+    const view = movedView(selectionRef.current, splitRef.current, machineId, from, to);
+    if (view.split !== null) setSplit(view.split);
+    if (view.selection !== null) selectTargetRef.current(machineId, view.selection);
+  };
   const { takeNotificationTargetRef } = useNotificationTargets({ machinesRef, selectTargetRef, selectionHint, pendingLink, pendingFile, setLinkLanded, linkSince, rosterSeq, setLinkTick, load });
 
 
@@ -334,11 +350,11 @@ export function App() {
   // the selected pane has a tab strip to rename in: its pane and workspace are in the roster
   const tabStripMounted = selectedPane !== null && selectedWorkspace !== null;
   const targetHerdr = selectedMachineId === "local" ? health?.herdr : selectedMachine?.herdr;
-  // the Herdr app's window owns the selected PC's workspaces, tabs and splits (lib/machineContext.tsx AppLayoutContext):
-  // the palette and the shortcuts offer none of its layout calls; each PC's own value goes to its sidebar and its half
+  // the layout calls the selected PC's herdr answers (lib/machineContext.tsx AppLayoutContext): the palette and the
+  // shortcuts offer only those; each PC's own value goes to its sidebar and its half
   const appLayout = appLayoutOf(targetHerdr);
   const herdrOn = (machineId: string) => machineId === "local" ? health?.herdr : machines.find((machine) => machine.id === machineId)?.herdr;
-  const appLayoutOn = (machineId: string): boolean => appLayoutOf(herdrOn(machineId));
+  const appLayoutOn = (machineId: string) => appLayoutOf(herdrOn(machineId));
   // the herdr the header names as current: this PC's last answer only while it is still shown (through one
   // failed read, not once unavailable), though its capabilities stay in targetHerdr
   const shownHerdr = selectedMachineId === "local" ? shownHealth?.herdr : targetHerdr;
@@ -358,14 +374,15 @@ export function App() {
 
   const contentKey = paneContentKey(selectedMachine, selectedPane, view);
   const { dialogCover, webDialogCover, contentReady } = usePaneCoverage({ contentKey });
-  const paneInFront = useCallback(() => locked === false && linkLanded && pendingFile.current === null && pendingCreate.current === null
+  // covered by something (closing it brings the pane into view again), or in view with its content still loading
+  const panePresence = useCallback((): PanePresence => !(locked === false && linkLanded && pendingFile.current === null && pendingCreate.current === null
     && !drawerOpen && !settingsOpen && !newSessionOpen
     && !filesOpen && !machineDialog && !paletteOpen && !diffViewing && !(viewing && !fileDocked)
-    && !dialogCover && !paneCovered()
-    && contentReady && paneContentPresented(contentKey),
+    && !dialogCover && !paneCovered()) ? "covered"
+    : contentReady && paneContentPresented(contentKey) ? "front" : "loading",
   [locked, linkLanded, drawerOpen, settingsOpen, newSessionOpen, filesOpen, machineDialog, paletteOpen, diffViewing, viewing, fileDocked, dialogCover, contentReady, contentKey]);
   // one source for the sidebar's two lists: live counters per PC and finishes looked at here
-  const activity = useSidebarActivityState(machines, selectedMachineId, presentedPaneId, paneInFront, shareSeen);
+  const activity = useSidebarActivityState(machines, selectedMachineId, presentedPaneId, panePresence, shareSeen);
 
   const { pickView, setView } = usePaneViewPicks({ setViewPicks, setNotificationViewTarget, setTerminalPeek, setLens, setAutoSelected, selectedPaneId, selectedMachineId });
   const { unsentFor, openUnsent, closeUnsent, recover } = useUnsentRecovery({ selectedMachineId, selectedPaneId, setView, pickView });
@@ -373,7 +390,7 @@ export function App() {
   // up under a sheet or Settings opened over it: their close, or a Back, comes back to the peek
   usePhoneSheetBack(() => endPeek(), terminalPeek !== null, true);
 
-  const { otherMachine, otherPane, splitOn, sameTabs, otherWorkspace, otherHerdr, otherAttach, activateSlot, closeSlot, selectInSlot, dockSide, splitDragOn, paneDragOver, paneDragLeave, paneDrop } = useSplitLayout({ machines, split, wideScreen, selectedPaneId, selectedPane, selectedMachineId, splitShownRef, health, machineRosterLoaded, endSplit, otherRecheck, otherRosterTick, setSplit, soloSlot, setConnected, setConnectedBefore, setSelectedMachineId, setSelectedPaneId, setAutoSelected, setOutputStopped, splitRef, selectPane, paneAreaRef, dropAtRef, clearDropPreview, tabDrag, showDropTarget, setPaneDragging, movingPanes, draggedPaneRef, markSwap, swapPanes, swapRefused: appLayoutOn });
+  const { otherMachine, otherPane, splitOn, sameTabs, otherWorkspace, otherHerdr, otherAttach, activateSlot, closeSlot, selectInSlot, dockSide, splitDragOn, paneDragOver, paneDragLeave, paneDrop } = useSplitLayout({ machines, split, wideScreen, selectedPaneId, selectedPane, selectedMachineId, splitShownRef, health, machineRosterLoaded, endSplit, otherRecheck, otherRosterTick, setSplit, soloSlot, setConnected, setConnectedBefore, setSelectedMachineId, setSelectedPaneId, setAutoSelected, setOutputStopped, splitRef, selectPane, paneAreaRef, dropAtRef, clearDropPreview, tabDrag, showDropTarget, setPaneDragging, movingPanes, draggedPaneRef, markSwap, swapPanes, swapRefused: (machineId) => !appLayoutOn(machineId).arrange });
 
   useAddressBar({ newSessionOpen, selectedPane, selectedPaneId, selectedWorkspace, viewing, selectedMachineId, releaseFile, locked, machines, snapshot, linkLanded, view, settingsOpen, settingsPage, settingsLinkPage, settingsLinkSection, wideScreen, sidebarCollapsed, newTab, newFields, autoSelected, pendingFile, selectedMachine, openFile, machinesRef, selectTargetRef, pendingLink, setLinkLanded, linkSince, rosterSeq, setNewSessionOpen, pendingCreate, setHeaderNote, selectionRef });
 
@@ -382,9 +399,21 @@ export function App() {
   const connWord = t(connected ? "live" : outputStopped ? "disconnected" : connectedBefore ? "reconnecting" : "connecting");
   // each split half has sockets of its own, even on one PC: the line is about the active half's
   const headerConnection = useHeaderConnection({ scope: `${split ? split.active : soloSlot}:${selectedMachineId}`, reportedBy, connected, connectedBefore, outputStopped });
+  // the selected pane's chat totals (lib/sessionStats.ts): after the crumb from 769px, and in More
+  const session = useSessionStats(selectedMachineId, selectedPane?.pane_id ?? null);
+  const sessionLines = session === null ? null : sessionMenuLines(session);
+  const sessionShort = session === null ? [] : [workedWords(session), sizeWords(session)].filter((part) => part !== null);
   const crumb = selectedPane && selectedTitle !== null
     ? headerCrumb({ machine: selectedMachine?.name ?? selectedMachineId, machineCount: machines.length, workspace: selectedWorkspace?.label ?? selectedPane.workspace_id, title: selectedTitle, cwd: selectedPane.cwd })
     : null;
+  // the selected PC's sessions as its sidebar draws them, and the tab's place in its strip. A PC that
+  // is not connected has only a cached roster, which its sidebar greys out: the header counts none of it
+  const rosterPanesShown = selectedMachine?.state === "connected" ? snapshot?.panes ?? [] : [];
+  const shownStatus = (pane: (typeof rosterPanesShown)[number]) => activity.status(selectedMachineId, pane);
+  const sessionTally = sessionCounts(rosterPanesShown, shownStatus);
+  const nextWaiting = nextWaitingPane(rosterPanesShown, shownStatus, selectedPaneId, snapshot?.layouts);
+  const tabPlace = snapshot ? tabPosition(snapshot, selectedPaneId) : null;
+  const position = tabPlace && { ...tabPlace, words: t("Tab {index} of {count}", { index: tabPlace.index, count: tabPlace.count }) };
 
   const tabTitle = selectedPane ? tabPaneTitle(selectedPane) : null;
   useEffect(() => {
@@ -464,8 +493,8 @@ export function App() {
         setNewSessionOpen(true);
       },
       renameTab: () => {
-        // a herdr-core PC's tab names are the Herdr app's (lib/machineContext.tsx AppLayoutContext)
-        if (selectedPaneId === null || !tabStripMounted || appLayout) return;
+        // a PC whose herdr renames no tab (lib/machineContext.tsx AppLayoutContext)
+        if (selectedPaneId === null || !tabStripMounted || !appLayout.rename) return;
         setDrawerOpen(false);
         requestRename(selectedMachineId, selectedPaneId);
       },
@@ -486,14 +515,9 @@ export function App() {
         try {
           const moved = await moveTabToWorkspace(tabId, workspaceId, machineId);
           if (from === null) return;
-          // what was typed into the pane and not sent goes to its new ID with it (lib/paneMove.ts)
-          carryPaneState(machineId, from, moved.pane_id);
-          // the pane changed its ID with its workspace: wherever the old one is still shown, in either half,
-          // the view goes with it. A pane the user went to meanwhile is theirs to keep
-          const open = splitRef.current;
-          if (open && sameTarget(open.other, { machineId, paneId: from })) setSplit({ ...open, other: { machineId, paneId: moved.pane_id } });
-          const now = selectionRef.current;
-          if (now.machineId === machineId && now.paneId === from) selectTargetRef.current(machineId, moved.pane_id);
+          // the pane changed its ID with its workspace: what was kept under the old one, and the view showing it,
+          // go with it; the server's pane-moved for the same move finds nothing left to carry
+          followPaneMove(machineId, from, moved.pane_id);
         } catch (err) {
           if (notice) moveRefused(err);
           throw err;
@@ -549,10 +573,10 @@ export function App() {
       enableNotifications: bellVisible && bell.run === enableNotifications ? () => void enableNotifications() : null,
       refresh: () => void load(),
       openFiles: selectedPaneId !== null ? () => { setDrawerOpen(false); setFilesOpen(true); } : null,
-      // herdr's layout calls on the selected pane (lib/layoutActions.ts): none on a PC the Herdr app lays out
-      ...layoutActions({ selectedPaneId, appLayout, selection: selectionRef, load, selectPane, layoutRefused }),
+      // herdr's layout calls on the selected pane (lib/layoutActions.ts): only those the PC's herdr answers
+      ...layoutActions({ selectedPaneId, offer: appLayout, paneSplits: !selectedPane?.own_tab, selection: selectionRef, roster: snapshotRef, load, selectPane, layoutRefused }),
     }),
-    [selectPane, selectedPaneId, selectedMachineId, appLayout, reorderCoordinator, tabStripMounted, setView, view, terminalPeek, endPeek, updateSettings, resolvedTheme, canSignOut, lock, bellVisible, bell.run, enableNotifications, load, layoutRefused, moveRefused, lenses, openSidebarFilter],
+    [selectPane, selectedPaneId, selectedPane?.own_tab, selectedMachineId, appLayout, reorderCoordinator, tabStripMounted, setView, view, terminalPeek, endPeek, updateSettings, resolvedTheme, canSignOut, lock, bellVisible, bell.run, enableNotifications, load, layoutRefused, moveRefused, lenses, openSidebarFilter],
   );
 
   useShortcuts(actions, locked === false);
@@ -560,7 +584,7 @@ export function App() {
   // The header's More menu: what used to be three buttons of its own. Each item is there under
   // the condition its button had. At phone width the palette's button gives its room to the
   // pane's title, and the menu's first item opens the palette.
-  useMachineGone({ machines, pendingLink, pendingFile, selectedMachineRef, linkSince, selectionSince, rosterSeq, setLinkLanded, setHeaderNote, selectTargetRef, rosterTick, linkTick });
+  useMachineGone({ machines, pendingLink, pendingFile, pendingCreate, selectedMachineRef, linkSince, selectionSince, rosterSeq, setLinkLanded, setHeaderNote, selectTargetRef, rosterTick, linkTick });
   // the PCs this device shows in its sidebar, Agents list and palette (Settings → Remote PCs); every other
   // use of the roster keeps them all, so a link, an alert or a split still reaches a hidden PC's pane
   const sidebarMachines = useShownMachines({ machines, selectedMachineRef, selectTargetRef, picks, restored: !linkSelects(initialLink) });
@@ -590,7 +614,29 @@ export function App() {
   // the palette's shortcut, said beside its item where a hardware keyboard is likely (a fine pointer)
   const keyboardLikely = useMediaQuery("(hover: hover) and (pointer: fine)");
   const paletteKeys = keyboardLikely ? formatKeys(shortcutDisplayKeys("palette", settings.shortcutOverrides)).join("+") : "";
+  // a lone tab on a cramped phone draws no row (TabStrip) and its pane no ellipsis (PaneCanvas): the
+  // header's own ellipsis is the one menu there, so it carries the pane's and the tab's actions too.
+  // They come from the canvas's last render; each runs as the canvas's latest one has it, and does
+  // nothing when that one no longer offers it (the pane or the layout changed while the menu was open)
+  const cramped = useMediaQuery(CRAMPED_QUERY);
+  const paneMenuInMore = selectedPane !== null
+    && loneTabHidden(cramped, snapshot?.tabs.filter((tab) => tab.workspace_id === selectedPane.workspace_id).length ?? 0);
+  // on a phone the header's line is the title's: the sessions' one pill goes to the end of the tab row
+  // under it. Where that row is not drawn (a lone tab on a cramped phone) More carries the jump instead,
+  // its first item, with a waiting-coloured dot on its button
+  const phoneNarrow = useMediaQuery("(max-width: 480px)");
+  const sessionsInStrip = phoneNarrow && !paneMenuInMore && !splitOn;
+  const sessionsInMore = phoneNarrow && paneMenuInMore && !splitOn;
+  const waitingInMore = sessionsInMore && sessionTally.waiting > 0;
+  const sessionsPill = <HeaderSessions counts={sessionTally} onNextWaiting={nextWaiting === null ? null : () => selectPane(nextWaiting)} compact={phoneNarrow} />;
+  const paneMoreItems = paneMenuInMore && selectedPane ? (paneActionsRef.current?.(selectedPane) ?? []).map((item, index): RowMenuItem => ({
+    ...item, divider: index === 0 || item.divider,
+    run: () => paneActionsRef.current?.(selectedPane).find((fresh) => fresh.id === item.id)?.run(),
+  })) : [];
+  const moreBase = alertsOffDot ? t("More · alerts are off") : t("More");
+  const moreLabel = waitingInMore ? `${moreBase} · ${t("{count} waiting for you", { count: sessionTally.waiting })}` : moreBase;
   const moreItems: RowMenuItem[] = [
+    ...(waitingInMore && nextWaiting !== null ? [{ id: "next-waiting", label: t("Open the next session waiting for you"), hint: String(sessionTally.waiting), icon: CircleHelp, run: () => selectPane(nextWaiting) }] : []),
     // first at every width: a phone's header has no palette button, and a touch screen no shortcut
     { id: "palette", label: t("Search panes and actions"), icon: Search, ...(paletteKeys ? { hint: paletteKeys } : {}), run: () => openPalette() },
     ...(selectedPane && !selectedPane.restore_error ? [{ id: "find", label: t("Find in terminal"), icon: Search, run: actions.openFind }] : []),
@@ -599,6 +645,7 @@ export function App() {
     // the address says where the app is (lib/deepLink.ts); a phone has no address bar to copy it from
     { id: "copy-link", label: t("Copy link"), icon: Link, run: () => void copyText(window.location.href).then((ok) => { if (ok) setHeaderNote("copied"); }) },
     ...(bellVisible ? [{ id: "alerts", label: t("Alerts"), hint: bell.state, checked: bell.on, title: bell.title, icon: Bell, run: () => void bell.run() }] : []),
+    ...paneMoreItems,
   ];
 
   // the chat's surface is what the pane column shows: the header's pane zone and the tab strip
@@ -632,7 +679,7 @@ export function App() {
   if (locked) return <AccessGate reason={lockReason} initialCode={pairCode} consumePairCode={consumePairCode} pairingUnconfirmed={pairingUnconfirmed} onPaired={onPaired} onUnlocked={unlock} />;
 
   return (
-    <MachineSessionsProvider machineIds={machines.map((machine) => machine.id)}><MachineContext.Provider value={selectedMachineId}><AppLayoutContext.Provider value={appLayout}><div className={`app${sidebarCollapsed ? " sidebar-collapsed" : ""}`} style={sidebarWidth === null && filePanelWidth === null ? undefined : {
+    <MachineSessionsProvider sessions={machineSessions} machineIds={machines.map((machine) => machine.id)}><MachineContext.Provider value={selectedMachineId}><AppLayoutContext.Provider value={appLayout}><div className={`app${sidebarCollapsed ? " sidebar-collapsed" : ""}`} style={sidebarWidth === null && filePanelWidth === null ? undefined : {
       ...(sidebarWidth === null ? {} : { "--sidebar-user-w": `${sidebarWidth}px` }),
       ...(filePanelWidth === null ? {} : { "--file-panel-user-w": `${filePanelWidth}px` }),
     } as CSSProperties}>
@@ -671,6 +718,10 @@ export function App() {
             <div className="context-title">
               {selectedAgent && <AgentMark agent={selectedAgent} size={18} />}
               <span className="context-title-text">{selectedTitle}</span>
+              {position && <span className="context-position" title={position.words}>
+                <span aria-hidden="true">{position.index}/{position.count}</span>
+                <span className="visually-hidden">{position.words}</span>
+              </span>}
             </div>
             {/* lost and back, the connection takes the crumb's place in words, in the same box: nothing moves */}
             <div className={`context-sub${headerConnection === null ? "" : ` context-connection is-${headerConnection}`}`}>
@@ -686,6 +737,13 @@ export function App() {
                 )}
               </>}
             </div>
+            {/* after the crumb, so it wraps out of sight before the crumb does; the connection's word has the line */}
+            {headerConnection === null && session !== null && sessionLines !== null && (sessionShort.length > 0 || session.goal !== null) && (
+              <div className="context-sub context-session" title={[sessionLines.totals, sessionLines.goal].filter((line) => line !== null).join("\n")}>
+                {sessionShort.length > 0 && <span>{sessionShort.join(" · ")}</span>}
+                {session.goal !== null && <span className="context-session-goal"><Target aria-hidden="true" />{goalStatusWord(session.goal.status)}</span>}
+              </div>
+            )}
           </div>
         ) : (
           <><Brand /><span className="machine-context-name">{selectedMachine?.name ?? selectedMachineId}</span></>
@@ -713,12 +771,14 @@ export function App() {
           </>
         )}
         <div className="header-meta">
+          {!sessionsInStrip && !sessionsInMore && sessionsPill}
           {/* the chip speaks for the pane's terminal: the setup guide stands in the pane's place and has none */}
+          <ConnectionRouteMark portal={auth?.via === "portal"} ingress={security.state === "known" ? security.summary.observed_ingress : null} />
           {!guideShown && <ConnectionChip
             connected={connected}
             word={connWord}
             quiet={headerConnection === "reconnecting" && note === null && crumb !== null}
-            title={[connected ? null : connWord, shownHerdr ? t("herdr {version} · protocol {protocol}", { version: shownHerdr.version, protocol: shownHerdr.protocol }) : null].filter((part) => part !== null).join(" · ") || undefined}
+            title={[connected ? null : connWord, shownHerdr ? (shownHerdr.runtime === "herdr-core" ? t("herdr-core {version} · protocol {protocol}", { version: shownHerdr.version, protocol: shownHerdr.protocol }) : t("herdr {version} · protocol {protocol}", { version: shownHerdr.version, protocol: shownHerdr.protocol })) : null].filter((part) => part !== null).join(" · ") || undefined}
           />}
           {/* the Host's herdr is away: the step to take is on that PC (the sidebar's state line says the same) */}
           {/* this PC's herdr is told by its health reads: one failed read is unknown, a second unavailable, and
@@ -726,14 +786,16 @@ export function App() {
           {selectedMachineId !== "local"
             ? !targetHerdr && <span className="pill pill-offline">{t("herdr offline")}</span>
             : localFreshness === "unknown"
-              ? <span className="pill pill-stale" title={health ? t("The last health check failed. Last seen: herdr {version} · protocol {protocol}", { version: health.herdr.version, protocol: health.herdr.protocol }) : t("The health check failed")}>{t("Status unknown")}</span>
-              : localFreshness === "unavailable" && <span className="pill pill-offline" title={t("Start herdr on this PC, or check HERDR_SOCKET.")}>{t("herdr unavailable")}</span>}
+              ? <span className="pill pill-stale" title={health ? (health.herdr.runtime === "herdr-core" ? t("The last health check failed. Last seen: herdr-core {version} · protocol {protocol}", { version: health.herdr.version, protocol: health.herdr.protocol }) : t("The last health check failed. Last seen: herdr {version} · protocol {protocol}", { version: health.herdr.version, protocol: health.herdr.protocol })) : t("The health check failed")}>{t("Status unknown")}</span>
+              : localFreshness === "unavailable" && (health?.herdr.runtime === "herdr-core"
+                ? <span className="pill pill-offline" title={t("Open the Herdr app on this PC, or check HC_SESSION and HC_SOCKET.")}>{t("herdr-core unavailable")}</span>
+                : <span className="pill pill-offline" title={t("Start herdr on this PC, or check HERDR_SOCKET.")}>{t("herdr unavailable")}</span>)}
           <span className="header-more">
             <button
               type="button"
               className="icon-button header-more-button"
-              aria-label={alertsOffDot ? t("More · alerts are off") : t("More")}
-              title={alertsOffDot ? t("More · alerts are off") : t("More")}
+              aria-label={moreLabel}
+              title={moreLabel}
               aria-haspopup="menu"
               aria-expanded={more !== null}
               onClick={(event) => {
@@ -743,7 +805,7 @@ export function App() {
             >
               <Ellipsis />
             </button>
-            {alertsOffDot && <span className="header-more-dot" aria-hidden="true" />}
+            {waitingInMore ? <span className="header-more-dot is-waiting" aria-hidden="true" /> : alertsOffDot && <span className="header-more-dot" aria-hidden="true" />}
           </span>
         </div>
         {more && (
@@ -754,6 +816,10 @@ export function App() {
               <div className="header-more-crumb">
                 <span>{crumb.place}</span>
                 {crumb.path !== null && <span className="header-more-path">{crumb.path}</span>}
+                {sessionLines !== null && <span className="header-more-session">
+                  <span>{sessionLines.totals}</span>
+                  {sessionLines.goal !== null && <span>{sessionLines.goal}</span>}
+                </span>}
               </div>
             ) : undefined}
             items={moreItems}
@@ -783,17 +849,21 @@ export function App() {
         <div className={`pane-column${chatShown ? " is-chat" : ""}`}>
         {/* over the pane only: a bar across the window would cut the sidebar off from its top row in the header */}
         <UpdateNotice updates={updates} onOpen={() => { setSettingsSection("updates"); setSettingsOpen(true); }} />
-        <TelemetryNotice enabled={locked === false} onOpen={() => { setSettingsSection("updates"); setSettingsOpen(true); }} />
+        <TelemetryNotice enabled={locked === false} onOpen={() => { setSettingsLinkPage("about"); setSettingsLinkSection("telemetry"); setSettingsOpen(true); }} />
         <MachineActionBanner machines={machines} onSetup={(machine, update = false) => { setDrawerOpen(false); setUpdateRemote(update); setMachineDialog(machine); }} />
         {layoutNotice && <p className="pane-notice" role="alert">{layoutNotice}</p>}
         {shownHealth?.lan_exposure && <LanExposureNotice host={shownHealth.lan_exposure.host} onOpen={() => { setSettingsLinkPage("devices"); setSettingsOpen(true); }} />}
         <PushHealthNotice onRepair={repairNotifications} onOpen={() => { setSettingsLinkPage("alerts"); setSettingsOpen(true); }} />
+        <InstallHint />
         {setupGuide.guide !== null && setupGuide.paused && <SetupGuideResume onResume={setupGuide.resume} />}
+        {relayPairings.length > 0 && <RelayPairingPrompt pairings={relayPairings} />}
+        {remotePairings.length > 0 && <AccountApprovals pairings={remotePairings} />}
         {pairedNotices.length > 0 && <DevicePairedNotice events={pairedNotices} onDismiss={dismissPairedNotice} onOpen={(event) => { dismissPairedNotice(event); setSettingsLinkPage("devices"); setSettingsOpen(true); }} />}
+        {removedNotices.length > 0 && <DeviceRemovedNotice events={removedNotices} onDismiss={dismissRemovedNotice} />}
         {/* the pane's tab, or two tabs side by side (lib/split.ts): a tab dragged down out of its strip,
             or a sidebar row dragged over this area, opens its pane in the half it is dropped on */}
         {/* kept mounted while it steps aside, so a sign-in or a workspace being made goes on where it was; it is this PC's setup */}
-        {setupGuide.guide !== null && <MachineContext.Provider value="local"><SetupGuide auth={auth} hidden={setupGuide.paused} state={setupGuide.guide} dispatch={setupGuide.dispatch} onClose={setupGuide.close} onOpenSettings={(page) => { setSettingsLinkPage(page); setSettingsOpen(true); }}
+        {setupGuide.guide !== null && <MachineContext.Provider value="local"><SetupGuide auth={auth} security={security} hidden={setupGuide.paused} state={setupGuide.guide} dispatch={setupGuide.dispatch} onClose={setupGuide.close} onOpenSettings={(page) => { setSettingsLinkPage(page); setSettingsOpen(true); }}
           // the tab was just made: picked before the roster has it, the pick would be released as a closed pane
           // picked once the roster has it: only the latest tab the guide asked for, while it is open, Start
           // was not pressed since, and nothing else was picked meanwhile
@@ -875,7 +945,7 @@ export function App() {
                 <CrashProbe region="pane" />
                 {!(slotSnapshot && pane && workspace) && slotBar}
                 {slotSnapshot && pane && workspace && (
-                  <TabStrip snapshot={slotSnapshot} workspace={workspace} selectedPane={pane} panelId={slotPanelId} splitDrag={wideScreen} onSelectPane={onSelect} end={slotEnd}
+                  <TabStrip snapshot={slotSnapshot} workspace={workspace} selectedPane={pane} panelId={slotPanelId} splitDrag={wideScreen} onSelectPane={onSelect} end={slotEnd ?? (sessionsInStrip && active ? <div className="tab-strip-sessions">{sessionsPill}</div> : undefined)}
                     renameRequest={active && renameRequest?.machineId === machineId && renameRequest.paneId === pane.pane_id ? renameRequest : null}
                     onRenameHandled={clearRenameRequest}
                     onNewTab={() => actions.openNewTab(active ? undefined : { machineId, workspaceId: workspace.workspace_id })}
@@ -897,6 +967,10 @@ export function App() {
                     mirrored={herdr?.terminal_attach === false || herdr?.terminal_mirror === true}
                     onOpenInHalf={wideScreen ? (id, side) => dockSide({ machineId, paneId: id }, side) : undefined}
                     onRecoverUnsent={(target) => openUnsent({ machineId, pane: target })}
+                    onNewTab={workspace ? () => actions.openNewTab(active ? undefined : { machineId, workspaceId: workspace.workspace_id }) : undefined}
+                    onNewTerminal={workspace ? () => actions.openTerminalTab(active ? undefined : { machineId, workspaceId: workspace.workspace_id }) : undefined}
+                    onMoveToWorkspace={(tabId, workspaceId) => actions.moveTabToWorkspace({ machineId, tabId, workspaceId })}
+                    renameRequest={active && pane && renameRequest?.machineId === machineId && renameRequest.paneId === pane.pane_id ? renameRequest : null}
                     renderPane={(item, itemActive, herdrSplit) => <OpenFileContext.Provider value={item ? (path) => openFile({ path, paneId: item.pane_id, machineId }) : null}>
                       <PaneTerminal
                         presentationKey={paneContentKey(machine, item, item ? lensOf(item) : slotView)}
@@ -1017,7 +1091,7 @@ export function App() {
         setFilesOpen(false);
         selectTargetRef.current(machineId, paneId);
       }} />
-      <SettingsDialog machines={machines} auth={auth} herdrVersion={shownHealth?.herdr?.version ?? null} herdrRuntime={shownHealth?.herdr ? shownHealth.herdr.runtime ?? "herdr" : null} herdrCore={shownHealth?.herdr_core ?? null} security={security} open={settingsOpen} section={settingsSection} linkPage={settingsLinkPage} linkSection={settingsLinkSection} onPage={onSettingsPage} onClose={closeSettings} onUsageLogin={(paneId) => { closeSettings(); selectTarget("local", paneId, "terminal"); void load(); }} onOpenPane={(machineId, paneId) => { closeSettings(); selectTarget(machineId, paneId, "terminal"); void load(); }} actions={actions} updates={updates} onEnableNotifications={enableNotifications} saveError={settingsSaveError} savePaused={settingsSavePaused} saveRetrying={settingsSaveRetrying} onRetrySave={retrySettingsSave} overPreview={(viewing !== null && !fileDocked) || diffViewing !== null || (webPage !== null && !filePanelAvailable)} />
+      <SettingsDialog machines={machines} auth={auth} herdrVersion={shownHealth?.herdr?.version ?? null} herdrRuntime={shownHealth?.herdr ? shownHealth.herdr.runtime ?? "herdr" : null} herdrCore={shownHealth?.herdr_core ?? null} herdrRuntimeFacts={shownHealth?.herdr_runtime ?? null} bootId={shownHealth?.web_ui?.boot_id ?? null} onServerRestarted={() => { void readLocalHealth(); void readBridgeHealth(); void load(); }} security={security} open={settingsOpen} section={settingsSection} linkPage={settingsLinkPage} linkSection={settingsLinkSection} onPage={onSettingsPage} onClose={closeSettings} onUsageLogin={(paneId) => { closeSettings(); selectTarget("local", paneId, "terminal"); void load(); }} onOpenPane={(machineId, paneId) => { closeSettings(); selectTarget(machineId, paneId, "terminal"); void load(); }} actions={actions} updates={updates} onEnableNotifications={enableNotifications} saveError={settingsSaveError} savePaused={settingsSavePaused} saveRetrying={settingsSaveRetrying} onRetrySave={retrySettingsSave} overPreview={(viewing !== null && !fileDocked) || diffViewing !== null || (webPage !== null && !filePanelAvailable)} />
       {filesOpen && selectedPane && (
         <FilesDialog start={selectedPane.foreground_cwd ?? selectedPane.cwd ?? ""} paneId={selectedPane.pane_id} viewing={(viewing !== null && !fileDocked) || diffViewing !== null} onOpenFile={viewFile}
           onOpenDiff={(comparison, file) => openDiff({ machineId: selectedMachineId, paneId: selectedPane.pane_id, directory: selectedPane.foreground_cwd ?? selectedPane.cwd ?? null, ...comparison, path: file.path, oldPath: file.old_path })}

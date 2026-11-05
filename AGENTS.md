@@ -21,14 +21,16 @@ to change. Also read [server/AGENTS.md](server/AGENTS.md) and [src/AGENTS.md](sr
 - `pane.process_info` takes `pane_id`, not `target` (with `target` herdr answers for the focused
   pane).
 - Keep xterm `scrollback: 0` and never rebuild an attached terminal from `pane.read`: the attach
-  stream is the truth. Only a mirrored pane (Windows, or no PTY host: neither the Rust host nor Node) is drawn from
-  `pane.read`, so never assume a pty exists.
+  stream is the truth. Except on a herdr-core server (`terminal-history`): nothing there scrolls,
+  so xterm keeps the history its attach replays. Only a mirrored pane (Windows, or no PTY host:
+  neither the Rust host nor Node) is drawn from `pane.read`, so never assume a pty exists.
 - Nothing the user typed is sent automatically after a disconnect: it waits in a draft until the
   user sends or discards it.
 - Prompt answers go through `POST /api/pane/prompt/answer`, never guessed digit keys.
 - Selecting a pane or tab in the browser never moves herdr's own focus; only an explicit action
   that needs it calls `pane.focus`.
-- Never edit `shared/herdr-api.generated.ts`; run `bun run generate:types`.
+- Never edit `shared/herdr-api.generated.ts` or `server/herdr-core/hc-api.generated.ts`; run
+  `bun run generate:types`.
 - Theme colors are edited only in the theme blocks of `src/styles.css`. Never edit
   `src/lib/themes.generated.ts` or the generated copies in DESIGN.md, index.html and
   `public/manifest.webmanifest`; run `bun run generate:themes`.

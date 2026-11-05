@@ -33,7 +33,7 @@ it("pairs a relay device, authenticates its key, and dispatches with the stored 
       const device = await store.matchRelay(paired.device.id, nonce, signature, "server-contract");
       expect(device?.role).toBe(role);
       if (!device) throw new Error("Expected authenticated relay device");
-      const ctx: ServerContext = { ...app.context, peer: { kind: "relay", device, sessionId: `session-${role}` }, requestIP: () => null, timeout: () => {} };
+      const ctx: ServerContext = { ...app.context, peer: { kind: "relay", device, sessionId: `session-${role}`, serverId: "0123456789abcdef0123456789abcdef", key: "" }, requestIP: () => null, timeout: () => {} };
       const health = await handleRequest(new Request("https://relay.ovis.invalid/api/health"), ctx);
       expect(health?.status).toBe(200);
       expect(await health?.json()).toMatchObject({ auth: { via: "relay", role }, security: { observed_ingress: "relay", pairing_gate: "closed" } });
@@ -1104,5 +1104,149 @@ it("never announces a pairing to a stream that came in through the open LAN, bef
     abort.abort();
     server.stop();
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("a script pairs for its token in JSON and authenticates with Authorization: Device under the cookie's role, last-seen and revocation (#2744)", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-device-header-"));
+  const app = createServer({ port: 0, hostname: "127.0.0.1", stateDir, token: "configured", tailscaleOwner: null, machines: false, sidecar: false });
+  const base = `http://127.0.0.1:${app.port}`;
+  const admin = { ...guard, authorization: "Bearer configured" };
+  const code = async () => ((await (await fetch(`${base}/api/devices/pair/start`, { method: "POST", headers: admin })).json()) as { code: string }).code;
+  try {
+    // a browser's pairing keeps its answer: no body, the HttpOnly cookie only
+    const browser = await fetch(`${base}/api/devices/pair`, { method: "POST", headers: guard, body: JSON.stringify({ code: await code(), label: "Browser" }) });
+    expect(browser.status).toBe(204);
+    expect(await browser.text()).toBe("");
+    const browserCookie = browser.headers.get("set-cookie")!.split(";")[0]!;
+    expect(browserCookie).toStartWith("ovis_device=");
+    // its cookie coming back confirms the first pairing, so the script pairs through the closed gate
+    expect((await fetch(`${base}/api/session`, { headers: { cookie: browserCookie } })).status).toBe(200);
+
+    const paired = await fetch(`${base}/api/devices/pair`, { method: "POST", headers: { ...guard, accept: "application/json" }, body: JSON.stringify({ code: await code(), label: "Script" }) });
+    expect(paired.status).toBe(200);
+    expect(paired.headers.get("cache-control")).toBe("no-store");
+    const { token } = await paired.json() as { token: string };
+    expect(token).toMatch(/^\S{16,}$/);
+    expect(paired.headers.get("set-cookie")).toContain(`ovis_device=${encodeURIComponent(token)}`);
+
+    const session = (authorization: string) => fetch(`${base}/api/session`, { headers: { authorization } });
+    const listed = async () => ((await (await fetch(`${base}/api/devices`, { headers: admin })).json()) as { devices: { id: string; label: string; last_seen_at: string | null }[] }).devices.find((d) => d.label === "Script")!;
+    expect((await listed()).last_seen_at).toBeNull();
+    expect((await session(`Device ${token}`)).status).toBe(200);
+    expect((await session(`device ${token}`)).status).toBe(200);
+    expect((await listed()).last_seen_at).not.toBeNull();
+    expect((await session(`Device ${token}x`)).status).toBe(401);
+    // the device's token is not the shared token
+    expect((await session(`Bearer ${token}`)).status).toBe(401);
+    const { devices } = await (await fetch(`${base}/api/devices`, { headers: { authorization: `Device ${token}` } })).json() as { devices: { label: string; current: boolean }[] };
+    expect(devices.find((d) => d.current)?.label).toBe("Script");
+
+    const id = (await listed()).id;
+    const startAs = (authorization: string) => fetch(`${base}/api/devices/pair/start`, { method: "POST", headers: { ...guard, authorization } });
+    expect((await startAs(`Device ${token}`)).status).toBe(200);
+    app.context.services.devices.update(id, { role: "watch" });
+    const refused = await startAs(`Device ${token}`);
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toMatchObject({ error: { code: "read_only" } });
+
+    expect((await fetch(`${base}/api/devices/${id}`, { method: "DELETE", headers: admin })).status).toBe(204);
+    expect((await session(`Device ${token}`)).status).toBe(401);
+  } finally {
+    app.stop();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+it("a script's first pairing on a fresh install is kept at once, so its token still works after a restart (#2744)", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-device-header-first-"));
+  const options = { port: 0, hostname: "127.0.0.1", stateDir, token: "configured", tailscaleOwner: null, machines: false, sidecar: false } as const;
+  let app = createServer(options);
+  try {
+    let base = `http://127.0.0.1:${app.port}`;
+    const { code } = await (await fetch(`${base}/api/devices/pair/start`, { method: "POST", headers: { ...guard, authorization: "Bearer configured" } })).json() as { code: string };
+    const paired = await fetch(`${base}/api/devices/pair`, { method: "POST", headers: { ...guard, accept: "application/json" }, body: JSON.stringify({ code, label: "Script" }) });
+    expect(paired.status).toBe(200);
+    const { token } = await paired.json() as { token: string };
+    const registry = JSON.parse(readFileSync(join(stateDir, "devices.json"), "utf8")) as { gate_closed_at: string | null; devices: { label: string }[] };
+    expect(registry.devices.map((d) => d.label)).toEqual(["Script"]);
+    expect(registry.gate_closed_at).not.toBeNull();
+    app.stop();
+    app = createServer(options);
+    base = `http://127.0.0.1:${app.port}`;
+    expect((await fetch(`${base}/api/session`, { headers: { authorization: `Device ${token}` } })).status).toBe(200);
+  } finally {
+    app.stop();
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+it("a PC in no account lets a revoked key pair again with a code started through the relay, which clears its tombstone", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-relay-repair-"));
+  try {
+    const store = new DeviceStore(stateDir);
+    const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+    const publicKey = Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url");
+    const first = store.pairRelay(store.startPairing().code, "Relay phone", publicKey);
+    if (!first) throw new Error("Expected relay enrollment");
+    store.revoke(first.device.id);
+    expect(store.isTombstoned(publicKey)).toBe(true);
+    const again = store.pairRelay(store.startPairing(Date.now(), { remote: true, startedBy: null, memberRequired: false }).code, "Relay phone", publicKey);
+    expect(again?.device.label).toBe("Relay phone");
+    expect(new DeviceStore(stateDir).isTombstoned(publicKey)).toBe(false);
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+it("a PC in no account still refuses, with a code started through the relay, a key its account removed", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-relay-account-removed-"));
+  try {
+    const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+    const publicKey = Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url");
+    writeFileSync(join(stateDir, "account-tombstones.json"), JSON.stringify({ v: 1, tombstones: [{ key: publicKey, account: "acct_1", record_id: "r1", removed_at: "2026-11-01T00:00:00.000Z" }] }), { mode: 0o600 });
+    const store = new DeviceStore(stateDir);
+    expect(store.pairRelay(store.startPairing(Date.now(), { remote: true, startedBy: null, memberRequired: false }).code, "Phone", publicKey)).toBeNull();
+    expect(store.isTombstoned(publicKey)).toBe(true);
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+it("a PC in no account whose tombstone file will not parse refuses a code started through the relay", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-relay-tombstones-broken-"));
+  try {
+    writeFileSync(join(stateDir, "account-tombstones.json"), "{broken", { mode: 0o600 });
+    const store = new DeviceStore(stateDir);
+    const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+    const publicKey = Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url");
+    expect(store.pairRelay(store.startPairing(Date.now(), { remote: true, startedBy: null, memberRequired: false }).code, "Phone", publicKey)).toBeNull();
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
+  }
+});
+
+it("a key re-paired on a PC in no account with a code another device started stays when its tombstone comes back", async () => {
+  const stateDir = mkdtempSync(join(tmpdir(), "ovis-relay-repair-starter-"));
+  try {
+    const store = new DeviceStore(stateDir);
+    const fresh = async () => {
+      const keys = await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+      return Buffer.from(await crypto.subtle.exportKey("spki", keys.publicKey)).toString("base64url");
+    };
+    const [starterKey, publicKey] = [await fresh(), await fresh()];
+    const starter = store.pairRelay(store.startPairing().code, "Laptop", starterKey);
+    const first = store.pairRelay(store.startPairing().code, "Phone", publicKey);
+    if (!starter || !first) throw new Error("Expected relay enrollment");
+    store.revoke(first.device.id);
+    const tombstones = readFileSync(join(stateDir, "account-tombstones.json"));
+    // a second later, as a person pairing again would be
+    const later = Date.now() + 1_000;
+    expect(store.pairRelay(store.startPairing(later, { remote: true, startedBy: starter.device.id, memberRequired: false }).code, "Phone", publicKey, later)).not.toBeNull();
+    // the revoke's tombstone back, as a stop before it was cleared or a sibling dir's merge leaves it
+    writeFileSync(join(stateDir, "account-tombstones.json"), tombstones, { mode: 0o600 });
+    expect(new DeviceStore(stateDir).hasKey(publicKey)).toBe(true);
+  } finally {
+    rmSync(stateDir, { recursive: true, force: true });
   }
 });

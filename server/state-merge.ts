@@ -34,6 +34,7 @@ import { MAX_PREFERENCES_BYTES, sharedPreferencesBody, type PreferencesChange } 
 import { readDeviceRegistry, type StoredDevice } from "./devices.ts";
 import { preparePrivateState, publishPrivateState, writePrivateState } from "./private-state.ts";
 import { normalizeEndpoint, PUSH_EXTRA_KEYS } from "./push.ts";
+import { readStateId, STATE_ID_FILE, writeStateId } from "./preferences.ts";
 import { readStateDocument, writeStateDocument } from "./state-document.ts";
 import { stateDirNames } from "./update-state.ts";
 
@@ -137,6 +138,10 @@ export function mergeRegistries(own: Registry | null, other: Registry | null,
       role: device.role === "watch" || twin.role === "watch" ? "watch" : "drive",
       created_at: earliest([device.created_at, twin.created_at])!,
       last_seen_at: [device.last_seen_at, twin.last_seen_at].filter((seen): seen is string => seen !== null).sort().at(-1) ?? null,
+      // a link done in the other dir moved the row to the account key (docs/account.md); an older copy must not undo it
+      // the later link wins: an unlinked copy, or one linked earlier, takes the other's account key
+      ...(twin.account !== undefined && (device.account === undefined || (twin.linked_at ?? "") > (device.linked_at ?? ""))
+        ? { relay_public_key: twin.relay_public_key, account: twin.account, ...(twin.added_by === undefined ? {} : { added_by: twin.added_by }), ...(twin.linked_at === undefined ? {} : { linked_at: twin.linked_at }) } : {}),
     });
   }
   for (const device of theirs) {
@@ -404,6 +409,7 @@ function mergePreferences(active: string, sibling: string, base: MergeRecord | n
   // that could not be written keeps its snapshot as it is on disk, and takes the settled values next time
   write(active, own.doc);
   write(sibling, other.doc);
+  mergeStateId(active, sibling, stamp);
   const held = (dir: string, fallback: PreferencesSnapshot | null): PreferencesSnapshot | null => {
     const read = readPreferences(dir);
     if (read === null) return fallback;
@@ -416,6 +422,24 @@ function mergePreferences(active: string, sibling: string, base: MergeRecord | n
     if (snapshot !== null) snapshots[realpath(dir)] = snapshot;
   }
   return { snapshots, target: merged };
+}
+
+/**
+ * Both dirs end with one state folder id (preferences.ts), this dir's or, while it has none, the other's:
+ * a browser that knew it from either is not told the folder started over. A damaged one is left alone.
+ */
+function mergeStateId(active: string, sibling: string, stamp: string): void {
+  try {
+    const own = readStateId(active);
+    const other = readStateId(sibling);
+    if (own === null || other === null) return;
+    if (own !== undefined && other !== own) {
+      if (other !== undefined) backUp(sibling, STATE_ID_FILE, stamp);
+      writeStateId(sibling, own);
+    } else if (own === undefined && other !== undefined) writeStateId(active, other);
+  } catch (error) {
+    console.error(`Cannot give ${active} and ${sibling} one state folder id: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 type Subscription = { endpoint: string; keys: { p256dh: string; auth: string } } & Record<string, unknown>;
