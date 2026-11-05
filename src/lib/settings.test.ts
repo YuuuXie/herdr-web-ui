@@ -236,6 +236,18 @@ describe("saved theme migration", () => {
     expect(loadSettings().terminalFoldKeyBar).toBe(false);
   });
 
+  it("keeps Markdown outline in its own key, out of an old tab's whole-record save", () => {
+    expect(loadSettings().markdownOutline).toBe(false);
+    saveSettings(sanitizeSettings({ markdownOutline: true }));
+    expect(JSON.parse(records.get(main) ?? "{}")).not.toHaveProperty("markdownOutline");
+    oldSaveSettings({ ...readOld(), terminalFontSize: 18 });
+    expect(loadSettings().markdownOutline).toBe(true);
+    saveSettings({ ...loadSettings(), markdownOutline: false });
+    expect(loadSettings().markdownOutline).toBe(false);
+    records.set("ovis:markdown-outline", "\"true\"");
+    expect(loadSettings().markdownOutline).toBe(false);
+  });
+
   it("keeps Keyboard only from the key bar in its own key, out of an old tab's whole-record save", () => {
     expect(loadSettings().terminalKeyboardOnRequest).toBe(false);
     saveSettings(sanitizeSettings({ terminalKeyboardOnRequest: true }));
@@ -438,6 +450,15 @@ it("leaves herdr's focus alone until this device asks to follow it, and keeps th
   expect(sanitizeSettings({ followHerdrFocus: "true" }).followHerdrFocus).toBe(false);
   expect(SETTING_SCOPE.followHerdrFocus).toBe("device");
   expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain("followHerdrFocus");
+});
+
+it("keeps the split view to two halves until this device turns on rows and columns, and keeps that choice its own", () => {
+  expect(DEFAULT_SETTINGS.splitGrid).toBe(false);
+  expect(sanitizeSettings({}).splitGrid).toBe(false);
+  expect(sanitizeSettings({ splitGrid: true }).splitGrid).toBe(true);
+  expect(sanitizeSettings({ splitGrid: "true" }).splitGrid).toBe(false);
+  expect(SETTING_SCOPE.splitGrid).toBe("device");
+  expect(SHARED_SETTING_KEYS as readonly string[]).not.toContain("splitGrid");
 });
 
 it("keeps the sidebar's hover peek off until this device turns it on, and keeps that choice its own", () => {
@@ -732,6 +753,13 @@ it("raises the terminal's keyboard on every tap until this device asks for it on
   expect(sanitizeSettings({ terminalKeyboardOnRequest: "true" }).terminalKeyboardOnRequest).toBe(false);
   expect(sanitizeSettings({ terminalKeyboardOnRequest: true }).terminalKeyboardOnRequest).toBe(true);
   expect(SETTING_SCOPE.terminalKeyboardOnRequest).toBe("device");
+});
+
+it("draws no Markdown outline until this device turns it on", () => {
+  expect(sanitizeSettings({}).markdownOutline).toBe(false);
+  expect(sanitizeSettings({ markdownOutline: "true" }).markdownOutline).toBe(false);
+  expect(sanitizeSettings({ markdownOutline: true }).markdownOutline).toBe(true);
+  expect(SETTING_SCOPE.markdownOutline).toBe("device");
 });
 
 it("keeps the key bar under the input line until this device folds it", () => {

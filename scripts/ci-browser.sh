@@ -152,6 +152,7 @@ run_script scripts/pwa-update-browser-qa.ts
 run_script scripts/install-state-demo-regression.ts
 run_script scripts/revision-bound-update-demo-regression.ts
 run_script scripts/file-preview-text-browser-qa.ts
+run_script scripts/markdown-outline-browser-qa.ts
 run_script scripts/virtual-source-browser-qa.ts
 run_script scripts/repo-diff-browser-qa.ts
 run_script scripts/diff-find-demo-regression.ts
@@ -197,6 +198,7 @@ run_script scripts/pc-load-demo-regression.ts
 run_script scripts/sidebar-branch-line-demo-regression.ts
 run_script scripts/sidebar-tokens-demo-regression.ts
 run_script scripts/sidebar-context-ring-demo-regression.ts
+run_script scripts/agent-helpers-fold-demo-regression.ts
 run_script scripts/agent-lock-demo-regression.ts
 run_script scripts/agent-groups-demo-regression.ts
 run_script scripts/pane-mute-demo-regression.ts
