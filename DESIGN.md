@@ -691,7 +691,8 @@ The values are the ones in `src/styles.css`. Every token but `--fs-input` is `ca
   `copilotApiEnabled` is a shared opt-in, off by default, that adds `--ui-server --port 0`
   to new Copilot launches. It never restarts or resumes an existing session, or changes commands
   typed in a shell. Enabling asks for confirmation that the local API's authentication remains
-  unverified; the setting must stay off in production until protected transport is established.
+  unverified, so it stays a warned opt-in: other programs of the same user on that PC may reach the
+  endpoint, and the default stays off until protected transport is established.
   The bridge refuses API-enabled launches off Linux, where Ovis cannot verify process/socket
   ownership. Like Claude Desktop's saved defaults for new local sessions
   (https://code.claude.com/docs/en/desktop#choose-a-permission-mode), the choice applies to future
