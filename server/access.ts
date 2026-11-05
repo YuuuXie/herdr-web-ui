@@ -131,7 +131,8 @@ export function bindScope(hostname: string): BindScope {
   return (family === 4 ? tailnetIpv4.check(address, "ipv4") : family === 6 && tailnetIpv6.check(address, "ipv6")) ? "tailnet" : "other";
 }
 
-const inTailnet = (address: string | null | undefined): boolean => {
+/** Is this one address (never a list) in Tailscale's assigned ranges? */
+export const inTailnet = (address: string | null | undefined): boolean => {
   const family = isIP(address ?? "");
   return family === 4 ? tailnetIpv4.check(address!, "ipv4") : family === 6 && tailnetIpv6.check(address!, "ipv6");
 };
@@ -151,7 +152,7 @@ export function observedIngress(input: Pick<AccessInput, "loopback" | "forwarded
   peerKnown: boolean;
   /** a forwarding header (`forwardingHeaders`) came with the request */
   forwardingHeaders: boolean;
-}): Exclude<ObservedIngress, "relay"> {
+}): Exclude<ObservedIngress, "relay" | "portal"> {
   if (!input.peerKnown) return "unknown";
   const tailscaleHere = input.owner !== null || input.tagged;
   const throughServe = input.serveOnly && input.loopback && tailscaleHere;

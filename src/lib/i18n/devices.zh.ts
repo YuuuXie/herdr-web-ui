@@ -168,7 +168,6 @@ export const DEVICES_ZH: Record<string, string> = {
   "Online. {n} phones connected.": "在线。已连接 {n} 部手机。",
   "Error: {message}": "错误：{message}",
   "Could not reach the relay.": "无法连接中继。",
-  "The relay did not start: {message}": "中继未能启动：{message}",
   "QR code that pairs a phone through the relay": "通过中继配对手机的二维码",
   "Scan it with the phone's camera": "用手机相机扫描",
   "It opens Ovis on the phone and pairs it with this PC.": "手机上会打开 Ovis 并与此 PC 配对。",
@@ -182,7 +181,6 @@ export const DEVICES_ZH: Record<string, string> = {
   "With the Tailscale app on the phone.": "通过手机上的 Tailscale 应用连接。",
   "At this page's HTTPS address.": "通过本页的 HTTPS 地址连接。",
   "On the same Wi-Fi, or through a tunnel.": "在同一 Wi-Fi 下，或通过隧道连接。",
-  "Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.": "开启中继后将关闭设备门槛：此后新的浏览器需要配对码或访问令牌。",
   "For a phone that can already open this address: on the same Wi-Fi, or through a tunnel or proxy.": "适用于已能打开此地址的手机：在同一 Wi-Fi 下，或经由隧道或代理。",
   "Get a pairing code": "获取配对码",
   "This page's address, for your other devices": "此页面的地址，供你的其他设备打开",
@@ -200,4 +198,7 @@ export const DEVICES_ZH: Record<string, string> = {
   "Pairs this phone through the relay, so Ovis keeps working away from home.": "通过中继配对这部手机，离家在外也能使用 Ovis。",
   "A device with this phone's name ({name}) is already paired through the relay.": "已有一台与这部手机同名的设备（{name}）通过中继配对。",
   "Use the relay on this phone": "在这部手机上使用中继",
+  "Copy a link without a code": "复制不含配对码的链接",
+  "Copied. Open it on the phone within 10 minutes: both screens show six digits to compare, and you approve the phone here.": "已复制。请在 10 分钟内在手机上打开它：两个屏幕会显示六位数字供比对，然后在这里批准手机。",
+  "This PC's ID": "此电脑的 ID",
 };

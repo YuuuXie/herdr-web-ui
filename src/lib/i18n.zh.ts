@@ -28,6 +28,8 @@ import { RELAY_ZH } from "./i18n/relay.zh.ts";
  * Placeholders in braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "Remove": "移除",
+  "Remove {name}": "移除 {name}",
   "Save": "保存",
   "Goal": "目标",
   "Waiting for your answer": "等待你的回答",
@@ -89,6 +91,7 @@ const BASE: Record<string, string> = {
   "soon": "即将",
   "Terminal": "终端",
   "herdr {version} · protocol {protocol}": "herdr {version} · 协议 {protocol}",
+  "herdr-core {version} · protocol {protocol}": "herdr-core {version} · 协议 {protocol}",
   "live": "已连接",
   "disconnected": "已断开",
   "reconnecting": "正在重连",
@@ -96,7 +99,10 @@ const BASE: Record<string, string> = {
   "herdr offline": "herdr 离线",
   "Status unknown": "状态未知",
   "herdr unavailable": "herdr 无响应",
+  "Open the Herdr app on this PC, or check HC_SESSION and HC_SOCKET.": "请在这台电脑上打开 Herdr 应用，或检查 HC_SESSION 和 HC_SOCKET。",
+  "herdr-core unavailable": "herdr-core 不可用",
   "The last health check failed. Last seen: herdr {version} · protocol {protocol}": "最近一次状态检查失败。上次确认：herdr {version} · 协议 {protocol}",
+  "The last health check failed. Last seen: herdr-core {version} · protocol {protocol}": "最近一次状态检查失败。上次确认：herdr-core {version} · 协议 {protocol}",
   "The health check failed": "状态检查失败",
   "Start herdr on this PC, or check HERDR_SOCKET.": "请在此电脑上启动 herdr，或检查 HERDR_SOCKET。",
   "The other PC's answer was larger than this app accepts": "另一台电脑的响应超出了此应用可接受的大小",
@@ -139,6 +145,16 @@ const BASE: Record<string, string> = {
   "Filter workspaces and agents": "筛选工作区和代理",
   "Connecting…": "正在连接…",
   "Connected": "已连接",
+  "relay": "中继",
+  "direct": "直连",
+  "local": "本地",
+  "Via a loopback address: this PC, or a tunnel to it": "经由回环地址：本机，或通往它的隧道",
+  "Via the Ovis relay": "经由 Ovis 中继",
+  "Via the Portal relay": "经由 Portal 中继",
+  "Via Tailscale": "经由 Tailscale",
+  "Via Tailscale, or Funnel from the internet": "经由 Tailscale，或经由 Funnel 从互联网连接",
+  "Via the local network": "经由局域网",
+  "Straight to this address": "直接连接此地址",
   "Reconnecting…": "正在重连…",
   "Add PC": "添加 PC",
   "Connect": "连接",
@@ -282,6 +298,8 @@ const BASE: Record<string, string> = {
   "{n} background task": "{n} 个后台任务",
   "{n} background tasks": "{n} 个后台任务",
   "Try again": "重试",
+  "The relay did not start: {message}": "中继未能启动：{message}",
+  "Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.": "开启中继后将关闭设备门槛：此后新的浏览器需要配对码或访问令牌。",
   // tabs: the strip over the pane, and the New tab dialog
   "New tab": "新建标签页",
   "Rename tab": "重命名标签页",
@@ -335,6 +353,11 @@ const BASE: Record<string, string> = {
   "Weekly": "每周",
   "Open terminal": "打开终端",
   "Sign in to {agent}": "登录 {agent}",
+  "Approve": "批准",
+  "Pair a phone through the relay": "通过中继配对手机",
+  "{name} wants to pair through the relay. Approve it only if its screen shows": "{name} 想通过中继配对。只有它的屏幕显示以下数字时才批准:",
+  "Decline": "拒绝",
+  "differs": "不同",
 };
 
 /** The parts ZH is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

@@ -3,6 +3,7 @@
  * own status, background waits, plans, the machine roster and the one collector that feeds them.
  */
 import { join } from "node:path";
+import type { RelaySocket } from "../../shared/relay-channel.ts";
 import type { AgentStatus, HerdrPane, PlanSummary, ServerMessage, SessionSnapshot } from "../../shared/protocol.ts";
 import { alertStatus, paneAlertsMuted, paneTitle } from "../../shared/notify-policy.ts";
 import { BackgroundWait } from "../background-wait.ts";
@@ -42,12 +43,14 @@ import type { TelemetryIngress, TelemetrySurface } from "../../shared/telemetry.
 /** a focus or reconnect re-reads the panes for the daily active message at most this often */
 const VISIT_READ_MS = 10 * 60_000;
 
-export function createStatusHub<Owner, Lease>({ options, devices, preferences, clients, present, pending, drainPending, holdPendingPane, usage, usageLogin }: {
+export function createStatusHub<Owner, Lease>({ options, devices, preferences, clients, present, pending, drainPending, holdPendingPane, paneMoved, usage, usageLogin }: {
   options: {
     stateDir?: string;
     codexHome?: string;
     telemetry?: Telemetry;
     machines?: boolean;
+    /** how PCs added through the relay reach it; tests point it at a local relay */
+    relayPcSocket?: (url: string) => RelaySocket;
     herdrProfiles?: () => Promise<HerdrMachineProfile[]>;
     alertTiming?: Partial<AlertTiming>;
     pushLoopbackHttp?: boolean;
@@ -62,6 +65,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     openCodeStateDir?: string;
     /** this server's workspace-order counter (server/order-sequence.ts); createServer makes the one there is */
     orderSequence?: OrderSequence;
+    /** herdr moved a pane of this PC under a new ID: the finishes read there go with it, numbered as counted there (server/seen.ts moved) */
+    seenMoved?: (from: string, to: string, renumber: (id: number) => number) => void;
   };
   devices: DeviceStore;
   /** the preferences every browser shares (server/preferences.ts): web push reads the muted panes from it */
@@ -72,6 +77,8 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   pending: PendingInputs<Owner, Lease>;
   drainPending: (paneId: string) => void;
   holdPendingPane: (paneId: string, fault: { code: string; message: string }) => void;
+  /** herdr moved a pane under a new ID: what the server keeps under the old one follows it (pending messages, the terminal) */
+  paneMoved?: (from: string, to: string) => void;
   usage: UsageService;
   usageLogin: UsageLoginService;
 }) {
@@ -326,7 +333,7 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
   /** A pane's status frame: every one says whether the pane waits on its turn's background work. */
   const paneStatus = (paneId: string, status: AgentStatus, about: { background_tasks?: number; plan?: PlanSummary | null } = {}): ServerMessage =>
     ({ type: "pane-status", pane_id: paneId, agent_status: status, ...finishes.status(paneId, status), ...about, ...(waits.waiting(paneId) ? { background_wait: true as const } : {}) });
-  const machines = options.machines === false ? null : new MachineManager(options.stateDir ?? defaultStateDir(), push, completions, clientSnapshot, { bootId: options.orderSequence?.epoch, localFinishEpoch: () => finishes.epoch });
+  const machines = options.machines === false ? null : new MachineManager(options.stateDir ?? defaultStateDir(), push, completions, clientSnapshot, { bootId: options.orderSequence?.epoch, localFinishEpoch: () => finishes.epoch, relaySocket: options.relayPcSocket });
   if (machines && options.herdrProfiles) machines.watchHerdrProfiles(options.herdrProfiles);
 
   function broadcastAll(message: ServerMessage): void {
@@ -569,6 +576,17 @@ export function createStatusHub<Owner, Lease>({ options, devices, preferences, c
     },
     // closed, not ended by itself: the same cleanup with no "terminal ended" alert
     onPaneClosed: (paneId) => paneGone(paneId),
+    // told first, so a client remaps the pane before the pty-exit and pending lists of the old ID reach it,
+    // and before the structure change's roster no longer has that ID (#1503)
+    onPaneMoved: (from, to) => {
+      // its finishes go on counting under the new ID, and what was read of them is read there (server/seen.ts)
+      const renumber = finishes.moved(from, to);
+      // a read record that cannot be written costs that record, never the rest of the move
+      try { options.seenMoved?.(from, to, renumber); }
+      catch (error) { console.warn(`seen: could not carry the reads of ${from} to ${to}:`, error); }
+      broadcastAll({ type: "pane-moved", from, to });
+      paneMoved?.(from, to);
+    },
     onStructureChange: () => broadcastAll({ type: "session-changed" }),
   }, { snapshot: async () => {
     const checkpoint = openCodeVerificationCheckpoint();

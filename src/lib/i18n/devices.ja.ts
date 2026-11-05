@@ -168,7 +168,6 @@ export const DEVICES_JA: Record<string, string> = {
   "Online. {n} phones connected.": "オンライン。スマートフォン {n} 台が接続中です。",
   "Error: {message}": "エラー: {message}",
   "Could not reach the relay.": "リレーに接続できませんでした。",
-  "The relay did not start: {message}": "リレーを開始できませんでした: {message}",
   "QR code that pairs a phone through the relay": "リレー経由でスマートフォンをペアリングする QR コード",
   "Scan it with the phone's camera": "スマートフォンのカメラで読み取ってください",
   "It opens Ovis on the phone and pairs it with this PC.": "スマートフォンで Ovis が開き、この PC とペアリングされます。",
@@ -182,7 +181,6 @@ export const DEVICES_JA: Record<string, string> = {
   "With the Tailscale app on the phone.": "スマートフォンの Tailscale アプリで接続します。",
   "At this page's HTTPS address.": "このページの HTTPS アドレスで接続します。",
   "On the same Wi-Fi, or through a tunnel.": "同じ Wi-Fi、またはトンネル経由で接続します。",
-  "Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.": "リレーをオンにするとデバイスゲートが閉じます。以後、新しいブラウザーにはペアリングコードかアクセストークンが必要です。",
   "For a phone that can already open this address: on the same Wi-Fi, or through a tunnel or proxy.": "このアドレスをすでに開けるスマートフォン向けです。同じ Wi-Fi、またはトンネルやプロキシ経由の場合です。",
   "Get a pairing code": "ペアリングコードを取得",
   "This page's address, for your other devices": "このページのアドレスです。ほかのデバイスで開いてください",
@@ -200,4 +198,7 @@ export const DEVICES_JA: Record<string, string> = {
   "Pairs this phone through the relay, so Ovis keeps working away from home.": "このスマートフォンをリレー経由でペアリングし、外出先でも Ovis を使えるようにします。",
   "A device with this phone's name ({name}) is already paired through the relay.": "このスマートフォンと同じ名前のデバイス（{name}）がすでにリレー経由でペアリングされています。",
   "Use the relay on this phone": "このスマートフォンでリレーを使う",
+  "Copy a link without a code": "コードなしのリンクをコピー",
+  "Copied. Open it on the phone within 10 minutes: both screens show six digits to compare, and you approve the phone here.": "コピーしました。10 分以内にスマートフォンで開いてください。両方の画面に表示される 6 桁の数字を比べ、ここでスマートフォンを承認します。",
+  "This PC's ID": "このPCのID",
 };

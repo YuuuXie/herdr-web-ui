@@ -3,6 +3,8 @@ import "./RelayShell.css";
 import { ChevronRight } from "lucide-react";
 
 import { useT } from "../lib/i18n.ts";
+import type { KeyMismatch } from "../lib/relay/shellState.ts";
+import { KeyId } from "./KeyId.tsx";
 import { describeUpdate } from "../lib/updateProgress.ts";
 import type { RelayShellState } from "../lib/relay/shellState.ts";
 import { serverScopePath } from "../lib/shellMode.ts";
@@ -20,6 +22,34 @@ export interface RelayShellProps {
   onForget: () => void;
   /** a PC below the shell's minimum version with a managed install: install its latest release */
   onUpdate: () => void;
+  /** pairing without a code: the digits on this screen are the ones the PC shows */
+  onMatch: () => void;
+}
+
+/**
+ * The id named and the id of the key that is not it, groups that differ marked, each labelled by
+ * where it came from. Neither is called the PC's: a link names any id it likes, and only the PC's
+ * own screen (Phone & devices) says which id is the PC's.
+ */
+function KeyIds({ mismatch, named }: { mismatch: KeyMismatch; named: "link" | "paired" }) {
+  const t = useT();
+  const expected = named === "link" ? t("ID this link names") : t("ID this phone paired with");
+  const received = mismatch.from === "link" ? t("ID of the key this link carries") : t("ID of the key this phone saved");
+  return (
+    <>
+    <dl className="relay-shell-keys">
+      <dt>{expected}</dt>
+      <dd><KeyId id={mismatch.expected} label={expected} /></dd>
+      <dt>{received}</dt>
+      <dd>
+        {mismatch.received === null
+          ? <span className="relay-shell-copy">{t("Not a valid key")}</span>
+          : <KeyId id={mismatch.received} against={mismatch.expected} label={received} />}
+      </dd>
+    </dl>
+    <p className="relay-shell-detail">{t("Only the PC itself shows its ID, under Settings → Phone & devices. Marked groups differ.")}</p>
+    </>
+  );
 }
 
 /** How a PC whose Ovis does not update itself is brought up to date: the installer, or herdr's plugin. */
@@ -32,7 +62,7 @@ export const PLUGIN_COMMANDS = "herdr plugin install devswha/ovis\nherdr plugin 
  * `data-relay-state` for scripts. One card in the token gate's frame (AccessGate.css), so a phone
  * that pairs through the relay and one that pairs with a code see the same room.
  */
-export function RelayShell({ state, scoped, iosTab, onPair, onRetry, onCancel, onBack, onForget, onUpdate }: RelayShellProps) {
+export function RelayShell({ state, scoped, iosTab, onPair, onRetry, onCancel, onBack, onForget, onUpdate, onMatch }: RelayShellProps) {
   const t = useT();
   const name = state.kind === "confirm" ? state.offer.name ?? null : state.kind === "list" || state.kind === "empty" ? null : state.name;
   const pc = name ?? t("this PC");
@@ -83,6 +113,38 @@ export function RelayShell({ state, scoped, iosTab, onPair, onRetry, onCancel, o
             <h1 className="relay-shell-title">{t("Connecting to {name}…", { name: pc })}</h1>
             <div className="relay-shell-wait" role="status"><div className="boot-spinner" aria-hidden="true" /><span className="visually-hidden">{t("Connecting to {name}…", { name: pc })}</span></div>
             <div className="relay-shell-actions"><button type="button" className="btn" onClick={onCancel}>{t("Cancel")}</button></div>
+          </>
+        )}
+        {state.kind === "compare" && (
+          <>
+            <h1 className="relay-shell-title">{t("Does {name} show this number?", { name: pc })}</h1>
+            <p className="relay-shell-digits" aria-label={state.digits.split("").join(" ")}>{`${state.digits.slice(0, 3)} ${state.digits.slice(3)}`}</p>
+            {state.confirmed ? (
+              <div className="relay-shell-wait" role="status">
+                <div className="boot-spinner" aria-hidden="true" />
+                <p className="relay-shell-detail">{t("Approve this phone on {name} to finish.", { name: pc })}</p>
+              </div>
+            ) : (
+              <p className="relay-shell-copy">{t("Pair only if the PC's screen shows the same six digits. Then approve this phone on the PC.")}</p>
+            )}
+            <div className="relay-shell-actions">
+              {!state.confirmed && <button type="button" className="btn btn-primary" onClick={onMatch}>{t("The numbers match")}</button>}
+              <button type="button" className="btn" onClick={onCancel}>{t("Cancel")}</button>
+            </div>
+          </>
+        )}
+        {state.kind === "failed" && state.failure === "pair-declined" && (
+          <>
+            <h1 className="relay-shell-title">{t("{name} did not approve this phone", { name: pc })}</h1>
+            <p className="relay-shell-copy">{t("It was declined on the PC, or not approved in time. Open the link again to compare new numbers.")}</p>
+            {back && <div className="relay-shell-actions">{back}</div>}
+          </>
+        )}
+        {state.kind === "failed" && state.failure === "pair-unavailable" && (
+          <>
+            <h1 className="relay-shell-title">{t("{name} is not taking new phones right now", { name: pc })}</h1>
+            <p className="relay-shell-copy">{t("Its link may have run out (it works for 10 minutes), or it may be paused after too many tries or busy with other phones. Copy a new link on the PC, or wait a few minutes.")}</p>
+            {back && <div className="relay-shell-actions">{back}</div>}
           </>
         )}
         {state.kind === "failed" && state.failure === "pc-offline" && (
@@ -171,6 +233,7 @@ export function RelayShell({ state, scoped, iosTab, onPair, onRetry, onCancel, o
           <>
             <h1 className="relay-shell-title">{t("{name} has a new identity", { name: pc })}</h1>
             <p className="relay-shell-copy">{t("The PC's relay key is not the one this phone paired with, so the saved pairing cannot be trusted. Forget it, then pair again from a new QR code on the PC.")}</p>
+            {state.mismatch && <KeyIds mismatch={state.mismatch} named="paired" />}
             <div className="relay-shell-actions">
               <button type="button" className="btn btn-danger" onClick={onForget}>{t("Forget this PC")}</button>
               {back}
@@ -181,6 +244,7 @@ export function RelayShell({ state, scoped, iosTab, onPair, onRetry, onCancel, o
           <>
             <h1 className="relay-shell-title">{t("This link is not {name}'s", { name: pc })}</h1>
             <p className="relay-shell-copy">{t("It carries a key that is not this PC's, so this phone will not pair with it. To pair, scan a new QR code on the PC itself.")}</p>
+            {state.mismatch && <KeyIds mismatch={state.mismatch} named="link" />}
             {back && <div className="relay-shell-actions">{back}</div>}
           </>
         )}

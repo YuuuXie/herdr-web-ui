@@ -93,12 +93,14 @@ function alignBreath(event: AnimationEvent<HTMLSpanElement>) {
   for (const animation of event.currentTarget.getAnimations()) animation.startTime = 0;
 }
 
-export function StatusBadge({ status, compact = false }: { status?: AgentStatus; compact?: boolean }) {
+/** `detail`: what the agent itself said of the state (a blocked agent's reason), after the state's words */
+export function StatusBadge({ status, compact = false, detail = null }: { status?: AgentStatus; compact?: boolean; detail?: string | null }) {
   const t = useT();
   const { settings } = useSettings();
   const value = knownStatus(status);
   const label = t(STATUS_WORD[value]);
-  const description = value === "waiting" ? t("Agent waiting on background work") : t("Agent {status}", { status: label });
+  const stateWords = value === "waiting" ? t("Agent waiting on background work") : t("Agent {status}", { status: label });
+  const description = detail ? `${stateWords} — ${detail}` : stateWords;
   // classic (the default): a compact cell draws only the states that ask for a look: a red question
   // mark while the agent waits for an answer, a green dot once it has finished and was not looked
   // at, a working-coloured dot that breathes while it runs, a working-coloured ring held still while
@@ -202,8 +204,9 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
   const twoLine = settings.sidebarRows === "two";
   const machineId = useMachineId();
   const pressPane = useContext(PanePressContext);
-  // the Herdr app's window owns this PC's workspaces (lib/machineContext.tsx): no rename, no reorder, no worktree here
-  const appLayout = useAppLayout();
+  // what the PC's herdr answers for its workspaces (lib/machineContext.tsx): herdr-core has no worktrees, and
+  // renames and reorders them only where Ovis keeps its layout
+  const { rename: renameOffered, arrange, worktrees: worktreesOffered } = useAppLayout();
   const activity = useSidebarActivity();
   const { closeWorkspace, listWorktrees, moveWorkspace, removeWorktree, renameWorkspace } = useMachineApi();
   // the row menu's Earlier sessions needs the PC's bridge to list them (lib/useSessionHistoryOffered.ts)
@@ -221,7 +224,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
   useEffect(() => {
     const known = repositoryAnswers.current;
     // a watching device is refused the listing (#2250), and a PC the Herdr app lays out offers no worktree: nothing to ask
-    if (!online || unmarked === "" || watching || appLayout) { known.clear(); setRepositoryWorkspaces(new Set()); return; }
+    if (!online || unmarked === "" || watching || !worktreesOffered) { known.clear(); setRepositoryWorkspaces(new Set()); return; }
     const ids = unmarked.split("\n");
     for (const id of [...known.keys()]) if (!ids.includes(id)) known.delete(id);
     let live = true;
@@ -232,8 +235,18 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
       (error: unknown) => { if (live && error instanceof ApiError && error.status < 500) known.set(id, false); },
     ))).then(publish);
     return () => { live = false; };
-  }, [listWorktrees, unmarked, online, watching, appLayout]);
-  const { branches, rememberOpened } = useWorktreeBranches(snapshot, online, true, repositoryWorkspaces, watching);
+  }, [listWorktrees, unmarked, online, watching, worktreesOffered]);
+  // a repository's folder that stops being a checkout is refused on a later poll: that refusal is an answer too (#2726)
+  const notCheckout = useCallback((id: string) => {
+    repositoryAnswers.current.set(id, false);
+    setRepositoryWorkspaces((current) => {
+      if (!current.has(id)) return current;
+      const next = new Set(current);
+      next.delete(id);
+      return next;
+    });
+  }, []);
+  const { branches, rememberOpened } = useWorktreeBranches(snapshot, online, true, repositoryWorkspaces, watching, notCheckout);
   // the sidebar's filter (lib/sidebarFilter.ts): which rows stay, which are context; it learns the branch
   // each row says from here, since the inventory is this roster's. What it last said outlives a fold of the
   // PC (which unmounts this roster), so a branch stays findable on a PC drawn folded
@@ -432,11 +445,11 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     const worktrees = sameRepo.filter((candidate) => candidate.worktree?.is_linked_worktree);
     const otherHeads = sameRepo.length > worktrees.length;
     // making or opening a worktree is a drive feature, and the dialog's checkout list is refused to a watching device
-    const worktreeItems: RowMenuItem[] = (workspace.worktree || repositoryWorkspaces.has(workspace.workspace_id)) && !linked && !watching && !appLayout ? [
+    const worktreeItems: RowMenuItem[] = (workspace.worktree || repositoryWorkspaces.has(workspace.workspace_id)) && !linked && !watching && worktreesOffered ? [
       { id: "new-worktree", label: t("New worktree"), icon: GitBranch, run: () => setWorktreeDialog({ mode: "create", workspace }) },
       { id: "open-worktree", label: t("Open worktree…"), icon: FolderOpen, run: () => setWorktreeDialog({ mode: "open", workspace }) },
     ] : [];
-    const deleteItems: RowMenuItem[] = linked && !appLayout ? [{
+    const deleteItems: RowMenuItem[] = linked && worktreesOffered ? [{
       id: "delete-worktree", label: t("Delete worktree checkout…"), icon: Trash2, danger: true,
       run: () => setConfirm({
         title: t("Delete the checkout of {name}?", { name: workspace.label }),
@@ -465,7 +478,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
       pinned
         ? { id: "unpin-workspace", label: t("Unpin workspace"), icon: PinOff, run: () => togglePin(state) }
         : { id: "pin-workspace", label: t("Pin workspace"), icon: Pin, run: () => togglePin(state) },
-      ...(appLayout ? [] : [{ id: "rename-workspace", label: t("Rename workspace"), icon: Pencil, run: () => beginWorkspaceRename(workspace) }]),
+      ...(!renameOffered ? [] : [{ id: "rename-workspace", label: t("Rename workspace"), icon: Pencil, run: () => beginWorkspaceRename(workspace) }]),
       // the folder's earlier sessions, listed for the agent of the pane the row opens
       ...(historyOffered && !watching ? [{ id: "session-history", label: t("Earlier sessions…"), icon: History, run: () => actions.openSessionHistory({ machineId, workspaceId: workspace.workspace_id, agent: (panes.length > 0 ? currentPane(workspace, panes) : null)?.agent ?? null }) }] : []),
       { ...closeItem, label: t(sameRepo.length > 0 ? "Close group" : "Close workspace"), divider: false },
@@ -534,7 +547,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
 
   const onDrop = (event: DragEvent<HTMLElement>, targetWorkspaceId: string): void => {
     // a move waits until the filter is cleared, also one dragged in from another window; the Herdr app's order is its own
-    if (filtered !== null || appLayout) return;
+    if (filtered !== null || !arrange) return;
     event.preventDefault();
     let payload: { machine_id?: string; workspace_id?: string };
     try { payload = JSON.parse(event.dataTransfer.getData("application/x-herdr-workspace")); } catch { return; }
@@ -608,7 +621,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
   // a finger's drag lands where the mouse's does: the same groups, the same index for herdr
   const touchHandlers = useRef<Parameters<typeof watchTouchReorder>[1] | null>(null);
   touchHandlers.current = {
-    canLift: (id) => editingWorkspaceId !== id && !fixedIds.has(id) && filtered === null && !appLayout,
+    canLift: (id) => editingWorkspaceId !== id && !fixedIds.has(id) && filtered === null && arrange,
     onLift: (id) => { setMenu(null); setTouchDrag({ source: id, over: id }); },
     onOver: (id) => setTouchDrag((current) => current && { ...current, over: id }),
     onDrop: (id, target) => {
@@ -649,7 +662,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
   })();
 
   const onRowKeyDown = (event: KeyboardEvent<HTMLDivElement>, workspaceId: string): void => {
-    if (filtered !== null || appLayout || !event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+    if (filtered !== null || !arrange || !event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
     event.preventDefault();
     moveVisible(workspaceId, event.key === "ArrowUp" ? -1 : 1);
   };
@@ -688,7 +701,7 @@ export function Sidebar({ snapshot, online, selectedPaneId, actions, watching = 
     const editingWorkspace = editingWorkspaceId === workspace.workspace_id;
     // a row that cannot move still drags its pane into half of the pane area; on herdr-core only the move is off
     const placed = fixedIds.has(workspace.workspace_id) || filtered !== null;
-    const fixed = placed || appLayout;
+    const fixed = placed || !arrange;
     const filterNote = context && selected ? <span className="sidebar-filter-note">{t("Selected")}</span> : null;
     const menuOpen = menu?.workspace.workspace_id === workspace.workspace_id;
     const contentsId = `${rosterId}-worktrees-${encodeURIComponent(workspace.workspace_id)}`;

@@ -432,7 +432,9 @@ blocks of `src/styles.css`.
   size in the header's meta line becomes `256 KB of 1.3 MB`, always beside a warning icon so the
   color is not the only sign. It is a warning yellow, at least 4.5:1 on
   `--bg`, `--bg-panel` and `--bg-elevated` (see `--notice` in the generated table). Charcoal and Catppuccin
-  (its yellow) set theirs in their blocks of `src/styles.css`.
+  (its yellow) set theirs in their blocks of `src/styles.css`. Tokyo Night Day, Gruvbox Light, One Light, both Solarized,
+  Kanagawa Lotus and Rosé Pine Dawn keep their palette yellow's hue and move only its lightness to
+  get there (`scripts/herdr-theme-overrides.ts`); `src/lib/themes.contrast.test.ts` holds every theme to it.
 - The header's meta line (size, folder) is `--fs-xs`. A file that cannot be previewed says so in
   one sentence ("This file can't be previewed here. Download it to open it.") over its type and
   size as a dim mono `--fs-xs` line; "Opening…" is a `role="status"` note that is in the document from
@@ -1043,11 +1045,20 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   A lone pane beside such a `⋯` draws no second ellipsis (its actions are in the tab's menu), on a
   desktop as on touch. The pane's own context menu carries pane actions; it opens at the pointer
   without changing which pane is focused. The pane header's ellipsis opens the same menu on touch.
-  A lone tab with no row (a phone's screen made short by its keyboard) keeps that ellipsis at the
-  pane's top right, below a glass header and never under the header's own `⋯`, as an iPhone
-  navigation bar (and the Claude iOS app) keeps one overflow button in the bar and the content's
-  controls below it. Wherever that ellipsis shows to a finger, the pane's banners (View only and the
-  rest) start below it, so none covers it.
+  A lone tab with no row (a phone at most 700px tall, including the iPhone Duo's 678-point outer
+  display, landscape or a screen made short by its keyboard) draws no pane ellipsis either: a second
+  `⋯` below the glass header would repeat the header's own. The header's `⋯` is then the one menu,
+  as an iPhone navigation bar (and the Claude iOS app) keeps one overflow button in the bar. After its
+  own items and a divider it carries what the missing row's menu would: a split tab's panes first,
+  then the pane's actions, then New terminal (the row's `+`), New tab with agent… (as Chrome for
+  iPhone keeps New Tab in its overflow menu) and Rename tab, in a dialog in place of the row's inline
+  field, which the palette's Rename tab and its shortcut open too. Move to workspace… (a one-pane
+  tab) lists the other workspaces in a second menu, where the row's menu lists them in place, and
+  Close tab asks first, as the row's does for a workspace's last tab: it closes the workspace too,
+  and is the one way to close a split tab whole there. Extending the compact-height state to the Duo follows
+  Apple's outer-display guidance to put chrome at the edge and preserve vertical room for content.
+  Wherever a lone pane's ellipsis shows to a finger, the pane's banners (View only and the rest)
+  start below it, so none covers it; with no row they start below the glass header.
 - On a PC whose terminals are the Herdr app's (`HerdrIdentity.runtime` `herdr-core`), the app's
   window owns the workspaces, tabs and splits, and herdr-core refuses to rename, reorder or move
   them, to split, swap, zoom or resize a pane, and the worktree actions. The browser then leaves
@@ -1467,6 +1478,12 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   so a footer row kept showing in every browser tab and in browsers that never prompt. Settings →
   Phone & devices → Install offers it when the browser can install, and the steps otherwise,
   as the Claude web app keeps getting its apps in the account menu rather than a sidebar row.
+- Above that row, only where the page is one PC of a phone's list (a PC's page on the hosted
+  relay shell, or the phone app), one full-width row (`.sidebar-footer-pc`) names the PC, the lone
+  Host's name its header no longer shows, then **Change PC** in `--text-dim` and a switch glyph: a
+  tap goes back to the list of PCs (the shell's front page, or the app's list), as the Claude app's
+  sidebar foot names whose account it is and switches it in one tap. Settings → Phone & devices
+  keeps its Change PC row. A PC's own app never shows it: its sidebar lists its PCs itself.
 
 ### Plan meters (`.usage*`)
 - Right of the Settings gear, one button holding as many chips as the row has room for (judged
@@ -1624,7 +1641,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - A tab herdr still names by its number ("Tab 2"), which a CLI that sets only its own title leaves
   alike, shows a few words of the first message its agent was given, about 24 columns (a wide
   character takes two) cut at a word's end with `…` (#2019); its hover stays the pane's title. A
-  slash command, a path or a code fence names nothing, so the next line is taken. This follows the
+  slash command, a path or a code fence names nothing, so the next line is taken, and an attached
+  file's `@path` mention is left out, an upload's path with spaces whole (#2637), though never the
+  words after another mention (#2682). An agent's own name
+  for its conversation comes before those words: the pane's name, else herdr's pane title, else the
+  terminal title of Codex (its thread) or Claude Code (its topic), the agents that name the
+  conversation there (another agent's says its state, "Ready"), unless it only says which agent runs
+  where (the agent's name or its command line, a process, its folder, a path). This follows the
   Codex app, which titles a thread from its first prompt, rather than asking the model for a title (a
   model call and a wait). A name someone gave the tab (Rename tab, the New tab dialog's Name, a script,
   even one that is only an agent's name) is never covered, the workspace keeps its name, and herdr's
@@ -2009,6 +2032,19 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the PC and split half the header shows, by the half that reported it: a recovery on one PC or half
   is not said once another is shown, and a pane's first connection is not a reconnect. A stalled
   output, which retries nothing, gets no line: the chip says disconnected. The return sends nothing: a draft stays a draft.
+- Beside the chip, always shown, one quiet mark says how this device reaches Ovis (`.conn-route`,
+  `components/ConnectionRouteMark.tsx`, `lib/connectionRoute.ts`): a 14px glyph and one short
+  `--text-dim` word, **relay** (the hosted shell, or a request Portal vouched for, whatever signed it in), **Tailscale** (a tailnet address, or a
+  request the server saw come through serve; a MagicDNS name alone says "Via Tailscale, or Funnel
+  from the internet", since the name serves both), **LAN** (a private address or a local-only name), **direct** (any other
+  address, a bare machine name and a request the server saw come through Funnel included) or
+  **local** (loopback: this PC, or a tunnel to another, which nothing can tell apart). The route,
+  not the connection's state, is its title and accessible text ("Via Tailscale"); the chip tells the
+  state. It is read from what the page owns and the server's own word on the request
+  (`observed_ingress`), never guessed. It is not a button and never wraps. At `<=480px` only the
+  relay keeps its word (the one most asked for) and the rest keep the glyph; below `360px` the
+  relay's word goes too, so the pane title keeps its room. The phone app's demo shows none. It
+  follows Paseo's app, which says beside a host whether it is reached directly or through its relay.
 
 ### Chat turn (`.chat-turn`)
 - Native conversation rows use LegendList 3.3.5, with the chat view as the single
@@ -2251,9 +2287,14 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   settled turn's do. A turn that ended on its final answer stays settled while the agent works
   again: a turn the agent began by itself (a background task ended) or from the terminal has no
   row yet, and the pending `Working…` head under the rows stands for it, as after a send. That
-  head waits 800 ms first: at a turn's end herdr's status trails the answer by 100–400 ms, and a
-  head under each answer would flash. While it waits it keeps its place unseen, so showing it moves
-  nothing a reader is selecting or reading. The Codex app never reopens a finished turn either. Before
+  head shows only once the pane was seen at rest under that answer: at a turn's end herdr's status
+  trails the answer (100–400 ms, longer on a busy PC), and a head under each answer would flash.
+  It then waits 800 ms more, for a new turn's first row to bring its own head. While it waits it keeps its place unseen, so showing it moves
+  nothing a reader is selecting or reading. The Codex app never reopens a finished turn either. The
+  other way round, herdr can rest before a read holds a Claude turn's answer (about 1 s at worst):
+  the turn stays at work until a read brings its answer or a turn of the user's, or for 2 s with
+  no such read. A read that only adds more of the unanswered turn starts the 2 s again. So it never
+  looks ended with no answer. The Codex app also keeps a turn working until its answer is in. Before
   the chat's first read, `Loading conversation…` is the only line: the rows read may hold the
   running turn's own head. A settled turn folds to its header
   with a hairline under it, and the header reads as a footnote: `--text-dim`, regular weight (the
@@ -2660,8 +2701,22 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
 - Accepted pending messages clear only the draft prefix acknowledged by the bridge. For agents
   other than Pi, actual Enter delivery removes the pending row and refreshes the transcript. For
   a message submitted from Ovis Chat to Pi, Enter changes it to a read-only **Sent to Pi ·
-  waiting for transcript** user bubble. Only a matching durable user record appended beyond the byte
-  boundary captured on that exact Pi file/session and extending its captured leaf removes it, and
+  waiting for transcript** user bubble. What Pi runs itself gets no bubble, as Pi's submit handler
+  reads the trimmed text (line ends, tabs and control characters as its editor pastes them): a
+  builtin such as `/model` (with an argument only where Pi takes one) and `!command`. Pi records no
+  user line with its text, so nothing could confirm it. `/new please` or a lone `!` is a message to
+  Pi and keeps one. Any other `/name` keeps one too: whether it is a prompt template (recorded only
+  expanded), an extension's command (recorded as nothing) or a message depends on what that Pi
+  loaded, which no catalog proves. Pi records its sends in order, so its own text confirms it, and
+  it is settled as run when a later Ovis send's record lands before its own, or when the record after
+  it is any other text where the pane's catalog listed it as a template (its expansion). Other records, such as a
+  message typed in the terminal, are skipped as for any receipt. A `/skill:name` send
+  matches the record Pi writes with the whole SKILL.md before its request, read back as typed, its
+  request trimmed as Pi trims it. Known gap: chained skills are not read back; their bubbles wait
+  for good, and so do the ones behind them.
+  A SKILL.md whose body holds `\n</skill>\n\n` is not read back (Pi's own parser has the same limit).
+  Only a matching durable user record appended beyond the
+  byte boundary captured on that exact Pi file/session and extending its captured leaf removes it, and
   only a record Pi stamped no earlier than that capture: Pi stamps a message when it is submitted,
   so an earlier stamp is the same text typed into Pi before Ovis's Enter, or a wall clock set back
   in between. When only such a record has the text, the receipt becomes **transcript confirmation
@@ -3269,6 +3324,21 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   sign-in status with an existing status-token dot, without badge pills. Within-provider reorder
   and visibility controls stay in fixed columns; hidden rows remain listed but fade. Empty lists
   show one dim sentence.
+- Local account rows also offer **Remove**, with the existing confirmation dialog (Cancel focused).
+  This keeps the Codex-app-inspired connected-item list above: account identity and status lead,
+  sign-in is the primary action, and removal stays beside the account rather than in another settings
+  page. The confirmation distinguishes removing an Ovis list entry from signing the CLI out.
+  Removed keys live in the server's own `usage-removed.json` (`{ "accounts": ["provider:key"] }`),
+  apart from credentials and preferences so an older version cannot rewrite them away. The file
+  is additive state: older versions ignore it; no credential files or keychain entries are moved
+  or deleted. A removed account this PC still lists waits under **Removed from Ovis** at the foot of
+  its provider's accounts, each with **Restore** (`POST /api/usage/accounts`), so one tap never
+  loses an account for good and every provider has a way back, not only the two with a browser
+  sign-in. This follows the Codex app's connected-item list, where a disconnected item stays listed
+  with its way back beside it. A successful browser sign-in also restores only its own account. A
+  `usage-removed.json` that is not the list is set aside as `.corrupt-<time>` and every account is
+  listed again, rather than failing the usage report. The eye still only hides a meter, and reorder
+  still uses the existing shared preferences and fixed arrow columns.
 - An expired Claude or Codex sign-in on this PC gets one **Sign in again** button: under the row's status in
   Settings, and under **Sign-in expired.** in the usage popover (whose note then drops "Open X to
   renew it"). It runs Add account's terminal-tab sign-in, but in that account's own credential home
@@ -3422,6 +3492,13 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   paging is disabled until that search ends, so an older page cannot overwrite its result.
 - xterm has `scrollback: 0`; wheel/touch gestures reach herdr's alternate-screen scrollback. The
   mount hides the unused xterm scrollbar.
+- A herdr-core server (`terminal-history`) has no viewport to scroll, so there the browser keeps
+  the history, as VS Code's and Zed's terminals keep their own: xterm holds 2,000 lines, each
+  attach clears them and replays hc's last 2,000 first, and xterm's own scrollbar shows in the
+  column the fit leaves it. The wheel and scrollbar scroll it natively, a swipe through
+  `scrollLines`; a program that reads the mouse, or the alternate screen, still gets the wheel, as
+  in those terminals. Find and the scroll buttons need herdr's own viewport, so herdr-core has
+  neither.
 - An attached touch swipe sends its wheel reports from animation frames, at most 6 per frame and in
   order, with at most 64 waiting: a fast flick that derived up to 24 reports in one frame now spreads
   them over the next few, and a two-screen swipe has drained within 300 ms of the lift. Every step
@@ -3656,8 +3733,20 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   the agent asks for its own when it first starts. On a first run, plan usage turns on by itself for
   accounts already signed in; the guide opened again from Settings changes no setting (nor says it
   will).
-- "Start with …" and beside it a plain "Connect your phone", which opens a `--bg-panel` box under them:
-  a QR code that opens the app on the phone with a fresh pairing code filled in, the address and the
+- "Start with …" and beside it a plain "Connect your phone", which opens a `--bg-panel` box under them.
+  On a first run on the PC itself (the desktop app, or a browser on its loopback) the box is open from
+  the start, as a phone is the next device to add; it leads with the relay only, so where the relay
+  cannot lead it stays closed instead of sending the page to Settings → Phone untapped. The relay stays
+  off until "Turn on the Ovis relay", as Paseo keeps its relay off until Enable relay; unlike Paseo,
+  which leaves pairing in Settings, the first run shows it.
+  Where the Ovis relay can lead (offered here, nothing blocks it, not a watching device or a Portal
+  visitor), the box leads with it (off until the user turns it on, then a QR code): one line on what it does, the device-gate note when turning
+  it on closes the gate, and "Turn on the Ovis relay" as the primary button (the tap is the consent).
+  A browser in only because nothing is paired yet pairs itself first, as the relay closes the gate.
+  Then the relay's state while it connects, a failed start with Try again, and once online the same
+  pairing QR code Settings shows (`RelayPairing`), which gives way to Paired and New code once a
+  new device is listed, since its code is single-use. A quiet "Use Tailscale or Wi-Fi instead" link under
+  it, and the whole box where the relay cannot lead, shows the other way: a QR code that opens the app on the phone with a fresh pairing code filled in, the address and the
   code. The code is asked for when the box opens and never renewed behind the user's back (it would
   replace one Settings shows); once a phone pairs ("Paired: …") or it runs out, New code asks again.
   A browser in only because nothing is paired yet pairs itself first, as Settings → Phone's Pair this

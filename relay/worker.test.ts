@@ -1,19 +1,24 @@
 import { afterAll, afterEach, beforeAll, describe, expect, setSystemTime, test } from "bun:test";
 import { SERVER_PROOF_CLOSE, SERVER_PROOF_MS } from "../shared/relay-server-proof.ts";
-import { CLOSE, HANDSHAKE_MS, IDLE_MS, KEEPALIVE_PING, KEEPALIVE_PONG, MAX_CLIENTS, MAX_PENDING, MAX_PROVING, OFFLINE_WAIT_MS, type Frame } from "./core.ts";
+import { CLOSE, HANDSHAKE_MS, IDLE_MS, KEEPALIVE_PING, KEEPALIVE_PONG, MAX_CLIENTS, MAX_MESSAGE_BYTES, MAX_PENDING, MAX_PROVING, OFFLINE_WAIT_MS, USAGE_REPORT_MS, type Frame } from "./core.ts";
 import { answerChallenge, newServer, type TestServer } from "./relay-test-client.ts";
-import { RelayRoom, handle, type Env, type HibernatableSocket, type RelayState } from "./worker.ts";
+import { RelayRoom, handle, usageKey, type Env, type HibernatableSocket, type RelayState } from "./worker.ts";
 
 /** the server end of a Cloudflare WebSocketPair: records what the room sends and how it closes */
 class FakeSocket implements HibernatableSocket {
   sent: Frame[] = [];
   closedWith: { code: number; reason: string } | null = null;
+  /** times the room called close() */
+  closes = 0;
+  /** the far end vanished without a TCP close: a close sent to it is never answered, so the runtime keeps listing the socket */
+  peerGone = false;
   private attachment: unknown = null;
   send(frame: Frame) {
     if (this.closedWith) throw new Error("socket closed");
     this.sent.push(frame);
   }
   close(code = 1005, reason = "") {
+    this.closes++;
     if (this.closedWith) throw new Error("already closed");
     this.closedWith = { code, reason };
   }
@@ -39,8 +44,8 @@ function fakeState() {
     autoResponse: null,
     alarm: null,
     acceptWebSocket: (socket: HibernatableSocket) => { sockets.push(socket as FakeSocket); },
-    // the runtime stops listing a socket once its close is through
-    getWebSockets: () => sockets.filter((socket) => !socket.closedWith),
+    // the runtime stops listing a socket once its close is through, which a vanished peer never answers
+    getWebSockets: () => sockets.filter((socket) => !socket.closedWith || socket.peerGone),
     setWebSocketAutoResponse: (pair?: unknown) => { state.autoResponse = pair; },
     getWebSocketAutoResponseTimestamp: (socket: HibernatableSocket) => keepalive.get(socket) ?? null,
     storage: {
@@ -249,6 +254,51 @@ describe("relay Durable Object", () => {
     expect(data.closedWith?.code).toBe(CLOSE.GOING_AWAY);
     expect(control.closedWith).toBeNull();
     expect(fake.state.alarm).toBe(start.getTime() + 2 * IDLE_MS - 1000);
+  });
+
+  test("a socket closed to a peer that vanished stays ended across an eviction: no second close, disconnected or usage report", async () => {
+    const points: unknown[] = [];
+    const usage = { USAGE: { writeDataPoint: (point: unknown) => { points.push(point); } } };
+    const start = 1_000_000;
+    setSystemTime(new Date(start));
+    const fake = fakeState();
+    let room = new RelayRoom(fake.state, usage);
+    const control = await connectServer(room, fake);
+    const pair = await connectPair(room, fake);
+    room.webSocketMessage(pair.data, "handshake answer");
+    // the phone's network went away: it sends nothing more and never answers a close
+    pair.client.peerGone = true;
+    const disconnected = () => control.sent.filter((frame) => frame === JSON.stringify({ type: "disconnected", connection_id: pair.connection_id })).length;
+
+    setSystemTime(new Date(start + IDLE_MS));
+    fake.keepalive.set(control, new Date());
+    await room.alarm();
+    expect(pair.client.closedWith?.code).toBe(CLOSE.GOING_AWAY);
+    expect(disconnected()).toBe(1);
+    const reported = points.length;
+
+    // hibernated, then woken by the next alarm while the runtime still lists the unanswered socket
+    room = new RelayRoom(fake.state, usage);
+    setSystemTime(new Date(start + 2 * IDLE_MS));
+    fake.keepalive.set(control, new Date());
+    await room.alarm();
+    expect(pair.client.closes).toBe(1);
+    expect(disconnected()).toBe(1);
+    expect(points).toHaveLength(reported);
+    expect(control.closedWith).toBeNull();
+    expect(fake.state.alarm).toBe(start + 3 * IDLE_MS);
+    // a frame it sent before the close arrives late: it is not passed on, and nothing ends twice
+    const passed = pair.data.sent.length;
+    room.webSocketMessage(pair.client, "late");
+    room.webSocketMessage(pair.client, "x".repeat(MAX_MESSAGE_BYTES + 1));
+    expect(pair.data.sent).toHaveLength(passed);
+    expect(pair.client.closes).toBe(1);
+    expect(disconnected()).toBe(1);
+    expect(points).toHaveLength(reported);
+    // the runtime finally gives up on it
+    room.webSocketClose(pair.client, 1006, "", false);
+    expect(disconnected()).toBe(1);
+    expect(points).toHaveLength(reported);
   });
 
   test("after an eviction, closes an idle pair no sooner than 120 s after its last frame and by 150 s after the saved time", async () => {
@@ -536,5 +586,65 @@ describe("relay Worker", () => {
     expect((await handle(bad, e)).status).toBe(400);
     expect(asked).toEqual([]);
     expect(rooms).toEqual([]);
+  });
+});
+
+describe("relay usage counters", () => {
+  /** an Analytics Engine dataset that records what it is given */
+  const dataset = () => {
+    const points: { indexes: string[]; blobs: string[]; doubles: number[] }[] = [];
+    return { points, USAGE: { writeDataPoint: (point: (typeof points)[number]) => { points.push(point); } } };
+  };
+
+  test("reports a device session's bytes and time when it closes, across an eviction, under a key that is not the server_id", async () => {
+    const usage = dataset();
+    const fake = fakeState();
+    setSystemTime(new Date(1_000_000));
+    let room = new RelayRoom(fake.state, usage);
+    const control = await connectServer(room, fake);
+    const client = await connect(room, fake, "role=client");
+    const { connection_id } = client.json(0) as { connection_id: string };
+    room.webSocketMessage(client, "hello"); // held until the PC's data socket attaches, still traffic
+    const data = await connectServer(room, fake, connection_id);
+    room.webSocketMessage(data, "x".repeat(100)); // the PC answers: the session starts
+    room = new RelayRoom(fake.state, usage); // evicted: the counts live with the socket
+    room.webSocketMessage(client, new Uint8Array(40).buffer);
+    room.webSocketMessage(client, KEEPALIVE_PING); // keepalives are not traffic
+    room.webSocketMessage(data, "é"); // 2 bytes in UTF-8
+    setSystemTime(new Date(1_000_000 + 90_000));
+    closeFromFar(room, client);
+    expect(usage.points).toEqual([{ indexes: [usageKey(SERVER)], blobs: ["device"], doubles: [45, 102, 90, 1] }]);
+    expect(usageKey(SERVER)).not.toBe(SERVER);
+    expect(JSON.stringify(usage.points)).not.toContain(connection_id);
+    closeFromFar(room, control);
+    expect(usage.points.at(-1)).toEqual({ indexes: [usageKey(SERVER)], blobs: ["pc"], doubles: [0, 0, 90, 1] });
+  });
+
+  test("a long connection reports every USAGE_REPORT_MS from the idle alarm, and only the rest when it closes", async () => {
+    const usage = dataset();
+    const fake = fakeState();
+    const start = 1_000_000;
+    setSystemTime(new Date(start));
+    const room = new RelayRoom(fake.state, usage);
+    const control = await connectServer(room, fake);
+    const later = start + USAGE_REPORT_MS;
+    setSystemTime(new Date(later));
+    fake.keepalive.set(control, new Date(later)); // the runtime kept answering its keepalive
+    await room.alarm();
+    expect(control.closedWith).toBeNull();
+    expect(usage.points).toEqual([{ indexes: [usageKey(SERVER)], blobs: ["pc"], doubles: [0, 0, USAGE_REPORT_MS / 1000, 0] }]);
+    setSystemTime(new Date(later + 60_000));
+    closeFromFar(room, control);
+    expect(usage.points.at(-1)!.doubles).toEqual([0, 0, 60, 1]);
+  });
+
+  test("a client the PC never answered is no session", async () => {
+    const usage = dataset();
+    const fake = fakeState();
+    const room = new RelayRoom(fake.state, usage);
+    const client = await connect(room, fake, "role=client");
+    room.webSocketMessage(client, "held");
+    closeFromFar(room, client);
+    expect(usage.points).toEqual([]);
   });
 });

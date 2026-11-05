@@ -26,6 +26,8 @@ import { RELAY_JA } from "./i18n/relay.ja.ts";
  * in English. Placeholders in braces keep their English names.
  */
 const BASE: Record<string, string> = {
+  "Remove": "削除",
+  "Remove {name}": "{name} を削除",
   "Save": "保存",
   "Goal": "目標",
   "Waiting for your answer": "回答待ち",
@@ -87,6 +89,7 @@ const BASE: Record<string, string> = {
   "soon": "近日",
   "Terminal": "ターミナル",
   "herdr {version} · protocol {protocol}": "herdr {version} · プロトコル {protocol}",
+  "herdr-core {version} · protocol {protocol}": "herdr-core {version} · プロトコル {protocol}",
   "live": "接続中",
   "disconnected": "切断",
   "reconnecting": "再接続中",
@@ -94,7 +97,10 @@ const BASE: Record<string, string> = {
   "herdr offline": "herdr オフライン",
   "Status unknown": "状態不明",
   "herdr unavailable": "herdr 応答なし",
+  "Open the Herdr app on this PC, or check HC_SESSION and HC_SOCKET.": "この PC で Herdr アプリを開くか、HC_SESSION と HC_SOCKET を確認してください。",
+  "herdr-core unavailable": "herdr-core を利用できません",
   "The last health check failed. Last seen: herdr {version} · protocol {protocol}": "直近の状態確認に失敗しました。最後に確認した状態: herdr {version} · プロトコル {protocol}",
+  "The last health check failed. Last seen: herdr-core {version} · protocol {protocol}": "直近の状態確認に失敗しました。最後に確認した状態: herdr-core {version} · プロトコル {protocol}",
   "The health check failed": "状態確認に失敗しました",
   "Start herdr on this PC, or check HERDR_SOCKET.": "この PC で herdr を起動するか、HERDR_SOCKET を確認してください。",
   "The other PC's answer was larger than this app accepts": "別の PC の応答が、このアプリで受け取れるサイズを超えています",
@@ -137,6 +143,16 @@ const BASE: Record<string, string> = {
   "Filter workspaces and agents": "ワークスペースとエージェントを絞り込む",
   "Connecting…": "接続しています…",
   "Connected": "接続済み",
+  "relay": "リレー",
+  "direct": "直接",
+  "local": "ローカル",
+  "Via a loopback address: this PC, or a tunnel to it": "ループバックアドレス経由: このPC、またはそこへのトンネル",
+  "Via the Ovis relay": "Ovis リレー経由",
+  "Via the Portal relay": "Portal リレー経由",
+  "Via Tailscale": "Tailscale 経由",
+  "Via Tailscale, or Funnel from the internet": "Tailscale 経由、またはインターネットから Funnel 経由",
+  "Via the local network": "ローカルネットワーク経由",
+  "Straight to this address": "このアドレスへ直接",
   "Reconnecting…": "再接続しています…",
   "Add PC": "PC を追加",
   "Connect": "接続",
@@ -280,6 +296,8 @@ const BASE: Record<string, string> = {
   "{n} background task": "バックグラウンドタスク {n} 件",
   "{n} background tasks": "バックグラウンドタスク {n} 件",
   "Try again": "再試行",
+  "The relay did not start: {message}": "リレーを開始できませんでした: {message}",
+  "Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.": "リレーをオンにするとデバイスゲートが閉じます。以後、新しいブラウザーにはペアリングコードかアクセストークンが必要です。",
   // tabs: the strip over the pane, and the New tab dialog
   "New tab": "新しいタブ",
   "Rename tab": "タブの名前を変更",
@@ -333,6 +351,11 @@ const BASE: Record<string, string> = {
   "Weekly": "週次",
   "Open terminal": "ターミナルを開く",
   "Sign in to {agent}": "{agent} にサインイン",
+  "Approve": "承認",
+  "Pair a phone through the relay": "リレー経由でスマートフォンをペアリング",
+  "{name} wants to pair through the relay. Approve it only if its screen shows": "{name} がリレー経由でペアリングしようとしています。その画面に次の数字が表示されている場合だけ承認してください:",
+  "Decline": "拒否",
+  "differs": "不一致",
 };
 
 /** The parts JA is made of; src/lib/i18n.test.ts fails when a key is in two parts, since a spread keeps only the last. */

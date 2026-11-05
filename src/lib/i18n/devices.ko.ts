@@ -168,7 +168,6 @@ export const DEVICES_KO: Record<string, string> = {
   "Online. {n} phones connected.": "온라인. 폰 {n}대가 연결되어 있습니다.",
   "Error: {message}": "오류: {message}",
   "Could not reach the relay.": "릴레이에 연결할 수 없습니다.",
-  "The relay did not start: {message}": "릴레이를 시작하지 못했습니다: {message}",
   "QR code that pairs a phone through the relay": "릴레이를 통해 폰을 페어링하는 QR 코드",
   "Scan it with the phone's camera": "폰 카메라로 스캔하세요",
   "It opens Ovis on the phone and pairs it with this PC.": "폰에서 Ovis가 열리고 이 PC와 페어링됩니다.",
@@ -182,7 +181,6 @@ export const DEVICES_KO: Record<string, string> = {
   "With the Tailscale app on the phone.": "폰의 Tailscale 앱으로 연결합니다.",
   "At this page's HTTPS address.": "이 페이지의 HTTPS 주소로 연결합니다.",
   "On the same Wi-Fi, or through a tunnel.": "같은 Wi-Fi에서, 또는 터널을 통해 연결합니다.",
-  "Turning on the relay closes the device gate: a new browser then needs a pairing code or the access token.": "릴레이를 켜면 기기 게이트가 닫힙니다. 그 뒤 새 브라우저는 페어링 코드나 접속 토큰이 필요합니다.",
   "For a phone that can already open this address: on the same Wi-Fi, or through a tunnel or proxy.": "이 주소를 이미 열 수 있는 폰용입니다. 같은 Wi-Fi에 있거나 터널이나 프록시를 거치는 경우입니다.",
   "Get a pairing code": "페어링 코드 받기",
   "This page's address, for your other devices": "이 페이지의 주소입니다. 다른 기기에서 여세요",
@@ -200,4 +198,7 @@ export const DEVICES_KO: Record<string, string> = {
   "Pairs this phone through the relay, so Ovis keeps working away from home.": "이 폰을 릴레이로 페어링해 집 밖에서도 Ovis를 쓸 수 있게 합니다.",
   "A device with this phone's name ({name}) is already paired through the relay.": "이 폰과 이름이 같은 기기({name})가 이미 릴레이로 페어링되어 있습니다.",
   "Use the relay on this phone": "이 폰에서 릴레이 사용",
+  "Copy a link without a code": "코드 없는 링크 복사",
+  "Copied. Open it on the phone within 10 minutes: both screens show six digits to compare, and you approve the phone here.": "복사했습니다. 10분 안에 휴대폰에서 여세요. 두 화면에 같은 여섯 자리 숫자가 뜨면 비교한 뒤 여기서 휴대폰을 승인합니다.",
+  "This PC's ID": "이 PC의 ID",
 };
