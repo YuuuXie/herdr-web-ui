@@ -139,7 +139,7 @@ function rotatedLifecycle(target: string, cached: ForegroundCheckpoint, uid: big
  * Otherwise null: as before, the open file alone stands for the log.
  */
 function archivedLifecycle(target: string, open: { uid: bigint; size: number }, pid: number, epoch: string)
-  : { selection: ForegroundState; newest: FileIdentity } | typeof LOG_READ_CHANGED | null {
+  : ForegroundState | typeof LOG_READ_CHANGED | null {
   const started = Number(LOG_NAME.exec(basename(target))?.[1]);
   const base = target.slice(0, -".log".length);
   const archives: { path: string; fd: number; size: number; dev: bigint; ino: bigint; mtimeNs: bigint; ctimeNs: bigint }[] = [];
@@ -187,7 +187,7 @@ function archivedLifecycle(target: string, open: { uid: bigint; size: number }, 
       const now = statSync(path, { bigint: true, throwIfNoEntry: false });
       if (now?.dev !== dev || now.ino !== ino) return LOG_READ_CHANGED;
     }
-    return { selection: selected, newest: { dev: archives[0]!.dev, ino: archives[0]!.ino } };
+    return selected;
   } finally { for (const { fd } of archives) closeSync(fd); }
 }
 
@@ -339,10 +339,13 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[]): Fore
             return LOG_READ_CHANGED;
           }
           // Only an initial log may fall back to a held marker, even after copies without lifecycle lines.
-          const fromCopies = archived !== null && (initialLog || archived.selection.kind !== "legacy");
+          const fromCopies = archived !== null && (initialLog || archived.kind !== "legacy");
           const after = fstatSync(fd, { bigint: true });
+          // A rotation during the read would pair the bytes read with a newer copy than they were cut into.
+          const settled = newestCopy();
           if (read !== bytes.length || hash === null || after.size !== stat.size
-            || after.mtimeNs !== stat.mtimeNs || after.ctimeNs !== stat.ctimeNs) {
+            || after.mtimeNs !== stat.mtimeNs || after.ctimeNs !== stat.ctimeNs
+            || settled?.dev !== newest?.dev || settled?.ino !== newest?.ino) {
             if (cached) cached.readConflict = true;
             // A later raced read extends the protected prefix while it still starts with the first one,
             // so a rewrite back to an earlier prefix cannot drop lifecycle lines read in between.
@@ -358,7 +361,7 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[]): Fore
           if (start > 0 && !complete && !same) return deny("copilot_log_gap");
           // Only a complete initial log without lifecycle evidence permits marker/report fallback.
           const previous: ForegroundState = same ? cached.selection
-            : fromCopies ? archived.selection
+            : fromCopies ? archived
             : initialLog ? legacy
             : rotated ?? unavailable(changed ?? owner.denial?.diagnostic ?? (start > 0 ? "copilot_log_gap" : "copilot_log_read_raced"));
           const position = start + Buffer.byteLength(text.slice(0, skip));
@@ -375,9 +378,7 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[]): Fore
           const checkpoint: ForegroundCheckpoint = {
             dev: stat.dev, ino: stat.ino, path: target, size: start + completeBytes,
             observedSize: size, mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs, checkedAtNs, pendingSwitch, hash, epoch, selection: selected,
-            // Read after the open file, a rotation in between still shows as a changed prefix; an
-            // empty prefix shows none, so it keeps the copy read before the open file instead.
-            newestCopy: start + completeBytes > 0 ? newestCopy() : fromCopies ? archived.newest : newest,
+            newestCopy: newest,
           };
           // Every file starts with zero bytes: until the rotated file holds a line, only the
           // bytes read before it can find the copy a further rotation makes.

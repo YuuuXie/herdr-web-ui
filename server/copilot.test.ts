@@ -312,6 +312,34 @@ for (const tail of ["empty", "written", "in the same bytes"] as const) {
   });
 }
 
+it.skipIf(process.platform !== "linux")("reads the log again when it rotates while it is read", async () => {
+  const fixture = await logFixture([]);
+  const { log } = fixture;
+  const copy = (index: number) => log.replace(/\.log$/, `.${index}.log`);
+  const output = "earlier output\n";
+  const realLstat = fs.lstatSync;
+  let samples = 0;
+  // between the two looks at the newest copy, Copilot registers another session and rotates into the same bytes
+  const stats = spyOn(fs, "lstatSync").mockImplementation(((...args: Parameters<typeof fs.lstatSync>) => {
+    if (args[0] === copy(1) && ++samples === 2) {
+      appendFileSync(log, register(other));
+      fs.renameSync(copy(1), copy(2));
+      fs.copyFileSync(log, copy(1));
+      fs.truncateSync(log, 0);
+      appendFileSync(log, output);
+    }
+    return realLstat(...args);
+  }) as typeof fs.lstatSync);
+  try {
+    writeFileSync(copy(1), "1970-01-01T00:00:00.104Z [INFO] CLI started\n" + register(session));
+    appendFileSync(log, output);
+    expect(fixture.binding()?.sessionId).toBe(other);
+  } finally {
+    stats.mockRestore();
+    await fixture.close();
+  }
+});
+
 it.skipIf(process.platform !== "linux")("keeps a logged binding when only the log's timestamps change", async () => {
   const fixture = await logFixture([]);
   const { environment, log, pid } = fixture;
