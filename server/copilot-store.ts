@@ -289,10 +289,10 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[]): Fore
           };
           const newest = newestCopy();
           const earlier = owner.checkpoint;
-          // Copilot moves its copies up by rename, writes the new newest beside them and renames it into
-          // place, then empties the open log: until then there may be no newest copy, and nothing rotated
-          // yet. A deleted copy's inode can come back as a new newest, so its size and times count too.
-          const rotatedSince = earlier !== undefined && newest !== null && !sameCopy(newest, earlier.newestCopy);
+          // A deleted copy's inode can come back as a new newest, so its size and times count too. No
+          // newest copy at all (Copilot moving its copies up) also stands for a rotation: lines may have
+          // left with it, so the binding waits for the copy that carries on from what was read.
+          const rotatedSince = earlier !== undefined && !sameCopy(newest, earlier.newestCopy);
           // Only the copies named a session and no line of the open file was read: read the whole chain again, as a fresh reader does.
           const rereadChain = rotatedSince && earlier.size === 0 && (earlier.selection.kind === "selected" || earlier.selection.kind === "unregistered");
           // The newest copy was still being written at the first read: read the initial log and its copies again.

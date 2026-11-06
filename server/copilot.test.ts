@@ -330,25 +330,37 @@ it.skipIf(process.platform !== "linux")("reads a log Copilot opens a second time
   } finally { await fixture.close(); }
 });
 
-it.skipIf(process.platform !== "linux")("keeps a binding from the copies while Copilot moves them up for a rotation", async () => {
-  const fixture = await logFixture([]);
-  const { log } = fixture;
-  const copy = (index: number) => log.replace(/\.log$/, `.${index}.log`);
-  try {
-    writeFileSync(copy(1), "1970-01-01T00:00:00.104Z [INFO] CLI started\n" + register(session));
-    appendFileSync(log, "earlier output\n");
-    expect(fixture.binding()?.sessionId).toBe(session);
-    // as Copilot 1.0 rotates: the copies move up, and for a moment there is no newest copy
-    fs.renameSync(copy(1), copy(2));
-    appendFileSync(log, "later output\n");
-    expect(fixture.binding()?.sessionId).toBe(session);
-    writeFileSync(`${copy(1)}.rotation-staging`, readFileSync(log));
-    fs.renameSync(`${copy(1)}.rotation-staging`, copy(1));
-    fs.truncateSync(log, 0);
-    appendFileSync(log, register(other));
-    expect(fixture.binding()?.sessionId).toBe(other);
-  } finally { await fixture.close(); }
-});
+for (const rotations of [1, 2]) {
+  it.skipIf(process.platform !== "linux")(`never shows a session left in the copies when a lookup lands inside rotation ${rotations}`, async () => {
+    const fixture = await logFixture([]);
+    const { log } = fixture;
+    const copy = (index: number) => log.replace(/\.log$/, `.${index}.log`);
+    // as Copilot 1.0 rotates: the copies move up by rename, and for a moment there is no newest copy;
+    // then the new one is written beside them, renamed into place, and the open log is emptied
+    const moveUp = () => { for (let index = 3; index >= 1; index--) if (fs.existsSync(copy(index))) fs.renameSync(copy(index), copy(index + 1)); };
+    const placeNewest = () => {
+      writeFileSync(`${copy(1)}.rotation-staging`, readFileSync(log));
+      fs.renameSync(`${copy(1)}.rotation-staging`, copy(1));
+      fs.truncateSync(log, 0);
+    };
+    try {
+      writeFileSync(copy(1), "1970-01-01T00:00:00.104Z [INFO] CLI started\n" + register(session));
+      expect(fixture.binding()?.sessionId).toBe(session);
+      appendFileSync(log, register(other));
+      if (rotations === 2) {
+        moveUp();
+        placeNewest();
+        appendFileSync(log, "ordinary output\n");
+      }
+      moveUp();
+      // the open log still names the newer session, or it left with a copy: never the older one
+      expect(fixture.binding()?.sessionId).toBe(rotations === 1 ? other : undefined);
+      placeNewest();
+      appendFileSync(log, register(other));
+      expect(fixture.binding()?.sessionId).toBe(other);
+    } finally { await fixture.close(); }
+  });
+}
 
 it.skipIf(process.platform !== "linux")("reads the copies again once the newest, still being written at the first lookup, is whole", async () => {
   const fixture = await logFixture([]);
