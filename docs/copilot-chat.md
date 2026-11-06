@@ -68,16 +68,23 @@ revalidate the entire consumed prefix in 64 KiB chunks, including bytes outside 
 window; logs over 64 MiB use Terminal without reading or hashing them. Rehashed bytes that match
 keep a session the log already registered even when only the timestamps moved; a held marker's
 fallback still needs an untouched initial log.
+Copilot 1.0 rotates its log at about 10 MiB: it renames the copies up (`.1.log` to `.2.log`,
+keeping four), writes the new `.1.log` beside them as `.1.log.rotation-staging` and renames it
+into place, then empties the open log. While it copies, it holds the log open twice; both
+descriptors are the one log.
 A reader that first meets a Copilot whose log has already rotated replays its `.N.log` copies,
 oldest first, when the oldest begins within five seconds of the start time in the log's name
 (no copy was pruned), every copy belongs to the open log's owner and none changed while they
-were read; with the open log they count against the 64 MiB limit. A copy that ends inside a
-line, is a link or cannot be opened is not replayed, and copies changed while being read are
-read again on the next lookup. Without such a chain the open log stands alone, as before.
-A new newest copy since the last read means the open log rotated, even into the same bytes: a
-binding the copies alone made is read again from the whole chain, any other carries on from the
-copy that continues the bytes read. Copies of another user are never replayed. A log that shrinks below the size last seen, even by a partial
-line, is read again from its complete lines.
+were read; with the open log they count against the 64 MiB limit. An older copy that ends
+inside a line, a link or a copy that cannot be opened is not replayed; a newest copy that ends
+inside a line is read again on the next lookup, as are copies changed while being read. Without
+such a chain the open log stands alone, as before.
+A newest copy other than the one last seen (by inode, size and timestamps, since a deleted
+copy's inode can come back) means the open log rotated, even into the same bytes: a binding the
+copies alone made is read again from the whole chain, any other carries on from the copy that
+continues the bytes read. No newest copy at all is the moment inside a rotation before the new
+one is in place. Copies of another user are never replayed. A log that shrinks below the size
+last seen, even by a partial line, is read again from its complete lines.
 This assumes filesystem timestamps trail this machine's clock by no more than that margin.
 A filesystem with greater timestamp lag, such as a skewed network mount, can retain a stale
 binding until the next append.

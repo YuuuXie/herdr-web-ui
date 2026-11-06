@@ -42,6 +42,7 @@ async function logFixture(held: readonly string[]) {
       if (command === "close") closeSync(fd);
       else if (command === "open") fd = openSync(log, "a");
       else if (command === "extra") openSync(root + "/logs/process-200-" + process.pid + ".log", "w");
+      else if (command === "reread") openSync(log, "r");
       else throw new Error("unexpected fixture command: " + command);
       console.log("ok");
     });
@@ -291,8 +292,8 @@ it.skipIf(process.platform !== "linux")("never carries a binding on through anot
   }
 });
 
-for (const tail of ["empty", "written", "in the same bytes"] as const) {
-  it.skipIf(process.platform !== "linux")(`follows a rotation after a binding read from the copies, with the open log ${tail}`, async () => {
+for (const [tail, copied] of ["empty", "written", "in the same bytes"].flatMap((tail) => ["to new files", "over the old copies"].map((copied) => [tail, copied] as const))) {
+  it.skipIf(process.platform !== "linux")(`follows a rotation ${copied} after a binding read from the copies, with the open log ${tail}`, async () => {
     const fixture = await logFixture([]);
     const { log } = fixture;
     const copy = (index: number) => log.replace(/\.log$/, `.${index}.log`);
@@ -303,7 +304,9 @@ for (const tail of ["empty", "written", "in the same bytes"] as const) {
       expect(fixture.binding()?.sessionId).toBe(session);
       // Copilot registers another session and rotates before the next lookup
       appendFileSync(log, register(other));
-      fs.renameSync(copy(1), copy(2));
+      // copying over an existing copy keeps its inode
+      if (copied === "to new files") fs.renameSync(copy(1), copy(2));
+      else fs.copyFileSync(copy(1), copy(2));
       fs.copyFileSync(log, copy(1));
       fs.truncateSync(log, 0);
       appendFileSync(log, tail === "written" ? "later output\n" : output);
@@ -311,6 +314,57 @@ for (const tail of ["empty", "written", "in the same bytes"] as const) {
     } finally { await fixture.close(); }
   });
 }
+
+it.skipIf(process.platform !== "linux")("reads a log Copilot opens a second time to copy it as the one log", async () => {
+  const fixture = await logFixture([]);
+  const { environment, log, pid } = fixture;
+  try {
+    appendFileSync(log, register(session));
+    const before = fixture.binding();
+    expect(before?.sessionId).toBe(session);
+    await fixture.command("reread");
+    expect(fixture.binding()).toEqual(before);
+    // another log of the same process still leaves it unclear which one Copilot writes
+    await fixture.command("extra");
+    expect(readCopilotProcessSession(environment, ["copilot"], pid).diagnostic).toBe("copilot_log_ambiguous");
+  } finally { await fixture.close(); }
+});
+
+it.skipIf(process.platform !== "linux")("keeps a binding from the copies while Copilot moves them up for a rotation", async () => {
+  const fixture = await logFixture([]);
+  const { log } = fixture;
+  const copy = (index: number) => log.replace(/\.log$/, `.${index}.log`);
+  try {
+    writeFileSync(copy(1), "1970-01-01T00:00:00.104Z [INFO] CLI started\n" + register(session));
+    appendFileSync(log, "earlier output\n");
+    expect(fixture.binding()?.sessionId).toBe(session);
+    // as Copilot 1.0 rotates: the copies move up, and for a moment there is no newest copy
+    fs.renameSync(copy(1), copy(2));
+    appendFileSync(log, "later output\n");
+    expect(fixture.binding()?.sessionId).toBe(session);
+    writeFileSync(`${copy(1)}.rotation-staging`, readFileSync(log));
+    fs.renameSync(`${copy(1)}.rotation-staging`, copy(1));
+    fs.truncateSync(log, 0);
+    appendFileSync(log, register(other));
+    expect(fixture.binding()?.sessionId).toBe(other);
+  } finally { await fixture.close(); }
+});
+
+it.skipIf(process.platform !== "linux")("reads the copies again once the newest, still being written at the first lookup, is whole", async () => {
+  const fixture = await logFixture([]);
+  const { environment, log, pid } = fixture;
+  const copy = log.replace(/\.log$/, ".1.log");
+  try {
+    writeFileSync(copy, "1970-01-01T00:00:00.104Z [INFO] CLI started\n" + register(session).trimEnd());
+    expect(readCopilotProcessSession(environment, ["copilot"], pid)).toEqual({ session: null, diagnostic: "copilot_marker_missing" });
+    appendFileSync(copy, "\n");
+    expect(fixture.binding()?.sessionId).toBe(session);
+    // read once whole, the copies are not read on every lookup
+    const before = fixture.binding();
+    appendFileSync(log, "later output\n");
+    expect(fixture.binding()).toEqual(before);
+  } finally { await fixture.close(); }
+});
 
 it.skipIf(process.platform !== "linux")("reads the copies again once a copy still being written is whole", async () => {
   const fixture = await logFixture([]);
