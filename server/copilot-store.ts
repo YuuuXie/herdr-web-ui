@@ -330,7 +330,10 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[]): Fore
           const initialLog = !same && start === 0 && (!observedBefore || initialContinues);
           // Until a read is kept, a proven chain still covers every line: a rotation that raced an
           // earlier read leaves its lines in the copies rather than losing them.
+          // A raced read whose bytes no longer start the open log lost them to something else: the
+          // copies cannot stand in for lines that were never copied.
           const archived = !same && start === 0 && cached === undefined && owner.denial === undefined
+            && (rereading || initial === undefined || initialContinues)
             ? archivedLifecycle(target, { uid: stat.uid, size }, pid, epoch) : null;
           if (archived === LOG_READ_CHANGED) {
             if (initialLog && read === bytes.length && hash !== null) {

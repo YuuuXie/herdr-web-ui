@@ -331,6 +331,31 @@ it.skipIf(process.platform !== "linux")("reads the copies again once a copy stil
   } finally { await fixture.close(); }
 });
 
+it.skipIf(process.platform !== "linux")("never lets the copies stand in for a log emptied while it was read", async () => {
+  const fixture = await logFixture([]);
+  const { environment, log, pid } = fixture;
+  const realRead = fs.readSync;
+  let emptied = false;
+  try {
+    writeFileSync(log.replace(/\.log$/, ".1.log"), "1970-01-01T00:00:00.104Z [INFO] CLI started\n" + register(session));
+    appendFileSync(log, register(other));
+    const identity = fs.statSync(log, { bigint: true });
+    // something other than Copilot empties the log, without a copy, right after it was read
+    const reads = spyOn(fs, "readSync").mockImplementation(((fd: number, ...rest: [NodeJS.ArrayBufferView, number, number, number | null]) => {
+      const read = realRead(fd, ...rest);
+      const stat = fs.fstatSync(fd, { bigint: true });
+      if (!emptied && stat.dev === identity.dev && stat.ino === identity.ino && read > 0) {
+        emptied = true;
+        fs.truncateSync(log, 0);
+      }
+      return read;
+    }) as typeof fs.readSync);
+    try { expect(readCopilotProcessSession(environment, ["copilot"], pid).session).toBeNull(); }
+    finally { reads.mockRestore(); }
+    expect(emptied).toBe(true);
+  } finally { await fixture.close(); }
+});
+
 it.skipIf(process.platform !== "linux")("reads the log again when it rotates while it is read", async () => {
   const fixture = await logFixture([]);
   const { log } = fixture;
