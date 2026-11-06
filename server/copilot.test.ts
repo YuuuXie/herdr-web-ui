@@ -312,6 +312,25 @@ for (const tail of ["empty", "written", "in the same bytes"] as const) {
   });
 }
 
+it.skipIf(process.platform !== "linux")("reads the copies again once a copy still being written is whole", async () => {
+  const fixture = await logFixture([]);
+  const { environment, log, pid } = fixture;
+  const copy = (index: number) => log.replace(/\.log$/, `.${index}.log`);
+  try {
+    writeFileSync(copy(1), "1970-01-01T00:00:00.104Z [INFO] CLI started\n" + register(session));
+    expect(fixture.binding()?.sessionId).toBe(session);
+    // Copilot rotates: the new newest copy is looked at before it is whole
+    appendFileSync(log, "ordinary output\n");
+    fs.renameSync(copy(1), copy(2));
+    writeFileSync(copy(1), "ordinary out");
+    expect(readCopilotProcessSession(environment, ["copilot"], pid).session).toBeNull();
+    writeFileSync(copy(1), "ordinary output\n");
+    fs.truncateSync(log, 0);
+    appendFileSync(log, "more output\n");
+    expect(fixture.binding()?.sessionId).toBe(session);
+  } finally { await fixture.close(); }
+});
+
 it.skipIf(process.platform !== "linux")("reads the log again when it rotates while it is read", async () => {
   const fixture = await logFixture([]);
   const { log } = fixture;

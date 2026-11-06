@@ -281,8 +281,8 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[]): Fore
           const earlier = owner.checkpoint;
           const rotatedSince = earlier !== undefined && (newest?.dev !== earlier.newestCopy?.dev || newest?.ino !== earlier.newestCopy?.ino);
           // Only the copies named a session and no line of the open file was read: read the whole chain again, as a fresh reader does.
-          if (rotatedSince && earlier.size === 0 && (earlier.selection.kind === "selected" || earlier.selection.kind === "unregistered")) delete owner.checkpoint;
-          const cached = owner.checkpoint;
+          const rereading = rotatedSince && earlier.size === 0 && (earlier.selection.kind === "selected" || earlier.selection.kind === "unregistered");
+          const cached = rereading ? undefined : owner.checkpoint;
           // A same-size rewrite can share both timestamps with this check.
           // Only a check already outside that tick can attest unchanged bytes.
           if (!rotatedSince && !cached?.readConflict && cached?.dev === stat.dev && cached.ino === stat.ino && cached.path === target
@@ -375,6 +375,12 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[]): Fore
           const message = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z \[INFO\] (.*)$/.exec(tail)?.[1];
           const pendingSwitch = !!tail && ((selected.kind === "unavailable" || selected.kind === "unregistered") || (/^\d/.test(tail) && (message === undefined
             || FOREGROUND_PREFIXES.some((event) => event.startsWith(message) || message.startsWith(event)))));
+          // A chain that cannot be read yet, such as a copy still being written, is tried again on the
+          // next lookup: the earlier read stays, and no denial outlasts this one.
+          if (rereading && selected.kind === "unavailable") {
+            found = selected;
+            continue;
+          }
           const checkpoint: ForegroundCheckpoint = {
             dev: stat.dev, ino: stat.ino, path: target, size: start + completeBytes,
             observedSize: size, mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs, checkedAtNs, pendingSwitch, hash, epoch, selection: selected,
