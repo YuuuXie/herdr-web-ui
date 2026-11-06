@@ -356,7 +356,8 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *         only, on the PC that owns the pane. `directory` is absolute, `~/…`, or relative to the
  *         pane's folder; one of pane_id and directory is required. scope: workspace (the default:
  *         working tree against the index, plus untracked files), staged (index against HEAD),
- *         commit (`base` against `head`, HEAD when absent; each one commit) or branch (the working
+ *         commit (`base` against `head`, HEAD when absent; each one commit, or for `base` the
+ *         empty tree's hash, which a root commit's changes are read against) or branch (the working
  *         tree, untracked files included, against the merge base of `base` and HEAD: what this
  *         branch changed, never what `base` went on to change; `base` is required, `head` is not
  *         taken). The list is capped (`limits`), and `truncated` says when it was. 400
@@ -377,6 +378,21 @@ export type { DevicePairedEvent, DeviceRemovedEvent, PairingIntent, RelayPairing
  *  GET    /api/workspace/diff/refs?pane_id=&directory= -> RepoDiffRefs (the local and remote
  *         branches of that repository, as full refnames with their commits, for choosing a base:
  *         at most `limits.max_refs`, sorted, a remote's symbolic HEAD left out; nothing is fetched)
+ *  GET    /api/workspace/git/log?pane_id=&directory=&ref=&oid=&skip=&limit= -> RepoLog
+ *         (shared/repo-log.ts: a page of the history of `ref`, HEAD when absent, newest first,
+ *         `limit` 1..100 commits (50 by default) from `skip`; each commit carries the branches,
+ *         remote branches and tags at it by full refname. Later pages pass the first page's `oid`,
+ *         so commits made in between do not shift them; `next_skip` is null on the last page. An
+ *         empty page before the first commit. Read like the diff routes, with their folder
+ *         resolution, errors and refusals; 400 invalid_limit / invalid_skip)
+ *  GET    /api/workspace/git/branches?pane_id=&directory= -> RepoBranches (the local branches,
+ *         the current one first and then by last commit, each with its upstream, how far ahead
+ *         and behind it is and whether the upstream is gone; at most `limits.max_branches`)
+ *  GET    /api/workspace/git/show?pane_id=&directory=&rev= -> RepoCommitDetail (one commit's
+ *         whole message, up to `limits.max_message_bytes`, and the `base` its changes are read
+ *         against with the diff routes in the commit scope: its first parent, or the empty tree
+ *         for a root commit). The three are reached on another PC under /api/machines/<id>/,
+ *         as the diff routes are
  *  GET    /api/workspace/pr?pane_id=&directory= -> PullRequestView (shared/pull-request.ts: the
  *         pull request of the branch checked out in the pane's folder, or `directory`, read through
  *         that PC's own `gh` sign-in: title, state, checks failing first with their Actions job ids,
@@ -575,7 +591,9 @@ export interface SkillActivity {
 }
 
 export type ConversationPart =
-  | { kind: "text"; text: string; phase?: "commentary" | "final_answer" }
+  /** `failed`: a request the agent recorded as failed (pi-family `stopReason: "error"`); `text` is "Error: " and its error.
+   *  A later part of the same turn is a later request; nothing records whether it was an automatic retry. */
+  | { kind: "text"; text: string; phase?: "commentary" | "final_answer"; failed?: true }
   /** the agent's reasoning block; the client folds it and shows it only on request */
   | { kind: "thinking"; text: string }
   | { kind: "skill"; skill: SkillActivity }
@@ -601,8 +619,9 @@ export type ConversationPart =
   }
   /** A native Claude/Codex user image, addressed by an opaque ref and fetched on demand: GET /api/pane/conversation/image?pane_id=…&ref=… */
   | { kind: "image"; media_type: string; ref: string }
-  /** the summary a compaction left; the conversation before it is what it sums up */
-  | { kind: "compact"; text: string }
+  /** the summary a compaction left; the conversation before it is what it sums up. The token counts are present only
+   *  where the record states them (pi-family `tokensBefore`/`tokensAfter`, OmO's `details.structuralYield.savedTokens`). */
+  | { kind: "compact"; text: string; tokens_before?: number; tokens_after?: number; tokens_saved?: number }
   /** a message the agent's runtime put in the user's seat (gjc's background-job result): it starts a turn, nobody typed it.
    * `source`: the runtime's name for it (pi's customType, e.g. "async-result", "irc:incoming", "omo-model-profile:unavailable") */
   | { kind: "notice"; text: string; source?: string }
@@ -610,7 +629,20 @@ export type ConversationPart =
    * stderr until the agent records them */
   | { kind: "shell"; command: string; stdout?: string; stderr?: string }
   /** OmO's background tasks that ended, as OmO reported them back to the agent, or a Claude Code subagent that ended (its task notification): it starts a turn, nobody typed it */
-  | { kind: "task_result"; tasks: OmoTaskResult[] };
+  | { kind: "task_result"; tasks: OmoTaskResult[] }
+  /** OmO's goal waiting on background work before it continues on its own (its `goal-cache-warmup`
+   * record): a turn of its own while it is the conversation's last, gone once it resumes or anything
+   * else follows. `due_at`: when OmO continues if nothing wakes it first */
+  | { kind: "goal_wait"; due_at: string; waiting_on: GoalWaitSources };
+
+/** What an OmO goal's wait waits on, by kind: background tasks, monitors, background terminals, DAG runs and detached code cells. */
+export interface GoalWaitSources {
+  tasks: number;
+  monitors: number;
+  terminals: number;
+  dags: number;
+  cells: number;
+}
 
 /** One OmO background task that ended (the `senpi-task.completion` OmO wakes its agent with). */
 export interface OmoTaskResult {
@@ -716,6 +748,12 @@ export interface ConversationResponse {
    */
   recovery?: "waiting";
   /**
+   * On a scrollback answer for a Copilot pane on Linux: its one Copilot process was not started with
+   * `--ui-server`, and Chat could not bind its session from the files and herdr's report; starting it
+   * with the flag may help.
+   */
+  hint?: "copilot_ui_server";
+  /**
    * Where the first turn sits in the transcript: pass it as `before` for the page
    * of turns before these (with `since`, never reaching back past that cursor), or
    * as `from` to keep polling from it. A `from` answer starts later than `from` when
@@ -752,6 +790,7 @@ export type { DirectoryListing, CreateDirectoryRequest, DirectoryCreated } from 
 export type { FileKind, FileInfo, MarkdownDocument, PaneDocuments, ProjectFavicon } from "./files.ts";
 
 export type { RepoDiffScope, RepoBranchComparison, RepoDiffRefs, RepoDiffStatus, RepoDiffRepository, RepoDiffFile, RepoDiffFileList, RepoDiffFilePatch } from "./repo-diff.ts";
+export type { RepoPerson, RepoCommit, RepoLog, RepoBranch, RepoBranches, RepoCommitDetail } from "./repo-log.ts";
 
 export type { AgentKind } from "./agents.ts";
 
