@@ -82,8 +82,10 @@ such a chain the open log stands alone, as before.
 A newest copy other than the one last seen (by inode, size and timestamps, since a deleted
 copy's inode can come back) means the open log rotated, even into the same bytes: a binding the
 copies alone made is read again from the whole chain, any other carries on from the copy that
-continues the bytes read. No newest copy at all is the moment inside a rotation before the new
-one is in place. Copies of another user are never replayed. A log that shrinks below the size
+continues the bytes read. No newest copy at all, the moment inside a rotation before the new
+one is in place, counts as a rotation too: a lookup that lands there leaves Chat unavailable
+until Copilot registers a session again, rather than risk showing one the copies left behind.
+Copies of another user are never replayed. A log that shrinks below the size
 last seen, even by a partial line, is read again from its complete lines.
 This assumes filesystem timestamps trail this machine's clock by no more than that margin.
 A filesystem with greater timestamp lag, such as a skewed network mount, can retain a stale
