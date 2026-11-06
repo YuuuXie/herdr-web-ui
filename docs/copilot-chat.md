@@ -74,8 +74,9 @@ oldest first, when the oldest begins within five seconds of the start time in th
 were read; with the open log they count against the 64 MiB limit. A copy that ends inside a
 line, is a link or cannot be opened is not replayed, and copies changed while being read are
 read again on the next lookup. Without such a chain the open log stands alone, as before.
-Until the open log holds a complete line, a new newest copy means it rotated again, and the
-whole chain is read again. A log that shrinks below the size last seen, even by a partial
+A new newest copy since the last read means the open log rotated, even into the same bytes: a
+binding the copies alone made is read again from the whole chain, any other carries on from the
+copy that continues the bytes read. Copies of another user are never replayed. A log that shrinks below the size last seen, even by a partial
 line, is read again from its complete lines.
 This assumes filesystem timestamps trail this machine's clock by no more than that margin.
 A filesystem with greater timestamp lag, such as a skewed network mount, can retain a stale

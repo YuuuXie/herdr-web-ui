@@ -31,9 +31,9 @@ const unavailable = (diagnostic: StoreDiagnostic): Extract<ForegroundState, { ki
 interface ForegroundCheckpoint {
   dev: bigint; ino: bigint; path: string; size: number; observedSize: number; mtimeNs: bigint; ctimeNs: bigint; checkedAtNs: bigint; pendingSwitch: boolean;
   hash: Hash; epoch: string; selection: ForegroundState; readConflict?: true;
-  // Set while the selection came from the copies and no line of the open file is read yet: an
-  // empty prefix continues every file, so only a new newest copy shows a rotation since.
-  newestCopy?: FileIdentity;
+  // The newest copy when this was read: another one since means the open file rotated, even into
+  // the same bytes, and an empty prefix cannot show it at all.
+  newestCopy: FileIdentity | null;
 }
 interface FileIdentity { dev: bigint; ino: bigint }
 interface InitialLogRead { dev: bigint; ino: bigint; path: string; size: number; hash: string }
@@ -87,7 +87,7 @@ function applyLifecycle(selected: ForegroundState, complete: string, position: n
  * the truncated file, follow it. Without that copy the lines in between are unknown, so ownership
  * stays rejected until the open file registers a session again.
  */
-function rotatedLifecycle(target: string, cached: ForegroundCheckpoint, pid: number): ForegroundState | typeof LOG_READ_CHANGED | null {
+function rotatedLifecycle(target: string, cached: ForegroundCheckpoint, uid: bigint, pid: number): ForegroundState | typeof LOG_READ_CHANGED | null {
   const archives: { fd: number; size: number; dev: bigint; ino: bigint }[] = [];
   try {
     const consumed = cached.hash.copy().digest("hex");
@@ -105,7 +105,7 @@ function rotatedLifecycle(target: string, cached: ForegroundCheckpoint, pid: num
       archives.push(archive);
       const stat = fstatSync(fd, { bigint: true });
       Object.assign(archive, { size: Number(stat.size), dev: stat.dev, ino: stat.ino });
-      if (!stat.isFile()) return null;
+      if (!stat.isFile() || stat.uid !== uid) return null;
       if (archive.size < cached.size) { total += archive.size; continue; }
       if ((total += archive.size) > LOG_HASH_BYTES) return null;
       if (logPrefix(fd, cached.size)?.digest("hex") === consumed) continued = archives.length - 1;
@@ -273,15 +273,19 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[]): Fore
           if (!stat.isFile() || stat.dev !== named.dev || stat.ino !== named.ino) return deny("copilot_log_replaced");
           if (stat.size > LOG_HASH_BYTES) return deny("copilot_log_limit");
           const size = Number(stat.size);
-          if (owner.checkpoint?.newestCopy) {
-            const newest = statSync(`${target.slice(0, -".log".length)}.1.log`, { bigint: true, throwIfNoEntry: false });
-            // A rotation since the copies were read: read the whole chain again, as a fresh reader does.
-            if (newest?.dev !== owner.checkpoint.newestCopy.dev || newest.ino !== owner.checkpoint.newestCopy.ino) delete owner.checkpoint;
-          }
+          const newestCopy = (): FileIdentity | null => {
+            const newest = lstatSync(`${target.slice(0, -".log".length)}.1.log`, { bigint: true, throwIfNoEntry: false });
+            return newest ? { dev: newest.dev, ino: newest.ino } : null;
+          };
+          const newest = newestCopy();
+          const earlier = owner.checkpoint;
+          const rotatedSince = earlier !== undefined && (newest?.dev !== earlier.newestCopy?.dev || newest?.ino !== earlier.newestCopy?.ino);
+          // Only the copies named a session and no line of the open file was read: read the whole chain again, as a fresh reader does.
+          if (rotatedSince && earlier.size === 0 && (earlier.selection.kind === "selected" || earlier.selection.kind === "unregistered")) delete owner.checkpoint;
           const cached = owner.checkpoint;
           // A same-size rewrite can share both timestamps with this check.
           // Only a check already outside that tick can attest unchanged bytes.
-          if (!cached?.readConflict && cached?.dev === stat.dev && cached.ino === stat.ino && cached.path === target
+          if (!rotatedSince && !cached?.readConflict && cached?.dev === stat.dev && cached.ino === stat.ino && cached.path === target
             && cached.observedSize === size && cached.mtimeNs === stat.mtimeNs && cached.ctimeNs === stat.ctimeNs
             && checkedAtNs >= cached.checkedAtNs
             && cached.checkedAtNs - stat.mtimeNs >= LOG_TIMESTAMP_MARGIN_NS
@@ -295,6 +299,8 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[]): Fore
             : size < cached.size ? "copilot_log_truncated"
             : size - cached.size > LOG_WINDOW_BYTES ? "copilot_log_gap"
             : prefix?.copy().digest("hex") !== cached.hash.copy().digest("hex") ? "copilot_log_rewritten"
+            // the same bytes again after a rotation: the copy that carries on from them holds what came between
+            : rotatedSince && cached.size > 0 ? "copilot_log_rewritten"
             // a partial line already seen cannot go away from a log that is only appended to
             : size < cached.observedSize ? "copilot_log_truncated"
             // Copilot only appends and rotates: the same bytes in the same file cannot hide a lifecycle line,
@@ -304,7 +310,7 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[]): Fore
           const same = cached !== undefined && changed === undefined;
           // The open file shrank or no longer starts with what was read: a rotation, when a copy carries on from it.
           const rotated = cached !== undefined && size <= LOG_WINDOW_BYTES && (changed === "copilot_log_truncated" || changed === "copilot_log_rewritten")
-            ? rotatedLifecycle(target, cached, pid) : null;
+            ? rotatedLifecycle(target, cached, stat.uid, pid) : null;
           if (rotated === LOG_READ_CHANGED) {
             cached!.readConflict = true;
             return LOG_READ_CHANGED;
@@ -366,11 +372,12 @@ function scanForegroundLog(pid: number, logDirectories: readonly string[]): Fore
           const message = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d+Z \[INFO\] (.*)$/.exec(tail)?.[1];
           const pendingSwitch = !!tail && ((selected.kind === "unavailable" || selected.kind === "unregistered") || (/^\d/.test(tail) && (message === undefined
             || FOREGROUND_PREFIXES.some((event) => event.startsWith(message) || message.startsWith(event)))));
-          const newestCopy = start + completeBytes > 0 ? undefined : same ? cached.newestCopy : fromCopies ? archived.newest : undefined;
           const checkpoint: ForegroundCheckpoint = {
             dev: stat.dev, ino: stat.ino, path: target, size: start + completeBytes,
             observedSize: size, mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs, checkedAtNs, pendingSwitch, hash, epoch, selection: selected,
-            ...(newestCopy ? { newestCopy } : {}),
+            // Read after the open file, a rotation in between still shows as a changed prefix; an
+            // empty prefix shows none, so it keeps the copy read before the open file instead.
+            newestCopy: start + completeBytes > 0 ? newestCopy() : fromCopies ? archived.newest : newest,
           };
           // Every file starts with zero bytes: until the rotated file holds a line, only the
           // bytes read before it can find the copy a further rotation makes.

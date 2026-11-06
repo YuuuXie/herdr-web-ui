@@ -273,20 +273,40 @@ for (const chain of ["proven", "pruned", "unterminated", "linked", "foreign"] as
   });
 }
 
-for (const tail of ["empty", "written"] as const) {
+it.skipIf(process.platform !== "linux")("never carries a binding on through another user's copy after a rotation", async () => {
+  const fixture = await logFixture([]);
+  const { environment, log, pid } = fixture;
+  const copy = log.replace(/\.log$/, ".1.log");
+  let stats: ReturnType<typeof foreignOwner> | undefined;
+  try {
+    appendFileSync(log, register(session));
+    expect(fixture.binding()?.sessionId).toBe(session);
+    writeFileSync(copy, readFileSync(log, "utf8") + register(other));
+    stats = foreignOwner(copy);
+    fs.truncateSync(log, 0);
+    expect(readCopilotProcessSession(environment, ["copilot"], pid)).toEqual({ session: null, diagnostic: "copilot_log_truncated" });
+  } finally {
+    stats?.mockRestore();
+    await fixture.close();
+  }
+});
+
+for (const tail of ["empty", "written", "in the same bytes"] as const) {
   it.skipIf(process.platform !== "linux")(`follows a rotation after a binding read from the copies, with the open log ${tail}`, async () => {
     const fixture = await logFixture([]);
     const { log } = fixture;
     const copy = (index: number) => log.replace(/\.log$/, `.${index}.log`);
     try {
+      const output = tail === "in the same bytes" ? "earlier output\n" : "";
       writeFileSync(copy(1), "1970-01-01T00:00:00.104Z [INFO] CLI started\n" + register(session));
+      appendFileSync(log, output);
       expect(fixture.binding()?.sessionId).toBe(session);
       // Copilot registers another session and rotates before the next lookup
       appendFileSync(log, register(other));
       fs.renameSync(copy(1), copy(2));
       fs.copyFileSync(log, copy(1));
       fs.truncateSync(log, 0);
-      if (tail === "written") appendFileSync(log, "later output\n");
+      appendFileSync(log, tail === "written" ? "later output\n" : output);
       expect(fixture.binding()?.sessionId).toBe(other);
     } finally { await fixture.close(); }
   });
