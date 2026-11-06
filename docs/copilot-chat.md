@@ -67,10 +67,13 @@ keep a session the log already registered even when only the timestamps moved; a
 fallback still needs an untouched initial log.
 A reader that first meets a Copilot whose log has already rotated replays its `.N.log` copies,
 oldest first, when the oldest begins within five seconds of the start time in the log's name
-(no copy was pruned) and none moved while they were read; together they count against the
-64 MiB limit. A copy that ends inside a line is not replayed, and copies moved while being read
-are read again on the next lookup. Without such a chain the open log stands alone, as before. A log that shrinks below the
-size last seen, even by a partial line, is read again from its complete lines.
+(no copy was pruned), every copy belongs to the open log's owner and none changed while they
+were read; with the open log they count against the 64 MiB limit. A copy that ends inside a
+line, is a link or cannot be opened is not replayed, and copies changed while being read are
+read again on the next lookup. Without such a chain the open log stands alone, as before.
+Until the open log holds a complete line, a new newest copy means it rotated again, and the
+whole chain is read again. A log that shrinks below the size last seen, even by a partial
+line, is read again from its complete lines.
 This assumes filesystem timestamps trail this machine's clock by no more than that margin.
 A filesystem with greater timestamp lag, such as a skewed network mount, can retain a stale
 binding until the next append.

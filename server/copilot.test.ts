@@ -215,16 +215,40 @@ for (const archive of ["continued", "continued past large older copies", "unregi
   });
 }
 
-for (const chain of ["proven", "pruned", "unterminated"] as const) {
+/** Reports another user as the owner of `file`, as for a copy planted in a shared log folder. */
+function foreignOwner(file: string) {
+  const identity = fs.statSync(file, { bigint: true });
+  const realFstat = fs.fstatSync;
+  function ownerStat(fd: number, options?: fs.StatOptions & { bigint?: false }): fs.Stats;
+  function ownerStat(fd: number, options: fs.StatOptions & { bigint: true }): fs.BigIntStats;
+  function ownerStat(fd: number, options?: fs.StatOptions): fs.Stats | fs.BigIntStats;
+  function ownerStat(fd: number, options?: fs.StatOptions): fs.Stats | fs.BigIntStats {
+    const stat = realFstat(fd, options);
+    if (BigInt(stat.dev) === identity.dev && BigInt(stat.ino) === identity.ino) {
+      Object.assign(stat, { uid: typeof stat.uid === "bigint" ? stat.uid + 1n : stat.uid + 1 });
+    }
+    return stat;
+  }
+  return spyOn(fs, "fstatSync").mockImplementation(ownerStat);
+}
+
+for (const chain of ["proven", "pruned", "unterminated", "linked", "foreign"] as const) {
   it.skipIf(process.platform !== "linux")(`replays a ${chain} rotated log only when a fresh reader can prove it starts with the process`, async () => {
     const fixture = await logFixture([]);
     const { environment, log, pid } = fixture;
     const copy = (index: number) => log.replace(/\.log$/, `.${index}.log`);
+    let stats: ReturnType<typeof foreignOwner> | undefined;
     try {
       // the fixture's log is named for millisecond 100 of the epoch
       const first = chain === "pruned" ? "1970-01-01T00:00:06.000Z [INFO] later output\n" : "1970-01-01T00:00:00.104Z [INFO] CLI started\n";
       writeFileSync(copy(2), first + register(other));
-      writeFileSync(copy(1), register(session) + (chain === "unterminated" ? "cut halfway" : "later output\n"));
+      const newest = register(session) + (chain === "unterminated" ? "cut halfway" : "later output\n");
+      // a link to a copy, or a copy another user planted in a shared log folder, proves no chain
+      if (chain === "linked") {
+        writeFileSync(join(fixture.root, "elsewhere.log"), newest);
+        symlinkSync(join(fixture.root, "elsewhere.log"), copy(1));
+      } else writeFileSync(copy(1), newest);
+      if (chain === "foreign") stats = foreignOwner(copy(1));
       appendFileSync(log, "after rotation\n");
       const read = readCopilotProcessSession(environment, ["copilot"], pid);
       if (chain === "proven") {
@@ -242,6 +266,28 @@ for (const chain of ["proven", "pruned", "unterminated"] as const) {
         appendFileSync(log, register(session));
         expect(readCopilotProcessSession(environment, ["copilot"], pid).session).toMatchObject({ sessionId: session, logged: true });
       }
+    } finally {
+      stats?.mockRestore();
+      await fixture.close();
+    }
+  });
+}
+
+for (const tail of ["empty", "written"] as const) {
+  it.skipIf(process.platform !== "linux")(`follows a rotation after a binding read from the copies, with the open log ${tail}`, async () => {
+    const fixture = await logFixture([]);
+    const { log } = fixture;
+    const copy = (index: number) => log.replace(/\.log$/, `.${index}.log`);
+    try {
+      writeFileSync(copy(1), "1970-01-01T00:00:00.104Z [INFO] CLI started\n" + register(session));
+      expect(fixture.binding()?.sessionId).toBe(session);
+      // Copilot registers another session and rotates before the next lookup
+      appendFileSync(log, register(other));
+      fs.renameSync(copy(1), copy(2));
+      fs.copyFileSync(log, copy(1));
+      fs.truncateSync(log, 0);
+      if (tail === "written") appendFileSync(log, "later output\n");
+      expect(fixture.binding()?.sessionId).toBe(other);
     } finally { await fixture.close(); }
   });
 }
