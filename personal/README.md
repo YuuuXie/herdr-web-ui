@@ -10,8 +10,11 @@ the audited upstream `main`, then merging the selected open PR heads and
 is exactly those PRs plus this tooling; anything else is drift to investigate.
 After a successful deploy, the maintainer manually publishes the release branch,
 checks it out in the controller worktree (`repository` in the private configuration)
-and prunes the fork to the two newest release branches. The controller does none of
-this itself; pinned releases stay reachable through their local release checkouts.
+and prunes older release branches, keeping the two newest plus the current and
+previous deployed releases. The controller does none of this itself; pinned
+releases stay reachable through their local release checkouts. Releases are
+prepared and deployed by the controller already checked out in `repository`, so
+controller changes take effect from the following release.
 
 The local `ovis-personal` command reads `~/.config/ovis-personal/config.json`.
 That private configuration contains this installation's paths, never Git-tracked
@@ -42,9 +45,7 @@ Repeat the flag for multiple PCs. Exclusions must name existing enabled SSH PCs;
 the local PC cannot be excluded. Preparation receipts and recovery journals retain
 the exact exclusions, and promotion refuses a different scope. All selected PCs
 still require connectivity, authenticated bundle deployment and preservation checks.
-This does not disable or remove the excluded PC from Ovis. Until this controller
-version is published, invoke `python3 <candidate>/personal/production.py` directly
-for both scoped commands rather than the older installed launcher.
+This does not disable or remove the excluded PC from Ovis.
 Exclusions apply to this controller rollout, not the app's existing automatic
 bridge-update preference when a PC later reconnects.
 
