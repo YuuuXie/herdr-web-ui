@@ -323,7 +323,7 @@ def main():
                         help="leave an enabled SSH PC untouched during this prepare/deploy")
     args = parser.parse_args()
     if args.command in ("prepare", "deploy") and not args.revision:
-        parser.error(f"{args.command} needs the full SHA of an explicit release branch commit")
+        parser.error(f"{args.command} needs an explicit release revision")
     if args.exclude_machine and args.command not in ("prepare", "deploy"):
         parser.error("--exclude-machine is only supported for prepare and deploy")
     config = json.loads((Path.home() / ".config/ovis-personal/config.json").read_text())

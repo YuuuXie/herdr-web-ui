@@ -8,9 +8,10 @@ Each release is a new versioned branch, `personal/production-YYYYMMDD`, built fr
 the audited upstream `main`, then merging the selected open PR heads and
 `personal/tooling`. It never starts from an earlier release, so its diff from `main`
 is exactly those PRs plus this tooling; anything else is drift to investigate.
-The controller worktree (`repository` in the private configuration) is switched to
-the deployed release branch. The fork keeps the two newest release branches; pinned
-releases stay reachable through their local release checkouts.
+After a successful deploy, the maintainer manually publishes the release branch,
+checks it out in the controller worktree (`repository` in the private configuration)
+and prunes the fork to the two newest release branches. The controller does none of
+this itself; pinned releases stay reachable through their local release checkouts.
 
 The local `ovis-personal` command reads `~/.config/ovis-personal/config.json`.
 That private configuration contains this installation's paths, never Git-tracked
@@ -25,8 +26,9 @@ systemctl --user restart ovis-personal.service
 journalctl --user -u ovis-personal.service -n 80 --no-pager
 ```
 
-`prepare` creates a detached, pinned release checkout of the exact commit and
-verifies it; `deploy` promotes only a verified release. Both require the full SHA.
+`prepare <revision>` resolves the revision, creates a detached, pinned release
+checkout of that commit and verifies it. `deploy` needs the release's full SHA and
+promotes only a verified release.
 
 Before promotion, `prepare` runs the personal lifecycle tests, full fast
 checks, isolated Copilot API/browser/menu checks and checksum-verified remote
@@ -72,5 +74,4 @@ the prior verified preview and its exact original remote runtimes; later rollbac
 restore the previous pinned local and remote builds. Redeploying the current release preserves
 the existing rollback target.
 
-The release branch is published after a successful deploy. No upstream PR is
-merged here; merged PRs arrive through `main`. Nothing updates on a timer.
+No upstream PR is merged here; merged PRs arrive through `main`. Nothing updates on a timer.
