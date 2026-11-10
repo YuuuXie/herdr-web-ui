@@ -64,6 +64,12 @@ export interface StoredDevice {
   added_by?: string;
   /** when a `link` last moved the row to its key: of two copies of a row (state-merge.ts), the later link wins */
   linked_at?: string;
+  /**
+   * whether a `link` gave the row a key other than the one it was paired with here; false when every link kept
+   * the paired key (the usual link, which only joins the account). Absent on a row never linked, and on one linked
+   * before this was recorded: that one counts as kept, as it did then.
+   */
+  link_moved_key?: boolean;
   /** the signed `add` that let this row in, as received: /api/account/status lists it for a client to hand on */
   account_add?: unknown;
 }
@@ -177,6 +183,7 @@ export function readDeviceRegistry(path: string): DeviceRegistry {
       && (d.account === undefined || typeof d.account === "string")
       && (d.added_by === undefined || typeof d.added_by === "string")
       && (d.linked_at === undefined || typeof d.linked_at === "string")
+      && (d.link_moved_key === undefined || typeof d.link_moved_key === "boolean")
       && (d.account_add === undefined || isJsonObject(d.account_add)))) return { kind: "bad" };
   return { kind: "ok", gateClosedAt: parsed.gate_closed_at, devices: parsed.devices as StoredDevice[], placeholder: parsed.placeholder === true && parsed.devices.length === 0 };
 }
@@ -247,6 +254,15 @@ export function mergeAccountTombstones(active: string, sibling: string): string 
     }
   }
   return null;
+}
+
+/**
+ * Whether the row is a pairing of its current key made on this PC (a code, or a comparison approved here): not a
+ * row an account record or a remote approval made (`added_by`), and not one a `link` moved onto the key from the
+ * key it was paired with, which never paired this key here. A link that kept the paired key changes nothing.
+ */
+function pairedHere(device: StoredDevice): boolean {
+  return device.added_by === undefined && device.link_moved_key !== true;
 }
 
 export class DeviceStore {
@@ -344,9 +360,9 @@ export class DeviceStore {
 
   /** A row whose key was removed at or after the row was made: revoked, whether or not its own write happened yet. */
   private stale(device: StoredDevice): boolean {
-    // a row an add or a remote approval made goes whatever its time, as removeAccountKey takes it
+    // a row that is no pairing of its key here goes whatever its time, as removeAccountKey takes it
     return device.relay_public_key !== undefined
-      && this.tombstones.some((t) => t.key === device.relay_public_key && (device.added_by !== undefined || t.removed_at >= device.created_at));
+      && this.tombstones.some((t) => t.key === device.relay_public_key && (!pairedHere(device) || t.removed_at >= device.created_at));
   }
 
   /**
@@ -527,8 +543,13 @@ export class DeviceStore {
     this.announce(device, now, origin);
   }
 
-  /** No cookie is issued: even the first relay pairing is durable and closes the gate at once. */
-  pairRelay(code: string, label: string, publicKey: string, now = Date.now()): { device: DeviceMatch } | null {
+  /**
+   * No cookie is issued: even the first relay pairing is durable and closes the gate at once. `admit` is asked once
+   * the code holds and nothing else refuses the key, before any device is made: false makes none, spends no code and
+   * counts no failure (server/relay/session.ts, a relay pass that allows no new sessions). It is asked only for a
+   * key new to this PC (isNewKey).
+   */
+  pairRelay(code: string, label: string, publicKey: string, now = Date.now(), admit?: () => boolean): { device: DeviceMatch } | null {
     this.assertRelayPairing("code", now);
     if (!this.checkPairingCode(code, now) || !isRelayPublicKey(publicKey)) {
       this.noteRelayFailure("code", now);
@@ -550,6 +571,7 @@ export class DeviceStore {
     // one that brings back a key this PC revoked itself (on a PC in no account) undoes that revoke, and is the PC's own
     // pairing, so a tombstone that comes back (a sibling dir, a stop before it is cleared) takes it only if newer
     const undoesRevoke = remote && accountless && this.isTombstoned(publicKey);
+    if (admit && this.isNewKey(publicKey) && !admit()) return null;
     const paired = this.enrollRelay(label, publicKey, now, true, undoesRevoke ? undefined : startedBy ?? undefined);
     if (!remote || accountless) this.clearTombstone(publicKey);
     return paired;
@@ -572,9 +594,10 @@ export class DeviceStore {
 
   /**
    * A pairing by comparing digits that was approved (server/relay/session.ts): on this PC, or by the
-   * account member `addedBy` through the relay. No code is spent.
+   * account member `addedBy` through the relay. No code is spent. `admit` as in pairRelay: asked last and only for
+   * a key new to this PC, false makes no device and counts no failure.
    */
-  pairRelayApproved(label: string, publicKey: string, approval: { path: PairingPath; addedBy?: string; id?: string }, now = Date.now()): { device: DeviceMatch } | null {
+  pairRelayApproved(label: string, publicKey: string, approval: { path: PairingPath; addedBy?: string; id?: string }, now = Date.now(), admit?: () => boolean): { device: DeviceMatch } | null {
     this.assertRelayPairing(approval.path, now);
     if (!isRelayPublicKey(publicKey)) { this.noteRelayFailure(approval.path, now); return null; }
     // an approver revoked or demoted while the device waited approves nothing
@@ -583,12 +606,26 @@ export class DeviceStore {
     if (approval.addedBy !== undefined && (this.accountError !== null || this.isTombstoned(publicKey))) { this.noteRelayFailure(approval.path, now); return null; }
     // the id an approver was told is the one the row takes; a row already holding it (the same key) is not made twice
     if (approval.id !== undefined && this.has(approval.id)) { this.noteRelayFailure(approval.path, now); return null; }
+    if (admit && this.isNewKey(publicKey) && !admit()) return null;
     // no code was used, so one still showing on the PC keeps working
     const paired = this.enrollRelay(label, publicKey, now, false, approval.addedBy, approval.id);
     // written after the row, so a stop between the two leaves a row newer than its tombstone (finishInterruptedWrites)
     if (approval.addedBy === undefined) this.clearTombstone(publicKey);
     return paired;
   }
+
+  /**
+   * Whether a pairing with `key` makes a device new to this PC, which `admit` may refuse (pairRelay). A key a row
+   * here already holds does not: a paired phone that opens the pairing QR again, or one that forgot this PC and pairs
+   * again with the key its account gave it, is the device this PC knows, and refusing it would cut off someone the
+   * limit never meant. The trade-off: PAIR does not prove the key, so someone holding a pairing that would succeed
+   * (the owner's code, or digits the owner confirmed) who also names a paired device's public key gets the session
+   * that pairing opens past the limit. They cannot sign in with it afterwards (AUTH needs the private key), so each
+   * further session takes another pairing that succeeds; on a PC in no account a driving session may start that code
+   * itself (devices routes, pair/start). It takes a client changed to name another device's key, on a limit a
+   * changed PC could skip anyway.
+   */
+  private isNewKey(key: string): boolean { return !this.hasKey(key); }
 
   /** The account of this PC's members (docs/account.md: a PC belongs to at most one), or null. */
   account(): string | null {
@@ -883,9 +920,9 @@ export class DeviceStore {
    */
   removeAccountKey(key: string, account: string, record: { id: string; issuedAt: string; by?: { device_id: string; label: string }; signed?: RemoveRecord }, now = Date.now()): boolean {
     this.assertAccountWritable();
-    // a pairing made on this PC (no `added_by`) after the removal was signed wins: a replayed or late remove
-    // leaves it be. A row an account record or a remote approval made goes, however late the remove arrives.
-    if (this.devices.some((d) => d.relay_public_key === key && d.added_by === undefined && d.created_at > record.issuedAt)) return false;
+    // a pairing of this key made on this PC after the removal was signed wins: a replayed or late remove
+    // leaves it be. Any other row goes, however late the remove arrives (pairedHere).
+    if (this.devices.some((d) => d.relay_public_key === key && pairedHere(d) && d.created_at > record.issuedAt)) return false;
     const recordId = record.id;
     const fresh = !this.isTombstoned(key);
     const removal: AccountTombstone = { key, account, record_id: recordId, removed_at: new Date(now).toISOString(), ...(record.signed ? { records: [record.signed] } : {}) };
@@ -912,7 +949,9 @@ export class DeviceStore {
     this.assertAccountWritable();
     const device = this.devices.find((d) => d.id === deviceId && d.relay_public_key === oldKey);
     if (!device) return null;
-    const updated: StoredDevice = { ...device, relay_public_key: key, account, linked_at: new Date().toISOString() };
+    // once moved, moved: a later link that keeps the key does not make it the key paired here
+    const moved = key !== oldKey || device.link_moved_key === true;
+    const updated: StoredDevice = { ...device, relay_public_key: key, account, linked_at: new Date().toISOString(), link_moved_key: moved };
     const next = this.devices.map((d) => d === device ? updated : d);
     this.save(next);
     this.devices = next;

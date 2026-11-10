@@ -338,7 +338,15 @@ messages):
    The PC lists itself in the account's directory (`PUT /v1/pcs`, its relay key and relay) and opens
    a pairing window with `POST /api/relay/link` and the header `x-ovis-local-only: 1`. What that window takes is decided on
    this PC only: it is never listed to account members (`remote-pairings`) or approved by one, even
-   once the PC has members. The screen keeps the window open while it waits.
+   once the PC has members. The screen keeps the window open while it waits. The window is kept
+   across a restart of the PC's server (an update) for the rest of its ten minutes, local-only as it
+   was opened, and is closed by `POST /api/relay/link/close`, **Revoke all**,
+   **Reset relay identity** or turning the relay off.
+   A close declines the comparisons the PC was showing and one whose digits arrive after it, and is
+   written to disk (as is a window that ran out). A close does not reach an Add-this-PC screen that
+   is still open on the PC: that screen asks for its window again at its next relist, which is an
+   act of the PC's own page, so leaving that screen is what ends the wait. A comparison approved
+   before a close makes no device when the other side confirms after it.
 2. On any device already in the account, the dashboard lists the PC as new in the account, with
    **Add** on its row, for 10 minutes after the directory took it. **Add** opens the Add-a-PC sheet.
    The PC's key comes from the directory and is checked against its id, as for any PC there; the
@@ -396,7 +404,9 @@ is what authenticates the PC.
 - A `remove` writes its tombstone before it revokes the device; the device's relay connections
   close at once (`auth_revoked`). A `remove` signed before this PC itself paired the key again leaves
   that pairing be (`unchanged`), so a late or replayed one cannot undo it. A row an `add` or a remote
-  approval made goes, however late the `remove` arrives.
+  approval made goes, however late the `remove` arrives, and so does a row a `link` moved onto the
+  key from another one (`link_moved_key`): this PC paired its former key, never this one. A `link`
+  whose `old_key` is its `key` leaves the row a pairing of that key.
 - **Revoke** and **Revoke all** on the PC leave a tombstone too, so no record brings the key back,
   even after the PC joins an account. An account `remove` for a key the PC revoked first takes over
   its tombstone.
@@ -407,7 +417,9 @@ is what authenticates the PC.
   account removed), and clears its tombstone.
 - A stop between two such writes leaves a row and a tombstone for one key. On start the PC tells them
   apart by time: a row made before the key's removal is revoked, one made after it keeps its device
-  and the tombstone goes. Until then no such row signs in, signs or approves.
+  and the tombstone goes. A row that is no pairing of its key here (an `add`, a remote approval, a
+  `link` that moved it onto the key) is revoked whatever its time. Until then no such row signs in,
+  signs or approves.
 - Where two state dirs share one device list, their tombstones are merged too.
 - **Reset relay identity** removes every relay device, members included, so the PC leaves the
   account; a client adds it again by pairing with its new identity, after the client's usual "this
@@ -620,7 +632,14 @@ directory, so mailboxes are kept per PC **and account**: the PC asks only for it
 only in that account's directory. `ack` is the highest `seq` the PC processed, whatever the
 outcome, refused included (or `null`); the service deletes those records before answering, and
 deletes any record after 30 days. The PC pulls when it starts and every five minutes while it
-belongs to an account.
+belongs to an account. It also pulls when a sign-in fails, since a member may have added that
+device on another PC a moment ago, and then checks the sign-in once more. Such sign-ins start at
+most one pull a minute (a pull that could not read the mailbox lets the next start 10 seconds after
+it began), and each waits at most five seconds for it. A sign-in that still fails is refused with
+the same `auth_failed`, so a device whose add reached the mailbox after that pull, or after another
+failed sign-in spent it, is let in up to a minute later. An unknown id and a signature that does
+not hold take the same way, so the delay does not tell which ids have a row; it does tell a PC in
+an account (the refusal may wait for the pull) from one in none (it never does).
 
 The `account` role keeps the two proofs apart: the relay verifies `control` and `data` only, so an
 answer the PC gave the account service is no use to the relay, and a relay's challenge passed on by

@@ -1598,6 +1598,24 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   folder, the mark, the status cell, the menu and the fold count stay where they are, and the menu
   and rename still act on the workspace. The choice is shared with the other browsers of the server
   and applies at once.
+- An agent row is titled by what its agent is on, on One line and Two lines alike: the label the
+  user gave the pane, else (on One line) a tab the user named, else the agent's or the pane's own
+  title. The row's mark already says which agent it is, so an own title that says only that
+  ("Claude Code", "codex", in any case, with or without the glyph an agent puts before its terminal
+  title) gives way to the workspace the agent runs in, a worktree herdr named in its compact form
+  (`brave-valley` for `worktree-brave-valley-7fc6`; `agentRowTitle`, AgentSidebar.tsx): agents with
+  no task title are told apart by where they run, not listed as so many "Claude Code". The place
+  then says neither that workspace again (under the worktree's whole name either) nor the agent's
+  kind or product name beside its mark, so a two-line row with nothing else to place draws its
+  title alone, on the two-line height. A label the user gave the pane is never replaced, and a row
+  with no agent mark keeps its title. The title drawn is the one the row goes by everywhere else:
+  **Within a state** → **Name** sorts by it, and the helpers' line ("Helpers of …"), a helper's
+  "Started by …", the row's `⋯` and its menu's head say it. The tooltip keeps the agent's own title
+  under the drawn one, and a screen reader still hears the agent's kind before the row. Agents
+  under workspaces keeps the agent's own title: its row already hangs from its workspace. It follows
+  Conductor, which names a workspace by its branch, with the workspace's directory name as its
+  second name ([Workspaces and branches](https://www.conductor.build/docs/tips/workspaces-and-branches)):
+  where the work is, not which agent does it.
 - Appearance's **Agents order** is **Workspaces** by default: the Agents list in herdr's
   workspace, tab and pane order. **Activity** pins a blocked agent on top and orders the rest by
   their most recent state change (herdr's `state_change_seq`, read from the snapshot's `agents`),
@@ -1613,7 +1631,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   sections do; the Needs you heading takes `--status-blocked`. An empty group is left out, and
   the pinned card stays first. **Within a state** orders each group: **Longest wait** (the
   default; the oldest `state_change_seq` first, as herdr's agent view sorts with
-  `state_change_seq` ascending, #2015), **Recent** (the newest first) or **Name**. herdr's
+  `state_change_seq` ascending, #2015), **Recent** (the newest first) or **Name** (the title each
+  row draws). herdr's
   counters only compare within one PC, so Longest wait and Recent order each PC's rows in the
   PCs' list order; Name orders across PCs. An agent and its helpers stay together, in the
   group of the one of them that needs the reader most. The shared Agents order applies while
@@ -2709,6 +2728,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   `--space-1` carrying the meta line (size or partial-view notice, folder) and, at its end, the
   file's view modes as a compact segmented control (**Preview | Source** for Markdown in place of
   Show source, **Page | Source** for HTML) whose chosen segment is the row's one `--bg-hover` fill.
+  A mode is drawn `--control-h` − `--space-4` tall (`18px`, `16px` compact) and, with a mouse, takes clicks over
+  `--pointer-target` through an invisible `::before` expander above and below it, inside the row.
   The content fills the panel edge to edge (no inset, radius or frame around a page, PDF or
   video; code and Markdown keep their `--space-3` inset). The panel's left edge is an unseen
   `--space-2` grip that draws a 2px `--accent` seam under the pointer, while held and on focus.
@@ -3633,7 +3654,9 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   Claude phone apps draw their composer buttons at the target size, which here would crowd the
   model label off the row. `scripts/tap-targets-demo-regression.ts` measures each hit area by
   `elementFromPoint` at `390px` and `412px` (and `390px` compact), and that a mouse at `1280px`
-  gets the drawn box only.
+  gets the drawn box only. It also holds a long sheet's Cancel, the Rename pane field and Settings'
+  search field to `--touch-target` on a `360x780` phone, and a changed row's Restore defaults and a
+  docked file's view modes to `--pointer-target` under a mouse.
 
 ### Command palette
 - At `<=480px` the header has no palette button: the More menu's first item, **Search panes and
@@ -3786,7 +3809,8 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   for five or more, a stepper (minus, value in `--font-mono`, plus, in one bordered well) and a
   text field; inside a card they sit on `--bg-input`. The terminal and chat font sizes' value can
   be typed in its place, and a number out of range is refused, never clamped (G-179, after Warp's
-  Appearance settings). Each page but About opens with one dim line saying what it holds
+  Appearance settings); full-width digits from an IME (１６) are read as the number. Each page but
+  About opens with one dim line saying what it holds
   (`.settings-page-note`, G-173, after Codex's settings panes); About stays sentence-free. On a phone a control that needs the line
   (three or more segments, a text field, or a long sentence above it) goes under its label at
   the card's width, its segments sharing it equally; the rest stay on the label's line. A
@@ -4404,6 +4428,10 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   a look where the server answers for a held subscription with no fault, alerts turned off or
   the device locking ends the dismissal; a look that proves nothing keeps it. Settings keeps
   showing the fault even while the line is dismissed.
+- Where the button's label has no room beside the dismiss button even with the sentence cut to
+  nothing (a 320 px phone in Japanese at the 20 px interface text), the label wraps inside its
+  button, which grows in height; the dismiss button keeps its size and its place at the line's
+  right end. Wherever the label fits, the line is unchanged.
 - A failed **Turn alerts on again** replaces the fault sentence with its reason: the browser
   would not make a push subscription (in Brave, turn on **Use Google services for push
   messaging** in its privacy settings), the page's service worker is not running (reload, then
@@ -4426,6 +4454,26 @@ Alert rows of the table above from the `--droplet-*` roles in `src/styles.css`.
   follow there; Agent of Empires' classifier (MIT, THIRD_PARTY_NOTICES.md) is adapted for the
   rule, with its repair narrowed to the faults re-subscribing mends. Dismissal follows the update
   notice's button and the PC-action notice's per-fault lifetime (`lib/machineNotice.ts`).
+
+### Desktop update line (`.update-notice.is-line`)
+- In the desktop app only (`lib/desktopUpdate.ts`): once the app has downloaded an update, one
+  line on the update notice's row, drawn as a release's line is. "Ovis X.Y.Z is ready.", a
+  `.btn-primary` **Restart to Update** and the update notice's dismiss button. The server such
+  an app carries offers no release of its own, so the release line never shares the row with it.
+- **Restart to Update** is the tray's item: it is disabled from the press until the app says it
+  keeps running (a .deb's password prompt cancelled). No confirmation: the terminals and agents
+  run in the core, which outlives the app, so a restart interrupts none of them.
+- The dismiss button closes the line for that version, in the app rather than in this page's
+  storage: later starts keep it closed, and the next version shows it again. The tray keeps
+  Restart to Update. The app's connection screen
+  (`app/electron/renderer/connect.html`) shows the same sentence and button under its steps,
+  also for a closed line.
+- Design: T3 Code's desktop update control, where the web client draws what the desktop shell
+  reports through its bridge and one press restarts and installs
+  ([`SidebarUpdatePill.tsx`](https://github.com/pingdotgg/t3code/blob/main/apps/web/src/components/sidebar/SidebarUpdatePill.tsx);
+  no code taken). It differs in place and in words: a sentence on the row where this app already
+  tells of a release, not an icon in the sidebar whose meaning is in its tooltip, and no
+  "running tasks will be interrupted" confirmation, since nothing here is.
 
 ### Setup guide (`.setup-*`)
 - Follows the Claude and Codex apps' first runs: one screen in the pane area, the sidebar left in
